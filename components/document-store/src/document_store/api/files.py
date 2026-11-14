@@ -20,6 +20,7 @@ from wip_auth import (
     resolve_namespace_filter,
 )
 from wip_auth.fastapi_helpers import AmbiguousItems, miss_detail, resolve_bulk_ids, resolve_or_404
+from wip_auth.registry_client import DependencyUnavailableError
 
 from ..models.api_models import (
     MAX_BULK_ITEMS,
@@ -41,6 +42,7 @@ from ..services.file_service import FileServiceError, get_file_service
 from ..services.file_storage_client import (
     FileStorageError,
     FileStorageNotFoundError,
+    FileStorageUnavailableError,
     get_file_storage_client,
     is_file_storage_enabled,
 )
@@ -78,6 +80,15 @@ class FileDocumentsResponse(BaseModel):
 # dependency once per request.
 router = APIRouter(
     prefix="/files", tags=["Files"], dependencies=[Depends(require_api_key)]
+)
+
+
+# What one item of a bulk file write can fail with and still be answered per
+# item: a refusal, or a service it needs not answering (the Registry
+# resolving a template, the object store). Earlier items are already written,
+# so an outage is reported on the item it hit, never as a whole-request error.
+_ITEM_FAILURES: tuple[type[BaseException], ...] = (
+    FileServiceError, DependencyUnavailableError, FileStorageUnavailableError,
 )
 
 
@@ -400,7 +411,7 @@ async def update_files_metadata(
                 results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found", error_code="not_found"))
             else:
                 results.append(BulkResultItem(index=i, status="updated", id=item.file_id))
-        except FileServiceError as e:
+        except _ITEM_FAILURES as e:
             results.append(BulkResultItem(index=i, status="error", id=item.file_id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return held.answer(BulkResponse(
@@ -451,7 +462,7 @@ async def delete_files(
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
-        except FileServiceError as e:
+        except _ITEM_FAILURES as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return held.answer(BulkResponse(
@@ -519,7 +530,7 @@ async def reactivate_files(
             results.append(BulkResultItem(
                 index=i, status="reactivated" if reactivated else "unchanged", id=item.id,
             ))
-        except FileServiceError as e:
+        except _ITEM_FAILURES as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return held.answer(BulkResponse(

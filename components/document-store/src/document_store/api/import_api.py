@@ -7,15 +7,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pymongo.errors import ConnectionFailure
 
 from wip_auth import UserIdentity, check_namespace_permission, require_api_key, resolve_or_404
+from wip_auth.registry_client import DependencyUnavailableError
 from wip_auth.term_resolution import term_resolution_batch
 
 from ..models.api_models import DocumentCreateRequest
 from ..services.document_service import DocumentService
-from ..services.errors import dependency_unavailable
+from ..services.errors import dependency_unavailable, error_fields
+from ..services.file_storage_client import FileStorageUnavailableError
 from ..services.import_service import ImportService
 from ..services.nats_client import get_throttle_delay
+from ..services.registry_client import RegistryUnreachableError
 from ..services.template_store_client import TemplateStoreError, get_template_store_client
 from .uploads import read_upload
 
@@ -110,6 +114,24 @@ class _ImportOutcome:
     skipped: int = 0
     created: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
+    # Set when a row met an outage: the import stopped there (503).
+    outage: dict[str, Any] | None = None
+
+
+# What a service the import needs not answering raises: the Registry, def-store
+# or template-store (DependencyUnavailableError and its Registry subclass, and
+# the Registry write client's own), the document store, the object store.
+_OUTAGES: tuple[type[BaseException], ...] = (
+    DependencyUnavailableError, RegistryUnreachableError, ConnectionFailure,
+    FileStorageUnavailableError,
+)
+
+
+def _is_outage(error: dict[str, Any]) -> bool:
+    """Whether a row's error entry says a dependency could not be asked,
+    rather than anything about the row."""
+    return (error.get("error_code") == "dependency_unavailable"
+            or (error.get("details") or {}).get("rule") == "registry_unavailable")
 
 
 async def _import_row(
@@ -118,28 +140,57 @@ async def _import_row(
     """Create one row's document: (the created entry, None) or (None, the error entry).
 
     A cell that could not be converted to its field's type fails the row like
-    a validation failure. The error entry carries the row's data, each value
-    cut to 100 characters, for debugging.
+    a validation failure. The error entry carries the row's error_code (and
+    details, when there are any), and the row's data, each value cut to 100
+    characters, for debugging.
     """
+    error: dict[str, Any]
     try:
-        conversion_errors = doc.pop("conversion_errors", None)
-        if conversion_errors:
-            raise ValueError("; ".join(conversion_errors))
-        req = DocumentCreateRequest(**doc)
-        result, error = await doc_service.create_document(req, namespace=namespace)
-        if result is None:
-            raise ValueError((error or {}).get("error") or "Validation failed")
+        created, error = await _create_row(doc_service, doc, row_num, namespace)
+        if created is not None:
+            return created, None
+    except _OUTAGES as e:
+        logger.warning("Import row %d met an outage: %s", row_num, e)
+        error = _outage_fields(e)
+    except Exception as e:
+        error = error_fields(e)
+    error_info: dict[str, Any] = {"row": row_num, **{k: v for k, v in error.items() if v is not None}}
+    if doc.get("data"):
+        error_info["data"] = {k: str(v)[:100] for k, v in doc["data"].items()}
+    return None, error_info
+
+
+async def _create_row(
+    doc_service: DocumentService, doc: dict[str, Any], row_num: int, namespace: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Write one row: (the created entry, {}) or (None, the refusal's error
+    fields). A cell that could not be converted is a validation failure."""
+    conversion_errors = doc.pop("conversion_errors", None)
+    if conversion_errors:
+        return None, {"error": "; ".join(conversion_errors), "error_code": "validation_failed"}
+    req = DocumentCreateRequest(**doc)
+    result, refusal = await doc_service.create_document(req, namespace=namespace)
+    if result is not None:
         return {
             "row": row_num,
             "document_id": result.document_id,
             "version": result.version,
             "is_new": result.is_new,
-        }, None
-    except Exception as e:
-        error_info: dict[str, Any] = {"row": row_num, "error": str(e)}
-        if doc.get("data"):
-            error_info["data"] = {k: str(v)[:100] for k, v in doc["data"].items()}
-        return None, error_info
+        }, {}
+    refusal = refusal or {}
+    error = {"error": refusal.get("error") or "Validation failed",
+             "error_code": refusal.get("error_code") or "validation_failed"}
+    if refusal.get("details"):
+        error["details"] = refusal["details"]
+    return None, error
+
+
+def _outage_fields(e: BaseException) -> dict[str, Any]:
+    """The error fields of a row that met an outage (_OUTAGES)."""
+    if isinstance(e, ConnectionFailure):
+        return {"error": str(e), "error_code": "dependency_unavailable",
+                "details": {"dependency": "mongodb"}}
+    return error_fields(e)
 
 
 async def _import_rows(
@@ -150,7 +201,10 @@ async def _import_rows(
     reported by its row number.
 
     Without skip_errors the first failing row stops the import and the rows
-    after it are counted as skipped.
+    after it are counted as skipped. A row that met an outage (a service the
+    write needs could not be asked) stops it whatever skip_errors says: every
+    later row would meet the same outage, so they are counted as skipped and
+    the outage is recorded for the 503 answer.
     """
     doc_service = DocumentService()
     outcome = _ImportOutcome(total=len(documents))
@@ -169,7 +223,9 @@ async def _import_rows(
                     continue
                 outcome.failed += 1
                 outcome.errors.append(error or {})
-                if not skip_errors:
+                if error and _is_outage(error):
+                    outcome.outage = error
+                if outcome.outage is not None or not skip_errors:
                     outcome.skipped = outcome.total - (outcome.succeeded + outcome.failed)
                     return outcome
             # Write endpoints back off while the reporting consumer lags
@@ -233,7 +289,11 @@ async def import_documents(
     fails its row, reported in ``errors`` like a validation failure.
 
     Every row is attempted and reported (``skip_errors`` true, the default)
-    unless ``skip_errors`` is false. ``results`` lists at most the first 100
+    unless ``skip_errors`` is false. A row that meets an outage (the Registry,
+    def-store, template-store or the store not answering) stops the import
+    either way: the answer is 503 (error_code dependency_unavailable), its
+    detail the report so far, with the rows after it counted as skipped.
+    Each entry of ``errors`` carries the row's error_code. ``results`` lists at most the first 100
     created rows and ``errors`` the first 50 failed ones; ``results_truncated``
     and ``errors_truncated`` say when a list was cut, and ``succeeded`` /
     ``failed`` always count every row.
@@ -274,4 +334,13 @@ async def import_documents(
         raise _unusable("No documents to import (file may be empty)")
 
     outcome = await _import_rows(documents, namespace, skip_errors)
+    if outcome.outage is not None:
+        # 503: retry later. The body is the import's report so far, so the
+        # caller knows which rows were written before the outage.
+        raise HTTPException(status_code=503, detail={
+            "message": f"The import stopped at row {outcome.outage['row']}: "
+                       f"{outcome.outage['error']}; the rows after it were not attempted",
+            "error_code": "dependency_unavailable",
+            **_import_response(outcome),
+        })
     return _import_response(outcome)

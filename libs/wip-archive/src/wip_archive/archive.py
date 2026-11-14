@@ -7,6 +7,7 @@ import json
 import shutil
 import tempfile
 import zipfile
+import zlib
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -22,7 +23,7 @@ from .exceptions import (
     NotAnArchiveError,
 )
 from .models import Manifest
-from .paths import check_member_name, safe_segment
+from .paths import check_member_name, is_safe_segment, safe_segment
 
 # JSONL file names within the archive
 MANIFEST_FILE = "manifest.json"
@@ -60,6 +61,12 @@ def _entity_path(namespace: str, entity_type: str) -> str:
     return f"{NAMESPACES_DIR}/{namespace}/{ENTITY_FILES[entity_type]}"
 
 
+# What reading a member's bytes raises when they are corrupt below the JSON
+# layer: a bad CRC or truncated member (BadZipFile, EOFError), a broken
+# deflate stream (zlib.error), bytes that are not UTF-8 (UnicodeDecodeError).
+_CORRUPT_MEMBER = (zipfile.BadZipFile, zlib.error, EOFError, UnicodeDecodeError)
+
+
 def _parse_line(line: str, member: str) -> Any:
     """One JSONL line, or a typed error naming the member it came from."""
     try:
@@ -68,6 +75,20 @@ def _parse_line(line: str, member: str) -> Any:
         raise EntityParseError(
             f"archive member {member} has a line that is not valid JSON: {exc}"
         ) from exc
+
+
+def _jsonl_rows(handle: IO[bytes], member: str) -> Iterator[Any]:
+    """The rows of an open JSONL member, streamed. Bytes corrupt below the
+    JSON layer are an EntityParseError naming the member, like a line that is
+    not JSON."""
+    try:
+        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
+            for line in text:
+                line = line.strip()
+                if line:
+                    yield _parse_line(line, member)
+    except _CORRUPT_MEMBER as exc:
+        raise EntityParseError(f"archive member {member} cannot be read: {exc}") from exc
 
 
 class ArchiveWriter:
@@ -189,8 +210,13 @@ class ArchiveWriter:
         failed partway through, or bytes whose checksum does not match the
         file's record. An archive without the blob says so honestly; one with
         partial bytes would restore them as the file. A blob never written is
-        not an error.
+        not an error, and neither is an id that is not a safe path segment:
+        nothing can have been written for it (open_blob refuses it), and
+        raising here would turn the caller's per-file failure handling into a
+        failure of the whole archive.
         """
+        if not is_safe_segment(file_id):
+            return
         self._blob_path(file_id).unlink(missing_ok=True)
 
     def entity_count(self, entity_type: str, *, namespace: str = "") -> int:
@@ -353,9 +379,13 @@ class ArchiveReader:
             raw = self._zf.read(MANIFEST_FILE)
         except KeyError as exc:
             raise MissingManifestError("archive has no manifest.json") from exc
+        except _CORRUPT_MEMBER as exc:
+            raise ManifestParseError(
+                f"archive manifest.json cannot be read (corrupt member): {exc}"
+            ) from exc
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ManifestParseError(
                 f"archive manifest.json is not valid JSON: {exc}"
             ) from exc
@@ -433,12 +463,10 @@ class ArchiveReader:
             handle = self._zf.open(member)
         except KeyError:
             return
+        except _CORRUPT_MEMBER as exc:
+            raise EntityParseError(f"archive member {member} cannot be read: {exc}") from exc
 
-        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
-            for line in text:
-                line = line.strip()
-                if line:
-                    yield _parse_line(line, member)
+        yield from _jsonl_rows(handle, member)
 
     def read_synonyms(self) -> Iterator[dict[str, Any]]:
         """Iterate over synonyms from synonyms.jsonl (if present)."""
@@ -447,12 +475,10 @@ class ArchiveReader:
             handle = self._zf.open(member)
         except KeyError:
             return
+        except _CORRUPT_MEMBER as exc:
+            raise EntityParseError(f"archive member {member} cannot be read: {exc}") from exc
 
-        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
-            for line in text:
-                line = line.strip()
-                if line:
-                    yield _parse_line(line, member)
+        yield from _jsonl_rows(handle, member)
 
     def read_referents(self) -> Iterator[dict[str, Any]]:
         """Iterate over the out-of-archive referent table (if present).
@@ -465,12 +491,10 @@ class ArchiveReader:
             handle = self._zf.open(member)
         except KeyError:
             return
+        except _CORRUPT_MEMBER as exc:
+            raise EntityParseError(f"archive member {member} cannot be read: {exc}") from exc
 
-        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
-            for line in text:
-                line = line.strip()
-                if line:
-                    yield _parse_line(line, member)
+        yield from _jsonl_rows(handle, member)
 
     def has_synonyms(self) -> bool:
         """Check if the archive contains synonyms.jsonl."""
@@ -512,8 +536,14 @@ class ArchiveReader:
             handle = self._zf.open(_entity_path(ns, entity_type))
         except KeyError:
             return 0
-        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
-            return sum(1 for line in text if line.strip())
+        except _CORRUPT_MEMBER as exc:
+            raise EntityParseError(f"archive member {_entity_path(ns, entity_type)} cannot be read: {exc}") from exc
+        member = _entity_path(ns, entity_type)
+        try:
+            with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
+                return sum(1 for line in text if line.strip())
+        except _CORRUPT_MEMBER as exc:
+            raise EntityParseError(f"archive member {member} cannot be read: {exc}") from exc
 
     def namelist(self) -> list[str]:
         """List all files in the archive."""

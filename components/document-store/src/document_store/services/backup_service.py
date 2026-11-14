@@ -644,18 +644,25 @@ def read_archive_restore_scope(archive_path: str | Path) -> tuple[Any, list[str]
 
     Every failure raises; nothing is turned into "no manifest". A malformed
     archive (not a zip, no manifest, a manifest that is not valid JSON or not
-    a valid manifest, an unsafe member name) is a typed ``ArchiveError`` the
-    route refuses with a 400. Any other error propagates: a permission check
-    must never be skipped because reading the archive failed.
+    a valid manifest, an unsafe member name, a namespace the manifest lists
+    under a name that is not one path segment, "" included) is a typed
+    ``ArchiveError`` the route refuses with a 400: a prefix becomes a URL path
+    segment of the Registry calls the restore makes, so one like "../x" would
+    reach a path the admin check never named. Any other error propagates: a
+    permission check must never be skipped because reading the archive failed.
 
     Lives here (not in the API layer) so ``api/backup.py`` keeps its
     no-toolkit-imports guardrail intact.
     """
     from wip_archive.archive import ArchiveReader
+    from wip_archive.paths import safe_segment
 
     with ArchiveReader(Path(archive_path)) as reader:
         manifest = reader.read_manifest()
         namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
+    # The zip's own tree passed the same rule when the reader opened it.
+    for prefix in namespaces:
+        safe_segment(prefix, "namespace prefix")
     return manifest, namespaces
 
 

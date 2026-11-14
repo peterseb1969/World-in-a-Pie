@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+_V3_FORMAT = re.compile(r"3(\.\d+)?")
 
 
 class NamespaceConfig(BaseModel):
@@ -109,8 +112,9 @@ class Manifest(BaseModel):
     # served. A 3.0 reader restoring a 3.1 archive therefore finds no stored
     # constraint on those fields, and an empty constraint means "unconstrained"
     # rather than an error, so the version is what makes the difference
-    # detectable. Minor, deliberately: every gate tests startswith("3"), so a
-    # major bump would make 3.1 archives unrestorable everywhere.
+    # detectable. Minor, deliberately: every gate accepts 3 and any 3.N
+    # (Manifest.is_v3), so a major bump would make 3.1 archives unrestorable
+    # everywhere.
     format_version: str = "3.1"
     # What wrote the archive, as "<producer> <version>" (the toolkit's
     # exporter, document-store's backup engine). Empty when the archive does
@@ -141,6 +145,20 @@ class Manifest(BaseModel):
     # own lookup half. Additive, like provenance: older readers ignore it,
     # so format_version is unchanged.
     referents: int | None = None
+
+    def is_v3(self) -> bool:
+        """Whether the manifest declares the v3 layout: a format_version it
+        states itself (an archive without one predates version stamping; the
+        model's default is not a declaration) of the form 3 or 3.N."""
+        return ("format_version" in self.model_fields_set
+                and _V3_FORMAT.fullmatch(self.format_version) is not None)
+
+    def format_label(self) -> str:
+        """The format the manifest states, for a message: "v3.1", or that it
+        states none."""
+        if "format_version" not in self.model_fields_set:
+            return "unstated (the manifest has no format_version)"
+        return f"v{self.format_version}"
 
     def namespace_prefixes(self) -> list[str]:
         """The namespaces carried by this archive.

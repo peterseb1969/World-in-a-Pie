@@ -1774,9 +1774,13 @@ registered type (`.doc` is `application/msword`). Now:
   `application/msword` (`.doc`) and `application/vnd.ms-powerpoint` (`.ppt`),
   alongside `application/vnd.ms-excel`. The unregistered
   `application/vnd.ms-word` is gone from it.
-- **Macro-enabled Office documents stay refused** by default
+- **The macro-enabled Office types are not in the default list**
   (`application/vnd.ms-word.document.macroEnabled.12` and kin): their types
-  share neither prefix. Add them to `WIP_ALLOWED_MIME_TYPES` to accept them.
+  share neither prefix, so an upload declaring one is refused. Add them to
+  `WIP_ALLOWED_MIME_TYPES` to accept them under their own type. Macro-enabled
+  files themselves are accepted: an upload declaring
+  `application/octet-stream`, or no type, is admitted whatever its name, and
+  `.docm`, `.xlsm`, `.pptm` and kin are not blocked extensions.
 
 ### Document bulk writes report every item and stop where asked; validation and integrity bounds hold
 
@@ -1794,7 +1798,8 @@ registered type (`.doc` is `application/msword`). Now:
   namespace isolation. The items after the refused one were still written;
   they are now reported `skipped`, as for a validation failure.
 - **`POST /validation/validate-candidate` accepts at most 1000 `documents`**
-  (422 beyond), like every other bulk surface.
+  (422 beyond), like document-store's other bulk surfaces. (The bulk bodies
+  of def-store, template-store and the Registry are not capped this way.)
 - **An integrity check's `limit` bounds what is read.** A limit under 500 was
   ignored, and the first 500 documents were checked.
 - **Restore no longer counts a namespace as reporting-synced when its batch
@@ -1810,7 +1815,9 @@ again was to change one, forking the identity. Now:
 - **An upload of a soft-deleted file's bytes revives it** under the same
   `file_id`. The bytes are written to the object store again (a soft-deleted
   file's object is not watched by the integrity scan), the metadata fields the
-  upload sends replace the stored ones (omitted fields keep their values), and
+  upload sends with a value replace the stored ones (omitted fields keep their
+  values, and so do fields sent empty: an empty form field reads as not sent;
+  clear a field with `PATCH /files`), and
   `file.updated` is published. An upload of a live file's bytes is unchanged:
   the existing record, its metadata untouched.
 - **`POST /api/document-store/files/reactivate`** (bulk, `[{id}]`) revives
@@ -1878,9 +1885,14 @@ A backup whose namespaces hold no entities is a zip with only its manifest,
 because empty entity files are not written. Restore, fresh and merge refused
 such an archive as malformed ("the zip has no namespaces/ tree"), so the
 backup reported success but could never be restored. Now an archive whose
-manifest lists its namespaces, all with zero counts, restores their settings
-and nothing else. An archive missing the `namespaces/` tree is still refused
-when its manifest counts entities or lists no namespaces.
+manifest lists its namespaces, stating zero counts for the archive and for
+each of them, is accepted: restore creates or configures each namespace from
+the archive's `namespace_config`, fresh creates the target namespace, and
+merge only stops refusing (a merge never applies the archive's namespace
+settings). An archive missing the `namespaces/` tree entirely is still
+refused when its manifest counts any entity, leaves the counts out, or lists
+no namespaces. The guard compares only whether the tree is there: an archive
+that keeps its tree but lost one entity file is not caught here.
 
 ### `WIP_RATE_LIMIT` is enforced, per client, on requests through the proxy
 

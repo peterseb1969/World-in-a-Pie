@@ -16,6 +16,8 @@ import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from wip_archive.models import EntityCounts
+
 from document_store.services.backup_engine import COLLECTION_MAP, DirectRestoreEngine
 from tests.test_merge_restore import NAMESPACE, _all_collections, _archive
 
@@ -111,11 +113,29 @@ async def test_every_row_is_restored_whatever_the_batch_size(mongo, batch_size):
 
 @pytest.mark.asyncio
 async def test_progress_counts_every_restored_row_once(mongo):
-    _engine, events = await _restore(mongo, _rows(), batch_size=2)
+    rows = _rows()
+    reader = _reader(rows)
+    # Counts the manifest states, so the percent each phase starts at is
+    # computed from the rows restored before it (12 in all).
+    reader.read_manifest.return_value.counts = EntityCounts(
+        terminologies=ROWS, registry_entries=ROWS, documents=1, files=1,
+    )
+    events: list = []
+    engine = DirectRestoreEngine(mongo, None, events.append)
+    engine._upsert_namespace = AsyncMock()
+    engine._claim_inserted_entries = AsyncMock(side_effect=lambda ns, batch: (len(batch), 0))
+    engine._report_claims = MagicMock()
+    with patch("document_store.services.backup_engine.ArchiveReader", return_value=reader):
+        await engine.run_restore(MagicMock(), NAMESPACE, batch_size=2)
     complete = [e for e in events if e.phase == "complete"]
     assert len(complete) == 1 and complete[0].percent == 100
     phases = [e.phase for e in events]
     assert phases.index("phase_terminologies") < phases.index("phase_registry_entries")
+    starts = {e.phase: e.percent for e in events if e.message.startswith(f"[{NAMESPACE}] Restoring")}
+    # The terminologies and their entries (10 rows) come before the documents.
+    assert starts["phase_terminologies"] == DirectRestoreEngine._pct(0, 2 * ROWS + 2)
+    assert starts["phase_documents"] == DirectRestoreEngine._pct(2 * ROWS, 2 * ROWS + 2)
+    assert starts["phase_files"] == DirectRestoreEngine._pct(2 * ROWS + 1, 2 * ROWS + 2)
 
 
 @pytest.mark.asyncio

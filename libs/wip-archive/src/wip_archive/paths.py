@@ -50,18 +50,21 @@ def safe_segment(value: object, what: str) -> str:
 def check_member_name(name: str) -> None:
     """Refuse a ZIP member name that would escape or confuse the layout.
 
-    Every member must be a relative POSIX path without ``.``/``..`` segments
-    or backslashes. Members under ``namespaces/`` must name a safe namespace
-    segment, and members under ``blobs/`` must be one safe file-id segment.
+    Every member must be a relative POSIX path each of whose segments is a
+    safe one (is_safe_segment: no ``.``/``..`` or empty segment, no
+    backslash, control character or drive letter). Members under
+    ``namespaces/`` must name a safe namespace segment, and members under
+    ``blobs/`` must be one safe file-id segment.
     """
     if name.startswith("/") or "\\" in name or "\x00" in name:
         raise UnsafePathError(f"archive member name {name!r} is not a relative path")
     parts = name.split("/")
     # A trailing "/" (directory entry) leaves an empty last part; allow it.
     body = parts[:-1] if parts and parts[-1] == "" else parts
-    if any(p in ("", ".", "..") for p in body):
+    if not all(is_safe_segment(p) for p in body):
         raise UnsafePathError(
-            f"archive member name {name!r} has an empty, '.' or '..' segment"
+            f"archive member name {name!r} has a segment that is empty, '.' or "
+            "'..', or holds a control character or a drive letter"
         )
     if parts[0] == "namespaces" and len(parts) >= 3:
         safe_segment(parts[1], "namespace prefix")

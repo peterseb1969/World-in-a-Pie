@@ -64,9 +64,12 @@ def test_writer_refuses_an_escaping_file_id(tmp_path, file_id):
         writer.add_blob(file_id, b"x")
     with pytest.raises(UnsafePathError), writer.open_blob(file_id) as fh:
         fh.write(b"x")
-    with pytest.raises(UnsafePathError):
-        writer.discard_blob(file_id)
-    assert not (tmp_path / "overwritten").exists()
+    # Nothing can have been written for such an id, so discarding it is a
+    # no-op: it never raises from a caller's per-file failure handler, and
+    # never touches a path outside the staging directory.
+    (tmp_path / "overwritten").write_bytes(b"keep")
+    writer.discard_blob(file_id)
+    assert (tmp_path / "overwritten").read_bytes() == b"keep"
 
 
 @pytest.mark.parametrize("member", [

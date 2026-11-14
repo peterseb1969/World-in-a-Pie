@@ -84,6 +84,11 @@ class _PlannedWrite(NamedTuple):
 
 # Rows per insert when stage 4 writes planned rows in bulk.
 BULK_WRITE_CHUNK = 1000
+# The landed-rows check after a failed bulk insert asks for this many row
+# ids at a time, and the repair after it gives this many documents their
+# active version back at once: both run while the store is struggling.
+_LANDED_CHECK_BATCH = 500
+_REPAIR_CONCURRENCY = 8
 
 
 class _ItemOutcome(NamedTuple):
@@ -1538,7 +1543,11 @@ class DocumentService:
         version = version_override if version_override is not None else 1
 
         try:
-            document = await self._insert_with_retry(
+            # No version is retired for a new document, but a duplicate-key
+            # retry may retire a concurrent writer's row; _insert_or_restore
+            # gives it back if the write then fails.
+            document = await self._insert_or_restore(
+                None,
                 namespace=namespace,
                 document_id=document_id,
                 template_id=request.template_id,
@@ -1803,16 +1812,36 @@ class DocumentService:
         """_insert_with_retry for a successor version whose predecessor this
         write has retired (``prior``: its _id and original stamps). If the
         insert fails, the document gets its active version back
-        (_reactivate_if_orphaned) and the failure is raised as before. With
-        ``prior`` None nothing was retired, and nothing is repaired."""
+        (_reactivate_if_orphaned) and the failure is raised as before. The
+        rows the insert's own duplicate-key retries retired count as retired
+        by this write too, with their stamps. With nothing retired, nothing is
+        repaired. A repair that fails itself (the store still unreachable) is
+        logged and never replaces the write's own failure."""
+        retired: dict[Any, tuple[datetime | None, str | None]] = dict(prior or {})
         try:
-            return await self._insert_with_retry(**insert)
+            return await self._insert_with_retry(**insert, retired=retired)
         except Exception:
-            if prior is not None:
-                await self._reactivate_if_orphaned(
-                    insert["namespace"], insert["document_id"], prior,
-                )
+            if prior is not None or retired:
+                await self._repair_logged(insert["namespace"], insert["document_id"], retired)
             raise
+
+    async def _repair_logged(
+        self,
+        namespace: str,
+        document_id: str,
+        prior: Mapping[Any, tuple[datetime | None, str | None]],
+    ) -> None:
+        """_reactivate_if_orphaned, with its own failure logged instead of
+        raised: it runs while a write is failing, often because the store is
+        unreachable, and the write's failure is the one the caller gets."""
+        try:
+            await self._reactivate_if_orphaned(namespace, document_id, prior)
+        except Exception:
+            logger.exception(
+                "Document %s/%s: the repair after a failed write failed; the "
+                "document may have no active version until it is written again",
+                namespace, document_id,
+            )
 
     async def _insert_with_retry(
         self,
@@ -1833,6 +1862,7 @@ class DocumentService:
         max_retries: int = 3,
         entity_created_at: datetime | None = None,
         pinned: bool = False,
+        retired: dict[Any, tuple[datetime | None, str | None]] | None = None,
     ) -> "Document":
         """Insert a document, retrying on duplicate key errors.
 
@@ -1849,7 +1879,10 @@ class DocumentService:
         When two concurrent requests (or duplicate identity hashes in a batch)
         race to create the same version, the loser gets a DuplicateKeyError.
         This method catches that, re-queries the latest version, deactivates
-        it, and retries with an incremented version number.
+        it, and retries with an incremented version number. ``retired``, when
+        given, receives each row a retry deactivated, with the updated_at /
+        updated_by it had before (_retired_stamps), so a repair after a later
+        failure gives that row its own stamps back.
 
         ``pinned`` marks a version the caller chose (a restore or migration
         writing an exact ``document_id`` + ``version``). That slot is the whole
@@ -1907,10 +1940,14 @@ class DocumentService:
                 if latest:
                     # Deactivate the current active version if it's not ours,
                     # only while it is still active (a delete meanwhile stands).
-                    if latest[0].status == DocumentStatus.ACTIVE and not await _retire_as_read(
-                        latest[0], actor, now,
-                    ):
-                        raise DocumentStoreError(_RETIRED_MEANWHILE, "concurrency_conflict") from exc
+                    stamps = _retired_stamps(latest[0])
+                    if latest[0].status == DocumentStatus.ACTIVE:
+                        if not await _retire_as_read(latest[0], actor, now):
+                            raise DocumentStoreError(
+                                _RETIRED_MEANWHILE, "concurrency_conflict",
+                            ) from exc
+                        if retired is not None:
+                            retired.update(stamps)
                     version = latest[0].version + 1
                 else:
                     version += 1
@@ -3894,8 +3931,6 @@ class DocumentService:
         Then each written row gets its result, event and file reference
         counts, as on the per-item path.
         """
-        from pymongo.errors import BulkWriteError
-
         if not planned:
             return []
         start = time.perf_counter()
@@ -3906,6 +3941,31 @@ class DocumentService:
         lost = await _retire_planned_as_read(retiring, actor, now) - own if retiring else set()
         timing["4a_retire_versions"] = (time.perf_counter() - start) * 1000
         planned, conflicts = _drop_lost_successors(planned, lost)
+
+        outcomes: list[_ItemOutcome] = []
+        retried: dict[Any, tuple[datetime | None, str | None]] = {}
+        try:
+            await self._insert_planned(namespace, planned, actor, now, timing, outcomes, retried)
+        finally:
+            # Also when something above raised: the rows retired in 4a are
+            # given back to every entity whose successor was not written.
+            await self._repair_failed_writes(namespace, planned, outcomes, retiring, retried)
+        return outcomes + conflicts
+
+    async def _insert_planned(
+        self,
+        namespace: str,
+        planned: list["_PlannedWrite"],
+        actor: str,
+        now: datetime,
+        timing: dict[str, float],
+        outcomes: list["_ItemOutcome"],
+        retried: dict[Any, tuple[datetime | None, str | None]],
+    ) -> None:
+        """Stage 4b-c of _write_planned: insert the planned rows and append one
+        outcome per row to ``outcomes``, in order. ``retried`` receives the rows
+        a duplicate-key retry retired (_insert_with_retry)."""
+        from pymongo.errors import BulkWriteError
 
         start = time.perf_counter()
         refused: dict[int, dict] = {}
@@ -3920,7 +3980,6 @@ class DocumentService:
                 refused.update(await self._refuse_unlanded(namespace, chunk, first, exc))
         timing["4b_insert_documents"] = (time.perf_counter() - start) * 1000
 
-        outcomes: list[_ItemOutcome] = []
         for pos, plan in enumerate(planned):
             document = plan.document
             err = refused.get(pos)
@@ -3952,6 +4011,7 @@ class DocumentService:
                         actor=actor,
                         now=now,
                         entity_created_at=document.created_at,
+                        retired=retried,
                     )
                 except Exception as exc:
                     outcomes.append(_ItemOutcome(
@@ -3991,27 +4051,42 @@ class DocumentService:
                 )),
                 "created" if is_new else "updated",
             ))
-        await self._repair_failed_writes(namespace, planned, outcomes, retiring)
-        return outcomes + conflicts
 
     async def _refuse_unlanded(
         self, namespace: str, chunk: list["_PlannedWrite"], first: int, exc: Exception,
     ) -> dict[int, dict]:
         """The rows of a chunk whose insert_many raised (connection, step-down,
         timeout) that are not stored, keyed by position in the write, each
-        refused with the failure: which rows landed is unknown, so ask."""
+        refused with the failure: which rows landed is unknown, so ask. A row
+        landed when the row this write planned, by its own _id, is stored: a
+        row another write stored at the same (document_id, version) is not
+        this one. If the store cannot be asked either, every row of the chunk
+        is refused, saying it may have been stored."""
         logger.exception("Bulk insert of %d documents failed", len(chunk))
-        rows = await Document.get_motor_collection().find(
-            {"namespace": namespace,
-             "$or": [{"document_id": p.document.document_id, "version": p.document.version}
-                     for p in chunk]},
-            {"document_id": 1, "version": 1},
-        ).to_list(None)
-        landed = {(r["document_id"], r["version"]) for r in rows}
+        coll = Document.get_motor_collection()
+        ids = [p.document.id for p in chunk]
+        landed: set[Any] = set()
+        try:
+            for start in range(0, len(ids), _LANDED_CHECK_BATCH):
+                async for row in coll.find(
+                    {"_id": {"$in": ids[start:start + _LANDED_CHECK_BATCH]},
+                     "namespace": namespace},
+                    {"_id": 1},
+                ):
+                    landed.add(row["_id"])
+        except Exception:
+            logger.exception(
+                "Could not read which of %d documents a failed bulk insert stored", len(chunk),
+            )
+            return {
+                first + offset: {"errmsg": f"{exc}; whether this document was stored "
+                                           "is unknown, read it before sending it again"}
+                for offset in range(len(chunk))
+            }
         return {
             first + offset: {"errmsg": str(exc)}
             for offset, plan in enumerate(chunk)
-            if (plan.document.document_id, plan.document.version) not in landed
+            if plan.document.id not in landed
         }
 
     async def _repair_failed_writes(
@@ -4020,21 +4095,30 @@ class DocumentService:
         planned: list["_PlannedWrite"],
         outcomes: list["_ItemOutcome"],
         retiring: dict[Any, "Document"],
+        retried: Mapping[Any, tuple[datetime | None, str | None]],
     ) -> None:
-        """Every entity with a failed row in this write gets an active version
-        back if the write left it with none (_reactivate_if_orphaned)."""
+        """Every entity with a failed row in this write, or a row the write
+        never reached (something raised first), gets an active version back if
+        the write left it with none (_reactivate_if_orphaned). ``retried`` are
+        the rows duplicate-key retries retired. The repairs run a few at a time,
+        and one that fails is logged (_repair_logged)."""
         failed = {
             plan.document.document_id
-            for plan, outcome in zip(planned, outcomes, strict=True)
+            for plan, outcome in zip(planned, outcomes, strict=False)
             if outcome.counter == "failed"
-        }
+        } | {plan.document.document_id for plan in planned[len(outcomes):]}
         if not failed:
             return
-        prior: dict[Any, tuple[datetime | None, str | None]] = {}
+        prior: dict[Any, tuple[datetime | None, str | None]] = dict(retried)
         for doc in retiring.values():
             prior.update(_retired_stamps(doc))
-        for document_id in sorted(failed):
-            await self._reactivate_if_orphaned(namespace, document_id, prior)
+        gate = asyncio.Semaphore(_REPAIR_CONCURRENCY)
+
+        async def repair(document_id: str) -> None:
+            async with gate:
+                await self._repair_logged(namespace, document_id, prior)
+
+        await asyncio.gather(*(repair(document_id) for document_id in sorted(failed)))
 
     async def _apply_validated_item(
         self,
@@ -4478,12 +4562,17 @@ class DocumentService:
             return await self._bulk_create(items, namespace, continue_on_error)
 
     @staticmethod
-    async def _gate_template(template_client: Any, template_id: str) -> dict[str, Any] | None:
-        """The template Stage 1b checks an item against. A store that cannot
-        answer raises DependencyUnavailableError; a template it does not
-        serve is None (the validation that already ran reported it)."""
+    async def _gate_template(
+        template_client: Any, template_id: str, template_version: int | None,
+    ) -> dict[str, Any] | None:
+        """The template Stage 1b checks an item against: the version the item
+        pins, or the latest, as the single-item path reads it. A store that
+        cannot answer raises DependencyUnavailableError; a template it does
+        not serve is None (the validation that already ran reported it)."""
         try:
-            return cast(dict[str, Any] | None, await template_client.get_template_resolved(template_id))
+            return cast(dict[str, Any] | None, await template_client.get_template_resolved(
+                template_id, version=template_version,
+            ))
         except TemplateStoreError as e:
             if e.unavailable:
                 raise dependency_unavailable("template-store", f"template {template_id!r}", e) from e
@@ -4501,7 +4590,9 @@ class DocumentService:
         order, or the guardrail holds on one path only.
         """
         try:
-            tmpl = await self._gate_template(template_client, req.template_id)
+            tmpl = await self._gate_template(
+                template_client, req.template_id, getattr(req, "template_version", None),
+            )
         except DependencyUnavailableError as e:
             # The relationship constraints cannot be checked: the item is
             # refused as an outage, never written unchecked.

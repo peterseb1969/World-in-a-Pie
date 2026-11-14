@@ -106,7 +106,9 @@ async def test_versions_and_repeats_in_one_batch_keep_one_active_row(
     assert await _versions(body["results"][2]["document_id"]) == [
         (1, "inactive"), (2, "inactive"), (3, "active"),
     ]
-    # Each written row publishes one event, showing the row as inserted.
+    # Each written row publishes one event. A row a later item of the batch
+    # superseded is stored inactive, but its event shows it as it was while
+    # it was the live version: active (the rule at _insert_planned's event).
     assert len(events) == 4
     assert {p["status"] for _, p in events} == {"active"}
 

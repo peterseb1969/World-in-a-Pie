@@ -1720,9 +1720,12 @@ class WipClient:
         template_id: str,
         column_mapping: dict,
         namespace: str | None = None,
-        skip_errors: bool = False,
+        skip_errors: bool = True,
     ) -> dict:
-        """Import documents from CSV/XLSX."""
+        """Import documents from CSV/XLSX. Every row is attempted by default,
+        as the endpoint does; skip_errors=False stops at the first failing
+        row. An outage stops the import either way (503, detail = the report
+        so far)."""
         namespace = self._ns(namespace)
         import json as _json
         client = await self._get_client()

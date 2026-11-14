@@ -4,8 +4,8 @@ Bulk results carry an ``error_code`` so callers branch on the code, not the
 message. ``error_fields`` maps the exceptions document-store's handlers catch
 to the error, error_code and details of a per-item result: the typed ones
 (``DocumentStoreError``, ``PatchError``, ``FileServiceError``, the reference
-validator's errors, the Registry client's ``RegistryError``) by their
-meaning, any other ``ValueError`` as ``invalid_request`` and any other
+validator's errors, the Registry client's ``RegistryError``, the outages of
+the Registry, def-store, template-store and object store) by their meaning, any other ``ValueError`` as ``invalid_request`` and any other
 exception as ``internal_error`` — so no error item is ever without a code.
 """
 
@@ -44,10 +44,7 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
     # Imported here: these modules import this one.
     from .document_service import PatchError
     from .file_service import FileServiceError
-    from .reference_validator import (
-        ReferenceValidationError,
-        RegistryUnavailableError,
-    )
+    from .reference_validator import ReferenceValidationError
     from .registry_client import RegistryError, RegistryUnreachableError
 
     message = str(exc)
@@ -62,14 +59,9 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
         return {"error": f"Cross-namespace reference violation: {exc.violations}",
                 "error_code": "reference_violation",
                 "details": {"rule": "cross_namespace", "violations": exc.violations}}
-    if isinstance(exc, RegistryUnavailableError):
-        return {"error": message, "error_code": "registry_error",
-                "details": {"rule": "registry_unavailable"}}
-    if isinstance(exc, DependencyUnavailableError):
-        # def-store or template-store could not be asked: an outage, never
-        # an answer about the item.
-        return {"error": message, "error_code": "dependency_unavailable",
-                "details": {"dependency": exc.dependency}}
+    outage = _outage_fields(exc, message)
+    if outage is not None:
+        return outage
     if isinstance(exc, RegistryError):
         return _registry_error_fields(exc, message, RegistryUnreachableError)
     if isinstance(exc, HTTPException):
@@ -79,6 +71,25 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
         return {"error": message, "error_code": "invalid_request"}
     # Not a refusal of the request: a fault on the server's side.
     return {"error": message, "error_code": "internal_error"}
+
+
+def _outage_fields(exc: BaseException, message: str) -> dict[str, Any] | None:
+    """The item fields of a dependency that could not be asked (the Registry,
+    def-store, template-store, the object store): an outage, never an answer
+    about the item. None for any other exception."""
+    from .file_storage_client import FileStorageUnavailableError
+    from .reference_validator import RegistryUnavailableError
+
+    if isinstance(exc, RegistryUnavailableError):
+        return {"error": message, "error_code": "registry_error",
+                "details": {"rule": "registry_unavailable"}}
+    if isinstance(exc, DependencyUnavailableError):
+        return {"error": message, "error_code": "dependency_unavailable",
+                "details": {"dependency": exc.dependency}}
+    if isinstance(exc, FileStorageUnavailableError):
+        return {"error": message, "error_code": "dependency_unavailable",
+                "details": {"dependency": "object-store"}}
+    return None
 
 
 def dependency_unavailable(dependency: str, what: str, exc: BaseException) -> DependencyUnavailableError:

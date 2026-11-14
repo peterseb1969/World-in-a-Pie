@@ -84,15 +84,18 @@ def _content_type_filter(content_type: str | None) -> Any:
 
     "*/*" (the platform's any-type spelling) and "*" filter nothing. A value
     ending in "*" is a prefix, by the allowlist's rule (content_type_matches):
-    "image/*" lists image/png. The prefix is caller text landing in a pattern —
-    escaped so a stray metacharacter can neither 500 the query nor widen the
-    match (same literal-text rule as term search). Anything else is exact.
+    "image/*" lists image/png. Anything else is that type exactly. As in
+    content_type_matches, case is ignored, and a stored type's parameters
+    ("; charset=utf-8") are not part of it. The value is caller text landing
+    in a pattern — escaped so a stray metacharacter can neither 500 the query
+    nor widen the match (same literal-text rule as term search).
     """
-    if not content_type or content_type.strip() in ("*", "*/*"):
+    pattern = (content_type or "").strip().lower()
+    if not pattern or pattern in ("*", "*/*"):
         return None
-    if content_type.endswith("*"):
-        return {"$regex": f"^{re.escape(content_type[:-1])}"}
-    return content_type
+    if pattern.endswith("*"):
+        return {"$regex": f"^{re.escape(pattern[:-1])}", "$options": "i"}
+    return {"$regex": f"^{re.escape(pattern)}\\s*(;|$)", "$options": "i"}
 
 
 def _integrity_status(issues: list, summary: dict[str, int]) -> str:
@@ -466,7 +469,10 @@ class FileService:
         The bytes are written again: a soft-deleted file's object is not
         watched by the integrity scan, so it may be gone, and the caller has
         handed us exactly the bytes the file is. Metadata fields the upload
-        sends replace the stored ones; fields it omits keep their values.
+        sends with a value replace the stored ones; fields it omits keep
+        their values, and so do fields it sends empty: a form field sent
+        empty reads as not sent, so an upload cannot clear a field. PATCH
+        /files clears one.
         """
         try:
             storage = get_file_storage_client()

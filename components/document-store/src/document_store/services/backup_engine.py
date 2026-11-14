@@ -28,6 +28,7 @@ from typing import Any, NamedTuple, NoReturn, TypeVar, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_archive.archive import ArchiveReader, ArchiveWriter
+from wip_archive.exceptions import UnsafePathError
 from wip_archive.models import (
     EntityCounts,
     Manifest,
@@ -35,6 +36,7 @@ from wip_archive.models import (
     NamespaceEntry,
     ProgressEvent,
 )
+from wip_archive.paths import is_safe_segment
 from wip_archive.referents import ReferentCollector
 from wip_archive.remap import IDRemapper
 
@@ -1314,35 +1316,28 @@ class DirectBackupEngine:
         # Read file entries from what was already written
         files_db = self._mongo[_DB_DOCUMENT_STORE]["files"]
         query = {"namespace": namespace, "status": {"$ne": "deleted"}}
-        count = 0
-        unreadable: list[str] = []
-        mismatched: list[str] = []
-        refused = 0  # store errors other than "no such object"
+        count = refused = 0  # refused: store errors other than "no such object"
+        dropped: dict[str, list[str]] = {"unreadable": [], "mismatched": [], "unnameable": []}
         projection = {"file_id": 1, "storage_key": 1, "checksum": 1}
         async for file_doc in files_db.find(query, projection):
             file_id = file_doc.get("file_id") or str(file_doc.get("_id"))
-            try:
-                digest = await self._stage_blob(
-                    writer, namespace, file_id, file_doc.get("storage_key", file_id),
-                )
-            except FileStorageError as exc:
-                logger.warning("Failed to download blob for file %s", file_id, exc_info=True)
-                writer.discard_blob(file_id)
-                unreadable.append(file_id)
-                refused += not isinstance(exc, FileStorageNotFoundError)
+            shortfall = await self._blob_shortfall(writer, namespace, file_id, file_doc)
+            if shortfall is None:
+                count += 1
                 continue
-            expected = file_doc.get("checksum")
-            if expected and digest != expected:
-                writer.discard_blob(file_id)
-                mismatched.append(file_id)
-                continue
-            count += 1
+            refused += shortfall == "refused"
+            dropped["unreadable" if shortfall == "refused" else shortfall].append(file_id)
+        unreadable, mismatched, unnameable = (
+            dropped["unreadable"], dropped["mismatched"], dropped["unnameable"]
+        )
 
         for warning in _file_shortfall_warnings(f"[{namespace}] ", {
             "could not be read from the object store; the backup carries no bytes "
             "for them": unreadable,
             "have bytes in the object store that do not match their checksum; the "
             "backup carries no bytes for them": mismatched,
+            "have an id that cannot name an archive member (not one path segment); "
+            "the backup carries no bytes for them": unnameable,
         }):
             self._emit("warning", warning)
         if refused and count == 0:
@@ -1356,7 +1351,32 @@ class DirectBackupEngine:
                 "up without files."
             )
         logger.info("Backed up %d blobs for namespace %s", count, namespace)
-        return unreadable + mismatched
+        return unreadable + mismatched + unnameable
+
+    async def _blob_shortfall(
+        self, writer: ArchiveWriter, namespace: str, file_id: str, file_doc: dict[str, Any],
+    ) -> str | None:
+        """Stage one file's blob; None when the archive carries its bytes, else
+        why it does not: "unreadable" (the store has no such object),
+        "refused" (the store answered an error), "mismatched" (bytes that do
+        not match the checksum) or "unnameable" (an id that is not one path
+        segment cannot name its member). A dropped blob leaves no bytes."""
+        try:
+            digest = await self._stage_blob(
+                writer, namespace, file_id, file_doc.get("storage_key", file_id),
+            )
+        except FileStorageError as exc:
+            logger.warning("Failed to download blob for file %s", file_id, exc_info=True)
+            writer.discard_blob(file_id)
+            return "unreadable" if isinstance(exc, FileStorageNotFoundError) else "refused"
+        except UnsafePathError:
+            logger.warning("File id %r cannot name an archive member", file_id)
+            return "unnameable"
+        expected = file_doc.get("checksum")
+        if expected and digest != expected:
+            writer.discard_blob(file_id)
+            return "mismatched"
+        return None
 
     async def _stage_blob(
         self, writer: ArchiveWriter, namespace: str, file_id: str, storage_key: str,
@@ -2088,6 +2108,19 @@ def _describe_gap(gap: dict[str, Any]) -> str:
     return f"{gap['name']} {gap['issue']} expected={gap['expected']} actual={gap['actual']}"
 
 
+def _declares_only_empty(manifest: Any) -> bool:
+    """Whether a manifest declares an archive of empty namespaces: it lists
+    them, and states zero counts for the archive and for each. Counts it
+    leaves out declare nothing (the model reads them as zero)."""
+    return (
+        bool(manifest.namespaces)
+        and "counts" in manifest.model_fields_set
+        and manifest.counts.total == 0
+        and all("counts" in entry.model_fields_set and entry.counts.total == 0
+                for entry in manifest.namespaces)
+    )
+
+
 # The order a plain restore writes a namespace's entities in: definitions
 # before what references them, registry entries last.
 _PLAIN_RESTORE_ORDER = (
@@ -2099,6 +2132,8 @@ _PLAIN_RESTORE_ORDER = (
     "files",
     "registry_entries",
 )
+# The same types as a backup reads: a type added to one must be added to both.
+assert sorted(_PLAIN_RESTORE_ORDER) == sorted(BACKUP_ENTITY_ORDER)
 
 # The Registry entries of definitions. They are written with the definitions,
 # ahead of the reporting structure gate and of any document, not with the
@@ -2644,8 +2679,9 @@ class DirectRestoreEngine:
         which on another install differ or do not exist; they are pointed at
         this install's entities. On the install the archive came from every
         referent resolves to itself, nothing is mapped, and rows are written
-        as archived. Returns (remapper, referents, dropped rows, the row
-        rewrite or None when nothing is mapped).
+        as archived. Returns (remapper, referents, the document ids of the
+        dropped edge documents, the row rewrite or None when nothing is
+        mapped).
         """
         remapper = IDRemapper()
         label = ", ".join(tgt for _src, tgt in targets)
@@ -7024,20 +7060,19 @@ class DirectRestoreEngine:
         so only the manifest remains. It is told apart from a truncated zip by
         the manifest itself listing its namespaces with every count at zero.
         A manifest without that list (a legacy shape, or a derived archive that
-        dropped its empty namespaces) proves nothing and is still refused.
+        dropped its empty namespaces) proves nothing and is still refused, and
+        so does one that leaves out the counts, of the archive or of any
+        namespace: the model reads an absent count as zero, and absence
+        declares nothing. The format must be stated, as 3 or 3.N
+        (Manifest.is_v3).
         """
-        if not manifest.format_version.startswith("3"):
+        if not manifest.is_v3():
             raise RestoreEngineError(
-                f"Archive is format v{manifest.format_version} — the restore "
+                f"Archive is format {manifest.format_label()} — the restore "
                 "engine reads the v3 layout. Convert it first: "
                 "python -m wip_toolkit convert-archive <src> <dst>"
             )
-        declares_only_empty = (
-            bool(manifest.namespaces)
-            and all(entry.counts.total == 0 for entry in manifest.namespaces)
-            and manifest.counts.total == 0
-        )
-        if not reader.list_namespaces() and not declares_only_empty:
+        if not reader.list_namespaces() and not _declares_only_empty(manifest):
             raise RestoreEngineError(
                 "Archive manifest claims v3 but the zip has no namespaces/ "
                 "tree — malformed archive, nothing to restore"
@@ -7047,6 +7082,13 @@ class DirectRestoreEngine:
         namespaces: list[str] = manifest.namespace_prefixes() or reader.list_namespaces()
         if not namespaces:
             raise RestoreEngineError("Archive contains no namespaces to restore")
+        # A prefix becomes a path segment of the Registry URLs the restore
+        # calls: one that is not a single segment ("", "../x") is refused.
+        unsafe = [p for p in namespaces if not is_safe_segment(p)]
+        if unsafe:
+            raise RestoreEngineError(
+                f"Archive names namespaces that are not one path segment: {unsafe!r}"
+            )
         return namespaces
 
     def _resolve_targets(

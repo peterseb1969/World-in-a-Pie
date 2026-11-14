@@ -41,7 +41,7 @@ def convert_archive(src_path: str | Path, dst_path: str | Path) -> Path:
             check_member_name(name)
         old = Manifest(**json.loads(zin.read(MANIFEST_FILE)))
 
-        if old.format_version.startswith("3") or any(
+        if old.is_v3() or any(
             n.startswith("namespaces/") for n in names
         ):
             raise ValueError(

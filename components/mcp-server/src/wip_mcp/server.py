@@ -4279,6 +4279,30 @@ async def get_file_metadata(file_id: str) -> str:
         return _error(e)
 
 
+# The Office Open XML types by extension. Python's own table lacks them and
+# reads them from the system's mime.types, which a slim image does not have:
+# the guess fell back to application/octet-stream, which a file field
+# allowing only Office types refuses.
+_OOXML_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xltx": "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template",
+    ".ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+}
+
+
+def _upload_content_type(filename: str) -> str:
+    """The content type upload_file declares for a file: by its extension,
+    application/octet-stream when that names none."""
+    import mimetypes
+
+    ooxml = _OOXML_TYPES.get(Path(filename).suffix.lower())
+    return ooxml or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
 @mcp.tool()
 async def upload_file(
     file_path: str,
@@ -4298,8 +4322,6 @@ async def upload_file(
         tags: Optional comma-separated tags (e.g., 'receipt,2024,tax').
         category: Optional category (e.g., 'receipt', 'manual', 'report').
     """
-    import mimetypes
-
     try:
         client = get_client()
         namespace = client._ns(namespace)
@@ -4310,7 +4332,7 @@ async def upload_file(
             return f"Error: Not a file: {file_path}"
 
         content = p.read_bytes()
-        content_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        content_type = _upload_content_type(p.name)
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
 
         data = await client.upload_file(
@@ -4818,7 +4840,11 @@ async def import_documents_csv(
         column_mapping: Optional {csv_column: template_field} mapping.
             If omitted, auto-maps columns whose names match field names.
         namespace: Namespace. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
-        skip_errors: Skip rows that fail validation (default: true).
+        skip_errors: Report a row that fails and go on with the next
+            (default: true); false stops at the first failing row. A row
+            that meets an outage (a service the import needs not answering)
+            stops the import either way: the error is a 503 whose detail is
+            the report so far, the rows after it counted as skipped.
     """
     try:
         client = get_client()

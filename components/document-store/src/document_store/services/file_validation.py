@@ -18,9 +18,13 @@ from fastapi import HTTPException
 # (comma-separated, e.g. "image/*,application/pdf,text/*"). A pattern ending
 # in "*" matches every type that starts with what precedes it, so
 # "image/*" admits image/png and "application/vnd.openxmlformats-officedocument.*"
-# admits .docx, .xlsx and .pptx (and their templates). Macro-enabled Office
-# documents (application/vnd.ms-word.document.macroEnabled.12 and kin) are
-# deliberately NOT admitted: their types share neither prefix.
+# admits .docx, .xlsx and .pptx (and their templates). The macro-enabled
+# Office types (application/vnd.ms-word.document.macroEnabled.12 and kin)
+# share neither prefix, so an upload declaring one is refused. That is not a
+# refusal of macro-enabled files: an upload declaring application/octet-stream,
+# or no type at all (it is stored as octet-stream), is admitted whatever its
+# name, and .docm, .xlsm, .pptm and kin are not in BLOCKED_EXTENSIONS. They
+# are accepted on purpose.
 _DEFAULT_ALLOWED = (
     "image/*,"
     "audio/*,"

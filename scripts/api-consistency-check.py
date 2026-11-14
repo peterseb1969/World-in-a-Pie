@@ -53,7 +53,10 @@ EXEMPT_FUNCTION_PATTERNS = [
 
 # One-off exemptions for endpoints that are singletons by design but
 # don't fit a name-pattern bucket. The rationale lives here so future
-# readers see *why* the convention doesn't apply.
+# readers see *why* the convention doesn't apply. An entry is a function
+# NAME and exempts every endpoint so named in every service: count routes,
+# not entries, when re-auditing the list (reconcile_synonym_lifecycle_endpoint
+# alone covers three, in def-store, document-store and template-store).
 EXEMPT_FUNCTIONS = {
     "create_api_key": (
         "Singleton by design — API key provisioning happens 1-2 at a time "
@@ -156,11 +159,33 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
 # membership via FastAPI Depends rather than an inline call.
 PERMISSION_DEPENDS_NAMES = frozenset({
     "require_admin_key",            # registry: admin-group-only gate
-    # Factory gate: Depends(require_groups(["wip-admins", "wip-services"])),
-    # usually in the decorator's dependencies=[...]. Those groups bypass
-    # namespace grants by design (privileged service and operator calls).
-    "require_groups",
 })
+
+# Factory gates: they count only when CALLED with one of the named group
+# constants, usually in the decorator's dependencies=[...]:
+# Depends(require_groups(PRIVILEGED_GROUPS)). Those groups bypass namespace
+# grants by design (privileged service and operator calls). The factory
+# uncalled (Depends(require_groups) hands FastAPI the closure as the value
+# and checks nothing) or called with any other group list is not a gate.
+PERMISSION_DEPENDS_FACTORIES = {
+    "require_groups": frozenset({"PRIVILEGED_GROUPS"}),
+}
+
+
+def _is_depends_gate(gate: ast.expr) -> bool:
+    """Whether the argument of a Depends(...) is a recognised gate: a name in
+    PERMISSION_DEPENDS_NAMES, or a factory of PERMISSION_DEPENDS_FACTORIES
+    called with one of its group constants as its only argument."""
+    if isinstance(gate, ast.Name):
+        return gate.id in PERMISSION_DEPENDS_NAMES
+    if isinstance(gate, ast.Call) and isinstance(gate.func, ast.Name):
+        allowed = PERMISSION_DEPENDS_FACTORIES.get(gate.func.id)
+        return (
+            allowed is not None
+            and len(gate.args) == 1 and not gate.keywords
+            and isinstance(gate.args[0], ast.Name) and gate.args[0].id in allowed
+        )
+    return False
 
 # Path-substring patterns. Endpoints whose full route matches one of
 # these are exempt from the permission-enforcement rule. The categories:
@@ -685,10 +710,7 @@ class EndpointVisitor(ast.NodeVisitor):
                 and default.args
             ):
                 continue
-            gate = default.args[0]
-            if isinstance(gate, ast.Call):
-                gate = gate.func
-            if isinstance(gate, ast.Name) and gate.id in PERMISSION_DEPENDS_NAMES:
+            if _is_depends_gate(default.args[0]):
                 return  # Endpoint is gated via Depends.
 
         # 2. Walk the function body for any Call to a recognised helper.

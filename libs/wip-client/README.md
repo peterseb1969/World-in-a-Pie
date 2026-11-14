@@ -683,6 +683,12 @@ await client.files.hardDeleteFile('FILE-001')        // permanent: removes from 
 // Bulk delete
 await client.files.deleteFiles(['FILE-001', 'FILE-002'])
 
+// Bring soft-deleted files back under the same id (no re-upload). Status is
+// 'reactivated', or 'unchanged' for a file that was not deleted; invalid_state
+// (details.rule 'storage_missing') when the bytes are gone — upload them again.
+const back = await client.files.reactivateFile('FILE-001')
+await client.files.reactivateFiles(['FILE-001', 'FILE-002'])
+
 // Find which documents reference a file
 const refs = await client.files.getFileDocuments('FILE-001')
 

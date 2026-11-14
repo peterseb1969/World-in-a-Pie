@@ -1,6 +1,7 @@
 """Document API endpoints."""
 
 import asyncio
+from typing import NamedTuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pymongo.errors import OperationFailure
@@ -221,8 +222,10 @@ async def _bulk_create_per_namespace(
 Apply JSON Merge Patches (RFC 7396) to one or more existing documents.
 
 Each item is processed independently and a new document version is created
-on success. Errors are returned per item in the BulkResponse — the endpoint
-always returns HTTP 200, matching the bulk-first contract.
+on success. Errors are returned per item in the BulkResponse with HTTP 200,
+matching the bulk-first contract. The one exception is an outage before any
+item is patched: when write permission cannot be asked (the Registry not
+answering), the request is refused whole with 503 and nothing is written.
 
 Merge semantics:
 - Objects at the same path are deep-merged
@@ -262,11 +265,11 @@ async def patch_documents(
     # item is patched: a refused item is reported on its row and the rest of
     # the batch proceeds; an authorization outage refuses the request whole,
     # with nothing written.
-    id_to_namespace, refusals = await _batch_write_refusals(identity, items, "document_id")
+    gate = await _batch_write_refusals(identity, items, "document_id")
     results: dict[int, BulkResultItem] = {}
     allowed: list[int] = []
     for i, item in enumerate(items):
-        refusal = refusals.get(id_to_namespace.get(item.document_id, ""))
+        refusal = gate.refusal_for_id(item.document_id)
         if refusal:
             results[i] = BulkResultItem(
                 index=i, status="error", document_id=item.document_id,
@@ -284,20 +287,58 @@ async def patch_documents(
     ))
 
 
+class _BatchGate(NamedTuple):
+    """The write gate of a bulk write, asked before any item is written.
+
+    ``namespaces`` maps each document_id the items name to every namespace
+    holding a document under it: an id is unique only within its namespace,
+    so one id can name documents in several. ``refusals`` are the
+    write_refusals of all those namespaces."""
+
+    namespaces: dict[str, set[str]]
+    refusals: dict[str, tuple[str, str]]
+
+    def refusal(self, namespace: str) -> tuple[str, str] | None:
+        """The refusal for a write into ``namespace``; a namespace the gate
+        never asked about (a document stored after it ran) is refused as not
+        found, never read as allowed."""
+        if namespace not in self.asked:
+            return ("Document not found", "not_found")
+        return self.refusals.get(namespace)
+
+    def refusal_for_id(self, document_id: str) -> tuple[str, str] | None:
+        """The refusal for an item naming ``document_id`` without its
+        namespace: refused when any namespace holding that id refuses."""
+        for namespace in sorted(self.namespaces.get(document_id, ())):
+            refusal = self.refusals.get(namespace)
+            if refusal:
+                return refusal
+        return None
+
+    @property
+    def asked(self) -> set[str]:
+        return set().union(*self.namespaces.values()) if self.namespaces else set()
+
+
 async def _batch_write_refusals(
     identity: UserIdentity, items: list, id_field: str,
-) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
-    """For a bulk write: the namespace of each document the items name in
-    ``id_field`` (one query), and the write refusals for those namespaces
-    (write_refusals), asked before any item is written."""
+) -> _BatchGate:
+    """For a bulk write: the namespaces of the documents the items name in
+    ``id_field`` (one query, one row per (document_id, namespace), not per
+    version), and the write refusals for those namespaces (write_refusals),
+    asked before any item is written."""
     from ..models.document import Document as _Doc
     ids = list({getattr(item, id_field) for item in items if getattr(item, id_field)})
-    docs = await _Doc.find({"document_id": {"$in": ids}}).to_list() if ids else []
-    id_to_namespace = {d.document_id: d.namespace for d in docs}
-    refusals = await write_refusals(
-        identity, set(id_to_namespace.values()), "Document not found"
-    )
-    return id_to_namespace, refusals
+    namespaces: dict[str, set[str]] = {}
+    if ids:
+        async for row in _Doc.get_motor_collection().aggregate([
+            {"$match": {"document_id": {"$in": ids}}},
+            {"$group": {"_id": {"document_id": "$document_id", "namespace": "$namespace"}}},
+        ]):
+            namespaces.setdefault(row["_id"]["document_id"], set()).add(row["_id"]["namespace"])
+    gate = _BatchGate(namespaces, {})
+    refusals = await write_refusals(identity, gate.asked, "Document not found")
+    return _BatchGate(namespaces, refusals)
 
 
 async def _patch_allowed(
@@ -613,10 +654,14 @@ async def get_document_versions(
     if not versions:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Check namespace — fetch the document to get its namespace
+    # Check namespace — fetch the document to get its namespace. A document
+    # gone between the two reads (a hard delete) is not found: the versions
+    # are never returned without the read check.
     doc = await service.get_document(document_id)
-    if doc:
-        await check_readable(identity, doc.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    missing = await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id")
+    if doc is None:
+        raise HTTPException(status_code=404, detail=missing)
+    await check_readable(identity, doc.namespace, missing)
 
     return versions
 
@@ -893,7 +938,7 @@ async def delete_documents(
     service = get_document_service()
     # Write permission on each document's own namespace, asked before any item
     # is deleted (see patch_documents).
-    _, refusals = await _batch_write_refusals(identity, items, "id")
+    gate = await _batch_write_refusals(identity, items, "id")
     deleted_with = await _hard_delete_exemptions(service, items, identity)
     results = []
     for i, item in enumerate(items):
@@ -913,7 +958,9 @@ async def delete_documents(
             if not doc:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
                 continue
-            refusal = refusals.get(doc.namespace)
+            # The delete names the document by id alone: refused when its
+            # namespace, or any other namespace holding that id, refuses.
+            refusal = gate.refusal(doc.namespace) or gate.refusal_for_id(item.id)
             if refusal:
                 results.append(BulkResultItem(
                     index=i, status="error", id=item.id, error=refusal[0], error_code=refusal[1],

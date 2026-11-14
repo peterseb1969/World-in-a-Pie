@@ -410,3 +410,25 @@ async def test_a_merges_dry_run_reports_the_blobs_of_the_files_it_inserts():
     assert "dry run — would upload 1 file blob(s)" in [e.message for e in events]
     [warning] = _warnings(events)
     assert "F-MISSING" in warning and "F-CORRUPT" not in warning
+
+
+@pytest.mark.asyncio
+async def test_a_file_id_that_cannot_name_a_member_is_left_out(namespace, tmp_path):
+    # CASE-1274 (d6cc8484 R2): an id that is not one path segment failed the
+    # whole backup; that file is left out and named, the rest goes on.
+    client, ns = namespace
+    await client[_DB_DOCUMENT_STORE]["files"].insert_one(
+        {"file_id": "a/b", "storage_key": "F-GOOD", "namespace": ns, "status": "active",
+         "checksum": _sha(GOOD)},
+    )
+    events: list = []
+    engine = DirectBackupEngine(client, _Storage(), events.append)
+    output = tmp_path / "b.zip"
+    writer = ArchiveWriter(output, default_namespace=ns)
+    dropped = await engine._backup_blobs(writer, ns, output, 0, 4)
+    writer.write(Manifest(namespace=ns, counts=EntityCounts(), include_files=True))
+
+    assert "a/b" in dropped
+    with ArchiveReader(output) as reader:
+        assert reader.list_blobs() == ["F-GOOD"]
+    assert any("a/b" in w and "cannot name an archive member" in w for w in _warnings(events))

@@ -149,7 +149,7 @@ Codes defined by `PATCH /documents`:
 | `error_code` | When |
 |--------------|------|
 | `not_found` | Document does not exist or has been soft-deleted, or lives in a namespace the caller cannot see (same text, so its existence is not confirmed) |
-| `forbidden` | Caller can read the document's namespace but lacks write permission on it. `DELETE /documents`, `PATCH /files` and `DELETE /files` report these two refusals the same way, per item, while the rest of the batch proceeds; an authorization outage refuses the request whole (503) before any item is written |
+| `forbidden` | Caller can read the document's namespace but lacks write permission on it. `DELETE /documents`, `PATCH /files`, `DELETE /files` and `POST /files/reactivate` report these two refusals the same way, per item, while the rest of the batch proceeds; an authorization outage refuses the request whole (503) before any item is written |
 | `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed (a term or reference identity field changes only when it names a different referent; another alias of the same term is accepted) |
 | `append_only` | Template has empty `identity_fields` (append-only) — the document has no logical identity, only a surrogate `document_id`, so it cannot be PATCHed. The error carries remediation: create a new document, or declare `identity_fields` on the template (CASE-478) |
 | `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
@@ -697,7 +697,7 @@ Data is never physically deleted. All delete operations set `status: "inactive"`
 
 **Exception: Files.** Binary files stored in the object store (Garage) support a two-step purge: soft-delete (`DELETE /files` → sets status to `inactive`) followed by hard-delete (`DELETE /files/{id}/hard` → permanently removes from storage and database). Hard-delete only works on files already in `inactive` status. This exists because binary storage has real cost, unlike soft-deleted MongoDB documents which are negligible.
 
-**Files come back two ways.** `POST /files/reactivate` (bulk, `[{id}]`) returns soft-deleted files to service under the same `file_id`: per item `reactivated`, or `unchanged` for a file that was not inactive; `invalid_state` with `details.rule: storage_missing` when the object store no longer holds the bytes. Uploading a soft-deleted file's bytes again (`POST /files`) revives it too — the bytes are written again and the metadata fields the upload sends replace the stored ones. A revived file is `active` while documents still reference it (a force-delete keeps the count), `orphan` otherwise.
+**Files come back two ways.** `POST /files/reactivate` (bulk, `[{id}]`) returns soft-deleted files to service under the same `file_id`: per item `reactivated`, or `unchanged` for a file that was not inactive; `invalid_state` with `details.rule: storage_missing` when the object store no longer holds the bytes. Uploading a soft-deleted file's bytes again (`POST /files`) revives it too — the bytes are written again and the metadata fields the upload sends with a value replace the stored ones (a field sent empty reads as not sent and keeps its value; `PATCH /files` clears one). A revived file is `active` while documents still reference it (a force-delete keeps the count), `orphan` otherwise.
 
 ---
 

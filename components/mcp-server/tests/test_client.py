@@ -194,7 +194,8 @@ async def test_import_documents():
 
 @pytest.mark.asyncio
 async def test_import_documents_default_options():
-    """import_documents uses default namespace and skip_errors=false."""
+    """import_documents uses default namespace and skip_errors=true, the
+    endpoint's own default."""
     mock_http = _mock_http(_mock_response({"total_rows": 0}))
 
     client = _make_client()
@@ -209,7 +210,7 @@ async def test_import_documents_default_options():
 
     data = mock_http.post.call_args.kwargs["data"]
     assert data["namespace"] == "wip"
-    assert data["skip_errors"] == "false"
+    assert data["skip_errors"] == "true"
 
 
 # =========================================================================

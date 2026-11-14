@@ -300,17 +300,20 @@ async def _authorize_archive_restore(
         # wip_archive import) rather than importing wip_archive here.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        # The exception text can name this install's scratch paths; it goes
+        # to the log, and the caller gets a fixed message.
         logger.exception("Could not read restore archive %s", archive_path)
         raise HTTPException(
             status_code=500,
-            detail=f"Could not read the archive to authorize the restore: {exc}",
+            detail="Could not read the archive to authorize the restore; "
+                   "the service log has the cause",
         ) from exc
 
-    if not manifest.format_version.startswith("3"):
+    if not manifest.is_v3():
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Archive is format v{manifest.format_version} — this "
+                f"Archive is format {manifest.format_label()} — this "
                 "endpoint restores v3 archives. Convert it first: "
                 "python -m wip_toolkit convert-archive <src> <dst>"
             ),
@@ -926,11 +929,12 @@ def _restore_write_targets(
     # The manifest's prefixes are the namespaces this restore writes; a
     # single-namespace archive derives prefixes == [effective_target], so
     # this one expression covers both the single- and multi-namespace
-    # paths. Only an unreadable manifest leaves prefixes empty — fall back
-    # to the scalar namespace so the field is never silently blank. The
-    # scalar `namespace` stays the URL auth anchor here — each archived
-    # namespace restores into itself, so no single one of them IS the job.
-    return prefixes or [effective_target or namespace], effective_target or namespace
+    # paths. prefixes is never empty here: _authorize_archive_restore
+    # refuses an archive that names no namespace (400) and one it cannot
+    # read. The scalar `namespace` stays the URL auth anchor here — each
+    # archived namespace restores into itself, so no single one of them IS
+    # the job.
+    return prefixes, effective_target or namespace
 
 
 # ---------------------------------------------------------------------------
@@ -1412,9 +1416,9 @@ async def _insert_restore_from_job(
             job_id=new_job_id,
             kind=BackupJobKind.RESTORE,
             namespace=effective_target or src.namespace,
-            # Same never-blank rule as the upload restore: manifest prefixes,
-            # falling back to the scalar namespace on an unreadable manifest.
-            namespaces=prefixes or [effective_target or src.namespace],
+            # The namespaces it writes, as for the upload restore: never
+            # empty, _authorize_archive_restore refuses an archive naming none.
+            namespaces=prefixes,
             archive_path=f"{new_job_id}.zip" if object_copied else str(scratch),
             archive_backend=BACKEND_MINIO if object_copied else "local",
             archive_size=scratch.stat().st_size,
