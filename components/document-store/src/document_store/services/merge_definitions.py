@@ -905,10 +905,14 @@ class DefinitionsPlanner:
 
         An added name loses ``preferred`` where the target already prefers a
         name of the same type and language, since a group has at most one.
+        A target term that is not active gains none: its names resolve
+        nowhere, and added they would clash under unique_names the day it is
+        revived. Its names stand and the difference is reported, as without
+        extend_terminologies.
         """
         held = _name_keys(target)
         missing = [n for n in _names(archive) if _name_key(n) not in held]
-        if not missing or not self._extend_terminologies:
+        if not missing or not self._extend_terminologies or not _is_active(target):
             return cosmetic, []
         added = _names_to_add(missing, target)
         plan.extend_names.append({

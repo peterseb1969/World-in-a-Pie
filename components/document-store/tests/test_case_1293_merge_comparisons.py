@@ -142,6 +142,28 @@ class TestTermNames:
         assert plan.target_wins == []
 
     @pytest.mark.asyncio
+    async def test_a_deprecated_target_term_gains_no_names(self, db):
+        """Its names resolve nowhere, and added they would clash under
+        unique_names the day it is revived: the target's names stand and the
+        difference is reported (CASE-1293 #6 Q2, Peter: skip)."""
+        await _seed(db, "terminologies", [_terminology("T-lov")])
+        await _seed(db, "terms", [_term(
+            "T-term", "T-lov", "AuthorAssist", [{"value": "wip-aa"}], status="deprecated",
+        )])
+        plan = await _planner(db, extend_terminologies=True).plan(
+            {
+                "terminologies": [_terminology("A-lov")],
+                "terms": [_term("A-term", "A-lov", "AuthorAssist",
+                                [{"value": "authorassist"}, {"value": "wip-aa"}])],
+            },
+            NAMESPACE,
+        )
+
+        assert plan.compatible, plan.incompatibilities
+        assert plan.extend_names == []
+        assert any("names" in w.fields for w in plan.target_wins), plan.target_wins
+
+    @pytest.mark.asyncio
     async def test_the_targets_own_extra_names_are_reported_as_kept(self, db):
         plan = await self._plan(
             db, [{"value": "a"}], [{"value": "b"}], extend_terminologies=True,

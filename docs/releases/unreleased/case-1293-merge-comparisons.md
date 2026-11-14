@@ -25,6 +25,8 @@ that agreed:
   term or name it adds would give that name to a second active term of a
   terminology that holds it, matched and reported as def-store would. A name
   two of the target's terms already share does not refuse the merge.
+- Under `extend_terminologies`, a deprecated target term gains none of the
+  archive's names: its names stand and the difference is reported.
 
 A merge whose document mappings never settle is now refused ("did not
 settle") as soon as the mappings repeat, before anything is written.
