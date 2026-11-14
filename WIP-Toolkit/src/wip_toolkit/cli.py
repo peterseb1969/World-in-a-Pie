@@ -1368,6 +1368,9 @@ def restore(
 @click.option("--all-namespaces", is_flag=True, help="Back up every namespace")
 @click.option("--include-files", is_flag=True, help="Include file blobs in the archive")
 @click.option("--skip-documents", is_flag=True, help="Definitions only")
+@click.option("--include-inactive-templates", is_flag=True,
+              help="Keep every inactive template version. By default the engine "
+                   "leaves out the ones nothing in the archive needs")
 @click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
 @click.option("--timeout", default=3600.0, show_default=True,
               help="Seconds to wait for the job before giving up (it keeps running)")
@@ -1381,15 +1384,18 @@ def backup(
     all_namespaces: bool,
     include_files: bool,
     skip_documents: bool,
+    include_inactive_templates: bool,
     force: bool,
     timeout: float,
     as_json: bool,
 ) -> None:
     """Back up a namespace with the server's backup engine and download it.
 
-    The engine reads the databases directly and writes a complete,
-    restorable archive: every entity in every status and version, with the
-    Registry rows and the referents. This command starts the job, follows
+    The engine reads the databases directly and writes a restorable archive:
+    every entity in every status, every Registry row and referent, and every
+    template version the archive needs. An inactive template version nothing
+    pins is left out unless --include-inactive-templates; the job result says
+    how many were. This command starts the job, follows
     it and saves the archive to OUTPUT_PATH. Shape it afterwards with
     filter, prune, latest-only or strip-blobs. Needs admin on every
     namespace backed up. Exits 1 when the job fails or does not finish
@@ -1409,7 +1415,8 @@ def backup(
         console.print(f"[red]Output exists:[/red] {output} (pass --force to overwrite)")
         sys.exit(1)
     body = build_request(namespaces=list(also) or None, all_namespaces=all_namespaces,
-                         include_files=include_files, skip_documents=skip_documents)
+                         include_files=include_files, skip_documents=skip_documents,
+                         include_inactive_templates=include_inactive_templates)
 
     config = ctx.obj["config"]
     with WIPClient(config) as client:

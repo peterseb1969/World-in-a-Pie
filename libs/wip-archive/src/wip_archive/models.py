@@ -127,9 +127,13 @@ class Manifest(BaseModel):
     namespace: str = ""
     namespace_config: NamespaceConfig | None = None
     source_install: dict[str, Any] | None = None
-    # include_inactive was removed from the manifest: the backup engine always
-    # exports every entity in every status, so the field carried no signal.
-    # Old manifests that recorded it still parse (extra keys are ignored).
+    # include_inactive was removed from the manifest: the backup exports every
+    # entity in every status a document, template or term still needs, so the
+    # flag carried no signal about what an archive holds. What it does skip is
+    # stated by the fields that remain: include_files for the bytes,
+    # include_all_versions for versions, and each namespace's
+    # template_versions_left_out for the template versions dropped because
+    # nothing in the archive pins them.
     include_files: bool = False
     include_all_versions: bool = False
     closure: ClosureInfo = Field(default_factory=ClosureInfo)
