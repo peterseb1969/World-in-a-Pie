@@ -112,3 +112,62 @@ def test_an_ambiguous_answer_cut_short_does_not_state_an_exact_count():
     assert _match_count(full, full) == (f"more than {_RESOLVE_CANDIDATE_LIMIT}", True)
     assert _match_count(full, full[:4]) == ("4 or more", True)
     assert _match_count(full[:3], full[:3]) == ("3", False)
+
+
+# ── A resume never deletes a namespace that holds the name again ────────
+
+
+async def _restored_under(prefix: str, namespace_id: str) -> None:
+    """The name created again, as an ID-preserving restore does: the new
+    namespace takes ``namespace_id``, with an entry of its own."""
+    await Namespace(prefix=prefix, namespace_id=namespace_id, description="restored").insert()
+    await _entry_in(prefix)
+
+
+async def _entry_in(prefix: str) -> None:
+    from registry.models.entry import RegistryEntry
+
+    await RegistryEntry(
+        entry_id=f"kept-{prefix}", namespace=prefix, entity_type="terms",
+        primary_composite_key={"value": "kept"}, primary_composite_key_hash=f"h-{prefix}",
+        status="active", created_by="test",
+    ).insert()
+
+
+async def _entries(prefix: str) -> int:
+    from registry.models.entry import RegistryEntry
+
+    return await RegistryEntry.find({"namespace": prefix}).count()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed_with_warnings", "failed", "in_progress"])
+async def test_a_resume_onto_a_namespace_restored_under_its_id_is_refused(client, auth_headers, status):
+    """A deletion that completed with warnings does not hold the name, so an
+    ID-preserving restore re-creates the namespace under the same id. A
+    resume then ran the steps by namespace against the restored data, and
+    the id comparison could not tell. It is refused, and nothing is deleted."""
+    prefix = f"resume-{uuid.uuid4().hex[:8]}"
+    await _journal(prefix, status)
+    await _restored_under(prefix, "old-id")
+
+    r = await client.post(f"{NS}/{prefix}/resume-delete", headers=auth_headers)
+
+    assert r.status_code == 409, r.text
+    assert "exists again" in r.json()["detail"]
+    assert await _entries(prefix) == 1
+    assert (await Namespace.find_one({"prefix": prefix})).status == "active"
+
+
+@pytest.mark.asyncio
+async def test_a_resume_with_another_namespace_under_the_name_keeps_its_data(client, auth_headers):
+    """A namespace under another id is told apart by its id: the resume goes
+    ahead and keeps the new namespace's data, as before."""
+    prefix = f"resume-{uuid.uuid4().hex[:8]}"
+    await _journal(prefix, "completed_with_warnings")
+    await _restored_under(prefix, "new-id")
+
+    r = await client.post(f"{NS}/{prefix}/resume-delete", headers=auth_headers)
+
+    assert r.status_code == 200, r.text
+    assert await _entries(prefix) == 1

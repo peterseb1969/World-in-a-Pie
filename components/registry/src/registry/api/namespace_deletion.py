@@ -173,7 +173,9 @@ async def deletion_status(
         400: {"description": "A namespace locked with no journal has inbound references "
               "that need force"},
         404: {"description": "No unfinished deletion of this namespace"},
-        409: {"description": "The deletion is running already"},
+        409: {"description": "The deletion is running already, or a namespace holds "
+              "the prefix again with the deleted one's id (an ID-preserving restore): "
+              "resuming would delete its data"},
         503: {"description": "The journal of a namespace locked with no journal could not "
               "be built; nothing was deleted, and it stays locked"},
     },
@@ -194,7 +196,9 @@ async def resume_deletion(
     reporting rows), and runs every step not completed. A namespace locked
     with no journal gets one, requested by the caller; its inbound references
     need force as they do for a deletion. 409 while the deletion is running
-    already.
+    already, and while a namespace holds the prefix again under the deleted
+    one's id (an ID-preserving restore): every step deletes by namespace, so
+    resuming would delete its data.
     There is no abandon: a partly deleted namespace is finished, not undone.
     """
     try:

@@ -63,6 +63,36 @@ _RESUMABLE = ("in_progress", "failed", "completed_with_warnings")
 _HOLDS_PREFIX = OPEN_STATUSES
 
 
+async def _refuse_resume_onto_live_namespace(journal: DeletionJournal) -> None:
+    """Refuse to resume a deletion while a namespace holds its prefix again.
+
+    A deletion that completed with warnings does not hold the prefix
+    (_HOLDS_PREFIX), so the name can be created again, and an ID-preserving
+    restore gives the new namespace the deleted one's namespace_id and file
+    ids. Every step deletes by namespace: run again, the degraded steps would
+    delete the restored namespace's file bytes and reporting schema, and
+    _namespace_recreated, which compares namespace ids, cannot tell. The
+    deletion's own lock is not such a namespace (it is the one being deleted),
+    and one with another namespace_id is left to _namespace_recreated.
+    What the deletion left behind can no longer be told from the live
+    namespace's data; to remove both, delete the live namespace."""
+    live = await Namespace.find_one({"prefix": journal.namespace})
+    if live is None or live.status == "locked":
+        return
+    if journal.namespace_id and live.namespace_id and live.namespace_id != journal.namespace_id:
+        # Another namespace under the name: _namespace_recreated keeps its
+        # data (every remaining step is marked kept), so the resume is safe.
+        return
+    raise DeletionRefused(
+        f"Namespace '{journal.namespace}' exists again, so its earlier deletion "
+        f"({journal.status}) cannot be resumed: every step deletes by namespace and "
+        "would delete the live namespace's data. What that deletion left behind can "
+        "no longer be told apart from it; to remove both, delete the namespace "
+        f"(DELETE /api/registry/namespaces/{journal.namespace}).",
+        409,
+    )
+
+
 async def unfinished_deletion(prefix: str) -> str | None:
     """Why ``prefix`` may not be created now, or None when it may: a
     deletion of a namespace that held it has steps still to run."""
@@ -901,6 +931,10 @@ class NamespaceDeletionService:
         need ``force`` as they do for a deletion. There is
         no other way out of a deletion: a namespace partly deleted cannot be
         made whole, so the deletion is finished, never abandoned.
+
+        Refused (409) while a namespace holds the prefix again
+        (_refuse_resume_onto_live_namespace): every step deletes by
+        namespace, so it would delete the live namespace's data.
         """
         journal = await DeletionJournal.find_one(
             {"namespace": prefix, "status": {"$in": list(_RESUMABLE)}},
@@ -913,6 +947,7 @@ class NamespaceDeletionService:
                 prefix, len(journal.steps),
             )
         else:
+            await _refuse_resume_onto_live_namespace(journal)
             if journal.status != "in_progress":
                 logger.warning(
                     "Resuming the %s deletion of namespace '%s'", journal.status, prefix,
