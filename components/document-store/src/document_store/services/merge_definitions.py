@@ -118,7 +118,8 @@ _DEFINITION_LIFECYCLE_FIELDS = frozenset({"status"})
 # set (see _name_key); under extend_terminologies the target gains the names
 # only the archive has. unique_names is judged by its effect instead (see
 # DefinitionsPlanner._check_unique_names): a difference refuses only where
-# the merged terms would break the target's setting.
+# the names the merge adds would break the setting of the terminology the
+# terms land in (the target's, an externally mapped one, or one it adds).
 _COSMETIC_FIELDS = frozenset({
     "label", "description", "aliases", "names", "unique_names",
 })
@@ -502,8 +503,10 @@ def _name_clashes(
     existing: list[dict[str, Any]],
     added: list[tuple[str, str]],
 ) -> list[str]:
-    """The names, as the terms store them, that the terminology's active
-    terms (``existing``) and the additions would give to more than one term.
+    """The names, as the terms store them, that the additions would give to
+    more than one of the terminology's active terms (``existing``) or added
+    terms. A name two target terms already share is the target's own state
+    and does not refuse the merge.
 
     Names are matched as def-store matches them (lower-cased unless the
     terminology is case_sensitive) and reported as stored: every spelling
@@ -524,14 +527,29 @@ def _name_clashes(
         active.add(str(row.get("term_id")))
         for text in _term_texts(row):
             bear(str(row.get("term_id")), text)
-    for bearer, text in added:
-        if bearer.startswith("new:") or bearer in active:
-            bear(bearer, text)
-    return sorted(
-        text
-        for folded, owners in bearers.items() if len(owners) > 1
-        for text in spellings[folded]
-    )
+    live = _live_additions(added, active)
+    for bearer, text in live:
+        bear(bearer, text)
+    # Only a name the merge adds can clash: two target terms that already
+    # share one are the target's own state, which the merge does not change.
+    return _clashing_spellings(bearers, spellings, {fold(text) for _, text in live})
+
+
+def _live_additions(
+    added: list[tuple[str, str]], active: set[str]
+) -> list[tuple[str, str]]:
+    """The additions that land on a term that resolves: a new one, or an
+    active term of the target's."""
+    return [(b, t) for b, t in added if b.startswith("new:") or b in active]
+
+
+def _clashing_spellings(
+    bearers: dict[str, set[str]], spellings: dict[str, set[str]], touched: set[str],
+) -> list[str]:
+    """Every stored spelling of each folded name in ``touched`` that more
+    than one term would bear, sorted."""
+    shared = [f for f in touched if len(bearers.get(f, ())) > 1]
+    return sorted(text for folded in shared for text in spellings[folded])
 
 
 def _unique_names_broken(terminology_value: str, clashes: list[str]) -> Incompatibility:
@@ -922,11 +940,16 @@ class DefinitionsPlanner:
             return
         settings = await self._terminology_settings(plan, list(additions))
         retiring = {str(r.get("term_id")) for r in plan.retire_terms}
+        adding = {str(row.get("terminology_id")) for row in plan.to_add["terminologies"]}
         for terminology, added in additions.items():
             setting = settings.get(terminology)
             if not setting or not setting.get("unique_names"):
                 continue
-            existing = await self._active_terms(terminology, retiring)
+            # A terminology this merge adds has no terms here yet.
+            existing = (
+                [] if terminology in adding
+                else await self._active_terms(setting, terminology, retiring)
+            )
             clashes = _name_clashes(setting, existing, added)
             if clashes:
                 plan.incompatibilities.append(
@@ -950,20 +973,23 @@ class DefinitionsPlanner:
         db_name, coll_name = self._collection_map["terminologies"]
         async for row in self._mongo[db_name][coll_name].find(
             {"terminology_id": {"$in": stored}},
-            {"terminology_id": 1, "value": 1, "unique_names": 1, "case_sensitive": 1},
+            {"terminology_id": 1, "namespace": 1, "value": 1, "unique_names": 1,
+             "case_sensitive": 1},
         ):
             settings[str(row["terminology_id"])] = row
         return settings
 
     async def _active_terms(
-        self, terminology_id: str, retiring: set[str]
+        self, setting: dict[str, Any], terminology_id: str, retiring: set[str]
     ) -> list[dict[str, Any]]:
-        """The target's active terms of one terminology (value, names), less
-        those this merge retires."""
+        """The target's active terms of one stored terminology (value, names),
+        less those this merge retires. Read in the terminology's own
+        namespace, which every terms index leads with: an externally mapped
+        terminology can live outside the namespace merged into."""
         db_name, coll_name = self._collection_map["terms"]
         return [
             row async for row in self._mongo[db_name][coll_name].find(
-                {"terminology_id": terminology_id},
+                {"namespace": setting.get("namespace"), "terminology_id": terminology_id},
                 {"term_id": 1, "value": 1, "names": 1, "status": 1},
             )
             if _is_active(row) and str(row.get("term_id")) not in retiring

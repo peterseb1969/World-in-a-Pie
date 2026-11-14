@@ -80,13 +80,15 @@ the archive's copy has, and the report names the names kept and added. A
 term's names compare as a set, one per (value, type, language), each name
 whole: a name whose description, source or preferred flag differs is a
 difference too, and the target's copy stands. A terminology's
-`unique_names` is judged by its effect, the way def-store judges a term
-write: where the terminology the terms land in holds it (the target's, an
-externally mapped one, or one the merge adds), the merge refuses only if the
-terms and names it adds would give one name to two active terms — terms the
-target retired, or this merge retires, bear none — matched as def-store
-matches (lower-cased unless `case_sensitive`) and reported as stored;
-otherwise the target's setting stands and the difference is reported.
+`unique_names` is judged by its effect, as def-store judges a term write
+against the terms of the terminology's own namespace: where the terminology
+the terms land in holds it (the target's, an externally mapped one, or one the
+merge adds), the merge refuses only if a term or name it adds would give that
+name to a second active term — terms the target retired, or this merge
+retires, bear none, and a name two target terms already share is the target's
+own state and refuses nothing — matched as def-store matches (lower-cased
+unless `case_sensitive`) and reported as stored; otherwise the target's
+setting stands and the difference is reported.
 
 Both sides are compared as their models read them: a field a row lacks
 (written before the field existed) counts as the model's default, nested

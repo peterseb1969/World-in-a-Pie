@@ -247,6 +247,66 @@ class TestUniqueNames:
         assert issue.detail["unique_names"]["name_collisions"] == ["Male", "male"]
 
     @pytest.mark.asyncio
+    async def test_a_name_two_target_terms_already_share_does_not_refuse(self, db):
+        # The target's own duplicate (made before unique_names, or by a
+        # write that bypassed it) is not the merge's doing: adding an
+        # unrelated term must not be refused, nor blamed for it.
+        await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
+        await _seed(db, "terms", [
+            _term("T-m", "T-lov", "M", [{"value": "male"}]),
+            _term("T-x", "T-lov", "X", [{"value": "Male"}]),
+        ])
+        plan = await _planner(db, extend_terminologies=True).plan(
+            {
+                "terminologies": [_terminology("A-lov", unique_names=True)],
+                "terms": [_term("A-f", "A-lov", "F", [{"value": "female"}])],
+            },
+            NAMESPACE,
+        )
+
+        assert plan.compatible, plan.incompatibilities
+
+    @pytest.mark.asyncio
+    async def test_a_name_added_to_a_shared_name_still_refuses(self, db):
+        await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
+        await _seed(db, "terms", [
+            _term("T-m", "T-lov", "M", [{"value": "male"}]),
+            _term("T-x", "T-lov", "X", [{"value": "Male"}]),
+        ])
+        plan = await _planner(db, extend_terminologies=True).plan(
+            {
+                "terminologies": [_terminology("A-lov", unique_names=True)],
+                "terms": [_term("A-y", "A-lov", "Y", [{"value": "MALE"}])],
+            },
+            NAMESPACE,
+        )
+
+        [issue] = plan.incompatibilities
+        assert issue.detail["unique_names"]["name_collisions"] == ["MALE", "Male", "male"]
+
+    @pytest.mark.asyncio
+    async def test_terms_are_read_in_the_terminologys_own_namespace(self, db):
+        # Another namespace's term with the same terminology_id (ids are
+        # unique per namespace only in the schema) is not this
+        # terminology's term.
+        await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
+        db_name, coll_name = COLLECTION_MAP["terms"]
+        other = {**_term("O-m", "T-lov", "M", [{"value": "male"}]), "namespace": "c1293-elsewhere"}
+        await db[db_name][coll_name].insert_one(other)
+        try:
+            plan = await _planner(db, extend_terminologies=True).plan(
+                {
+                    "terminologies": [_terminology("A-lov", unique_names=True)],
+                    "terms": [_term("A-x", "A-lov", "X", [{"value": "male"}])],
+                },
+                NAMESPACE,
+            )
+        finally:
+            await db[db_name][coll_name].delete_many({"namespace": "c1293-elsewhere"})
+
+        assert plan.compatible, plan.incompatibilities
+
+    @pytest.mark.asyncio
     async def test_a_name_only_a_retired_term_bears_does_not_refuse(self, db):
         await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
         await _seed(db, "terms", [

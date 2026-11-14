@@ -21,9 +21,10 @@ that agreed:
 - An edge type's endpoint lists and a field's `target_templates` compare as
   the templates they name; the stored `source_ref`/`target_ref` constraint and
   a term's `terminology_value` are no longer compared.
-- `unique_names` is judged by its effect: the merge refuses only where the
-  terms and names it adds would give one name to two active terms of a
-  terminology that holds it, matched and reported as def-store would.
+- `unique_names` is judged by its effect: the merge refuses only where a
+  term or name it adds would give that name to a second active term of a
+  terminology that holds it, matched and reported as def-store would. A name
+  two of the target's terms already share does not refuse the merge.
 
 A merge whose document mappings never settle is now refused ("did not
 settle") as soon as the mappings repeat, before anything is written.
