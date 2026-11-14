@@ -3,21 +3,22 @@
 `remove-module` drops workloads from the render: `remove-module garage` takes
 the StatefulSet and its 50Gi claim out of the tree, and on k8s workloads leave
 only through the full apply's prune. The verb never passed `removes_workloads`,
-so it kept `prune_volume_claims` at its default True and that prune ran with
-PersistentVolumeClaim on the allowlist — the module's volume went with it, the
-storage class's reclaim policy deciding whether the bytes survived, while the
-verb's own help says "without dropping anything". `remove-app` already refuses
-to prune claims for exactly this reason; a removal is a removal.
+so that prune ran with PersistentVolumeClaim on its allowlist — the module's
+volume went with it, the storage class's reclaim policy deciding whether the
+bytes survived, while the verb's own help says "without dropping anything".
+`remove-app` already refused to prune claims for exactly this reason; a removal
+is a removal. (The keep is now the rule for every apply, so no verb carries a
+flag for it — see test_case_1229_review3.)
 
 Layers, each driven through the CLI verb so a call site that forgets the signal
 fails rather than the helper that reads it:
 - the verb's kwargs to the mutation lifecycle,
-- the lifecycle's kwargs to `apply_k8s`,
+- what the verb tells the operator before a whole-install apply,
 - the real `apply_k8s` → the exact `kubectl apply --prune` allowlist, plus the
   kept claim named with the command that deletes it deliberately.
 
-Guards keep the fix narrow: adding a module still prunes as before, and compose
-has no prune and no such flag to pass.
+Guards keep the fix narrow: adding a module deletes no workload and prints no
+removal notice, and compose has no prune and no k8s-only kwarg to pass.
 """
 
 from __future__ import annotations
@@ -144,10 +145,15 @@ def _run_verb(
 
 
 class TestModuleRemovalKeepsClaims:
-    def test_the_apply_is_told_to_keep_volume_claims(self, tmp_path: Path) -> None:
-        """A removal that does not say so runs the prune with claims allowed."""
-        k8s, _ = _run_verb(tmp_path)
-        assert k8s.call_args.kwargs["prune_volume_claims"] is False
+    def test_the_removal_announces_the_whole_install_apply(self, tmp_path: Path) -> None:
+        """The verb comes to the lifecycle with no scope of its own, so the
+        notice cannot be gated on a scope being present: without it the operator
+        watches a whole-install apply that waits for every workload and re-runs
+        the post-install hooks with no advance word."""
+        _, out = _run_verb(tmp_path)
+        assert "Applying the whole install (with prune)" in out
+        assert "removed workloads are deleted" in out
+        assert "Volume claims are kept" in out
 
     def test_the_apply_still_deletes_the_workloads(self, tmp_path: Path) -> None:
         """Keeping the claim must not cost the removal its prune: without the
@@ -175,7 +181,9 @@ class TestNonRemovalsAreUnchanged:
     """The signal marks a removal. Adding a module deletes no workload, and
     compose has no prune and takes no such flag."""
 
-    def test_add_module_keeps_default_pruning(self, tmp_path: Path) -> None:
+    def test_add_module_applies_the_whole_tree_and_calls_it_no_removal(
+        self, tmp_path: Path
+    ) -> None:
         deployment = _k8s_deployment(apps=[])
         _persist_deployment(deployment, tmp_path, repo_root=REPO_ROOT)
         result = MagicMock(healthy=True, post_install_skipped=[], health_checked=True)
@@ -196,10 +204,18 @@ class TestNonRemovalsAreUnchanged:
                  "--repo-root", str(REPO_ROOT)],
             )
         assert res.exit_code == 0, res.output + repr(res.exception)
-        assert "prune_volume_claims" not in k8s.call_args.kwargs
+        # A module verb is never scoped, so this was the whole tree anyway — but
+        # nothing was removed, so the removal notice stays silent.
+        assert "services_scope" not in k8s.call_args.kwargs
+        assert "removed workloads are deleted" not in res.output
 
-    def test_a_compose_module_removal_passes_no_prune_flag(self, tmp_path: Path) -> None:
-        """`apply_compose` has no such parameter; the removal must not grow one."""
-        compose, _ = _run_verb(tmp_path, target="compose")
-        assert "prune_volume_claims" not in compose.call_args.kwargs
+    def test_a_compose_module_removal_takes_no_k8s_kwarg(self, tmp_path: Path) -> None:
+        """`apply_compose` has no prune; the removal must not grow a k8s-only
+        parameter on its way through the shared lifecycle."""
+        compose, out = _run_verb(tmp_path, target="compose")
+        assert set(compose.call_args.kwargs) == {
+            "deployment", "components", "apps", "tree", "install_dir",
+            "services_scope",
+        }
         assert compose.call_args.kwargs["services_scope"] is None
+        assert "Applying the whole install (with prune)" not in out

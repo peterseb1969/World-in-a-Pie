@@ -17,8 +17,11 @@ K8s target (`apply_k8s`):
      scoped and pruning could affect peer WIP namespaces).
   4. `kubectl apply -R -f . --prune --selector=app.kubernetes.io/part-of=wip`
      with an explicit allowlist of pruneable kinds (Deployments, Services,
-     ConfigMaps, Secrets, PVCs, StatefulSets, Ingresses). Prune removes
+     ConfigMaps, Secrets, StatefulSets, Ingresses). Prune removes
      resources from the previous install that aren't in the current render.
+     Volume claims are deliberately not pruneable: no apply deletes a volume,
+     and the claims the render no longer names are printed with the command
+     that removes one.
   5. Optionally wait for every workload's rollout to finish via
      `kubectl rollout status`.
   6. Run post-install hooks via `kubectl exec` against a ready pod.
@@ -1603,14 +1606,16 @@ def apply_k8s(
     tree: FileTree,
     install_dir: Path,
     services_scope: list[str] | None = None,
-    prune_volume_claims: bool = True,
 ) -> ApplyResult:
     """Materialize the tree and run `kubectl apply`.
 
-    `prune_volume_claims=False` (a removal: remove-app, remove-module) keeps
-    PersistentVolumeClaims out of the full apply's prune, so removing a workload
-    never deletes a volume and its data; the claims the render no longer
-    names are printed, kept.
+    No k8s apply prunes a volume claim: PersistentVolumeClaim is off the full
+    apply's prune allowlist, so a render that dropped a workload never deletes
+    the claim it declared or the data behind it. After a whole-tree apply the
+    claims the render no longer names are printed, each with the
+    `kubectl delete pvc <name> -n <ns>` command that removes it. A claim
+    leaves by that command or by `nuke --remove-data`, which deletes the
+    namespace and the volumes bound to its claims.
 
     Honors `deployment.spec.apply` — wait and timeout. Wait uses
     `kubectl rollout status` per Deployment/StatefulSet. Post-install
@@ -1633,7 +1638,8 @@ def apply_k8s(
     unhealthy — and prune against a partial apply set would delete
     everything not in it. Rollout wait and post-install hooks narrow to
     the scoped services. Resource DELETION happens only via the full
-    apply's prune, so verbs that remove resources must pass None.
+    apply's prune, so verbs that remove resources must pass None — volume
+    claims excepted, since no apply deletes one.
     """
     if not shutil.which("kubectl"):
         raise ApplyError("kubectl not on PATH")
@@ -1675,12 +1681,10 @@ def apply_k8s(
             apps = [a for a in apps if a.metadata.name in scoped_names]
             up_count = len(_expected_workloads(components, apps, deployment))
         else:
-            kept_claims = (
-                None if prune_volume_claims else _claims_left_out(ns, tree)
-            )
-            _kubectl_apply_tree(install_dir, ns, prune_volume_claims=prune_volume_claims)
-            if not prune_volume_claims:
-                _report_kept_claims(ns, kept_claims)
+            _kubectl_apply_tree(install_dir, ns)
+            # Read the live claims after the apply: it created the namespace a
+            # first install had not made yet, and it deleted no claim.
+            _report_kept_claims(ns, _claims_left_out(ns, tree))
             up_count = _count_k8s_workloads(tree)
 
         healthy = True
@@ -1749,11 +1753,15 @@ _PRUNE_ALLOWLIST = (
     "core/v1/Secret",
     "core/v1/ConfigMap",
     "core/v1/Service",
-    "core/v1/PersistentVolumeClaim",
     "apps/v1/Deployment",
     "apps/v1/StatefulSet",
     "networking.k8s.io/v1/Ingress",
     "networking.k8s.io/v1/NetworkPolicy",
+    # PersistentVolumeClaim is deliberately absent, for every verb: a claim
+    # holds the install's data, and whether the bytes survive a prune of it is
+    # the storage class's reclaim policy, not the operator's choice. A claim
+    # leaves by `kubectl delete pvc` — which every whole-tree apply prints for
+    # each claim the render no longer names — or by `nuke --remove-data`.
 )
 
 
@@ -1847,8 +1855,9 @@ def _rendered_claims(tree: FileTree) -> set[str]:
 
 
 def _claims_left_out(ns: str, tree: FileTree) -> list[str] | None:
-    """This install's live volume claims the render no longer names — what a
-    full apply would prune; None when the cluster could not be asked."""
+    """This install's live volume claims the render no longer names — a workload
+    left the install and its volume stayed; None when the cluster could not be
+    asked."""
     listing = subprocess.run(
         [*kubectl(), "get", "pvc", "-n", ns,
          "--selector=app.kubernetes.io/part-of=wip",
@@ -1862,11 +1871,13 @@ def _claims_left_out(ns: str, tree: FileTree) -> list[str] | None:
 
 
 def _report_kept_claims(ns: str, kept: list[str] | None) -> None:
-    """Say which volume claims a removal kept rather than pruned."""
+    """Name the volume claims a whole-tree apply left behind, with the command
+    that deletes each."""
     if kept is None:
         print(
-            f"  note: no volume claim was pruned; the claims in namespace {ns!r} "
-            "could not be listed to name any left behind.",
+            f"  note: the volume claims in namespace {ns!r} could not be listed, "
+            "so this apply cannot name the ones the install no longer uses. No "
+            f"apply deletes a claim: list them with `kubectl get pvc -n {ns}`.",
             file=sys.stderr,
         )
         return
@@ -1879,9 +1890,7 @@ def _report_kept_claims(ns: str, kept: list[str] | None) -> None:
         )
 
 
-def _kubectl_apply_tree(
-    install_dir: Path, ns: str, *, prune_volume_claims: bool = True
-) -> None:
+def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:
     """Apply the rendered tree with prune.
 
     Namespace applied first without prune (cluster-scoped — pruning could
@@ -1889,7 +1898,8 @@ def _kubectl_apply_tree(
     applied with `--prune --selector=app.kubernetes.io/part-of=wip` scoped
     to an explicit allowlist of kinds. The second apply re-targets the
     namespace too (no-op update), but prune ignores it because Namespace
-    is not in the allowlist.
+    is not in the allowlist. Volume claims are not in it either, so no
+    apply deletes a volume.
     """
     namespace_yaml = install_dir / "namespace.yaml"
     if namespace_yaml.exists():
@@ -1903,8 +1913,6 @@ def _kubectl_apply_tree(
         "--selector=app.kubernetes.io/part-of=wip",
     ]
     for kind in _PRUNE_ALLOWLIST:
-        if kind == "core/v1/PersistentVolumeClaim" and not prune_volume_claims:
-            continue
         args.extend(["--prune-allowlist", kind])
     _kubectl_run(args)
 
