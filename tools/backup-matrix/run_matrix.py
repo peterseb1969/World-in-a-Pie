@@ -759,8 +759,9 @@ def cell_r08_merge_drift(client: WipClient, archive: bytes, ns: str) -> Cell:
 
     # Idempotent re-run: same archive, same target, nothing left to bring.
     # The per-type summaries still COUNT the incoming entities (as
-    # `unchanged`/`clash` — that is the loud-reporting contract), so the
-    # idempotence claim is precisely: no type plans a single INSERT.
+    # `unchanged`/`clash`, documents as `not_compared` — that is the
+    # loud-reporting contract), so the idempotence claim is precisely: no
+    # type plans a single INSERT.
     again = _restore(client, archive, url_ns=ns, mode="merge", on_clash="skip")
     if not c.check("PL-JOB", again.get("status") == "complete",
                    f"the re-run merge completes rather than refusing "

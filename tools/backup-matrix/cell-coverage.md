@@ -485,8 +485,8 @@ Id-preserving: `run_matrix.py` X-05 (slice 2) — a second restore into the
 now-populated namespace is REFUSED, nothing duplicated (idempotent by
 refusal). Merge (slice 8, hosted in R-08 which owns the merged target): the
 re-run COMPLETES with zero inserts planned in any entity type — the per-type
-summaries still count the incoming entities as unchanged/clash, which is the
-loud-reporting contract, so the assertion keys on `insert == 0` — and nothing
+summaries still count the incoming entities as unchanged/clash (documents as
+not_compared), which is the loud-reporting contract, so the assertion keys on `insert == 0` — and nothing
 duplicated (idempotent by no-op). The two modes' opposite idempotence shapes
 are each pinned.
 

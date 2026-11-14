@@ -26,8 +26,10 @@ another namespace refuses an archived id this Registry already holds
 their stored form, with their references already rewritten through those
 mappings and their own ids and id-derived fields left out (_COPY_FIELDS), so
 the same content under another id is identical, not a clash. Documents are
-read projected and never field-diffed here: their identical-content check
-runs where they are written (backup_engine._same_document_content).
+read projected and never field-diffed here, so their summary counts the
+documents the target already holds as `not_compared`, not as unchanged or
+clash: their identical-content check runs where they are written
+(backup_engine._same_document_content).
 
 Reads are bulk and indexed: the target is probed by batched key queries derived
 from the archive's own keys, so the cost scales with the delta being merged
@@ -193,12 +195,18 @@ class EntityPlan:
         return [c for c in self.clashes if not c.identical]
 
     def summary(self) -> dict[str, int]:
-        counts = {
-            "insert": len(self.to_insert),
-            "unchanged": len(self.identical_clashes),
-            "clash": len(self.differing_clashes),
-            "conflict": len(self.conflicts),
-        }
+        """The plan's counts. A type read through a projection (documents)
+        cannot be compared here, so its matched entities are counted as
+        `not_compared`, never as `unchanged` or `clash`: the plan did not look
+        at their content. Where they are written, an identical copy is left
+        alone and reported (backup_engine._same_document_content)."""
+        counts = {"insert": len(self.to_insert)}
+        if self.diffable:
+            counts["unchanged"] = len(self.identical_clashes)
+            counts["clash"] = len(self.differing_clashes)
+        else:
+            counts["not_compared"] = len(self.clashes)
+        counts["conflict"] = len(self.conflicts)
         if self.mapping:
             counts["remapped"] = len(self.mapping)
         return counts

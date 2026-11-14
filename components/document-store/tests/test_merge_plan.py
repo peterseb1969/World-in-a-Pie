@@ -299,8 +299,9 @@ class TestDocumentPlanning:
         (clash,) = plan.clashes
         assert clash.diff == {}
         assert "data" not in clash.target
-        assert plan.summary()["clash"] == 1
-        assert plan.summary()["unchanged"] == 0
+        # Not compared, so neither unchanged nor clash: the dry run must not
+        # claim a difference (or a match) it never looked for.
+        assert plan.summary() == {"insert": 0, "not_compared": 1, "conflict": 0}
 
     @pytest.mark.asyncio
     async def test_identity_less_documents_match_by_document_id_only(self, planner):

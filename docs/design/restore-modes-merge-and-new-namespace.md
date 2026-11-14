@@ -123,7 +123,9 @@ latest version on top of the target's head, preserving both histories (on a
 `versioned:false` template it replaces the single version in place). A
 clash whose archive copy equals the target's (data, the resolved references
 and `metadata.custom`, as document writes compare them) is left alone under
-either policy: a new version that changes nothing is noise. After the
+either policy: a new version that changes nothing is noise. That comparison
+runs only where documents are written, so the plan (and the dry run) counts a
+clashing document as `not_compared`, never as unchanged or clash. After the
 documents, the `reference_count` (and the status that follows it) of every
 file the merge can have changed is recounted: the namespace's files and every
 file its documents reference, wherever it lives. A file is held by each active

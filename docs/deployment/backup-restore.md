@@ -270,7 +270,10 @@ namespace's configuration belongs to whoever runs it.
 `dry_run` is exact: both passes are computed before anything is written, so
 the report is what a real run would do — per type, how many definitions are
 already identical, how many would be added, how many map to the target's IDs,
-every difference the target won, and the document counts. It still fails on
+every difference the target won, and the document counts. Documents the
+target already holds are counted as `not_compared`, not as unchanged or
+clashing: the plan does not read their content, and a real run compares each
+one when it writes, leaving an identical copy alone. It still fails on
 everything a real run would refuse.
 
 ```bash

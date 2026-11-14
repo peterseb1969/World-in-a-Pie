@@ -5518,17 +5518,23 @@ class DirectRestoreEngine:
             if not any(counts.values()):
                 continue
             policy = self._merge_policy_for(entity_type, on_clash=on_clash)
+            matched = (
+                f"unchanged={counts['unchanged']}, clash={counts['clash']}"
+                if plan.diffable
+                else f"not_compared={counts['not_compared']} (already here; content is "
+                "compared when written)"
+            )
             self._emit(
                 phase,
                 f"[{namespace}] {verb} {entity_type}: "
-                f"insert={counts['insert']}, unchanged={counts['unchanged']}, "
-                f"clash={counts['clash']} (on clash: {policy}), "
+                f"insert={counts['insert']}, {matched} (on clash: {policy}), "
                 f"conflict={counts['conflict']}",
             )
+            label = "clash" if plan.diffable else "already here"
             for clash in plan.differing_clashes[:5]:
                 self._emit(
                     phase,
-                    f"[{namespace}] {entity_type} clash: "
+                    f"[{namespace}] {entity_type} {label}: "
                     f"{self._describe_entity(entity_type, clash.entity)} — "
                     + (
                         f"differs in {', '.join(sorted(clash.diff))}"
