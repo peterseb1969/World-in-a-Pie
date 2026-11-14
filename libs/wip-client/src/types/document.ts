@@ -261,8 +261,9 @@ export interface TableViewResponse {
 
 export interface TableViewParams {
   status?: DocumentStatus
-  /** Only documents in this namespace. Without it, the documents of every
-   * namespace the caller can read. */
+  /** Only documents in this namespace, which is also where a bare template
+   * value resolves (a shared template is named `wip:PERSON` or by its id).
+   * Without it, the documents of every namespace the caller can read. */
   namespace?: string
   page?: number
   page_size?: number

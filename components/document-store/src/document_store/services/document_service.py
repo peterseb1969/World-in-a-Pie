@@ -55,6 +55,7 @@ from .errors import DocumentStoreError, dependency_unavailable, error_fields
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .inbound_gate import InboundGate, carried_ids, placement_batch
+from .namespace_scope import and_namespace
 from .nats_client import EventType, publish_document_event
 from .reference_validator import (
     ReferenceValidationError,
@@ -846,15 +847,22 @@ async def _add_latest_of_retired(
         doc_id for doc_id in dict.fromkeys(registry_doc_ids)
         if isinstance(doc_id, str) and doc_id not in existing_by_doc_id
     ]
-    # One query per chunk, as for the active rows above; the newest row
-    # of each comes first.
+    # One query per chunk, as for the active rows above. The pipeline is the
+    # one _latest_peer_documents uses: it keeps only each document's newest
+    # row, so a chunk costs one row per document rather than every version of
+    # every id it names.
     for first in range(0, len(retired_ids), BULK_WRITE_CHUNK):
-        rows = await Document.find({
-            "namespace": namespace,
-            "document_id": {"$in": retired_ids[first:first + BULK_WRITE_CHUNK]},
-        }).sort([("version", SortDirection.DESCENDING)]).to_list()
-        for row in rows:
-            existing_by_doc_id.setdefault(row.document_id, row)
+        pipeline = [
+            {"$match": {
+                "namespace": namespace,
+                "document_id": {"$in": retired_ids[first:first + BULK_WRITE_CHUNK]},
+            }},
+            {"$sort": {"document_id": 1, "version": -1}},
+            {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$doc"}},
+        ]
+        for row in await Document.aggregate(pipeline).to_list():
+            existing_by_doc_id.setdefault(row["document_id"], Document(**row))
 
 
 async def _publish_bulk_events(
@@ -2497,10 +2505,9 @@ class DocumentService:
         query: dict[str, Any] = {"identity_hash": identity_hash}
         if not include_inactive:
             query["status"] = DocumentStatus.ACTIVE.value
-        if namespace_filter:
-            query.update(namespace_filter)
+        query = and_namespace(query, namespace_filter)
         if namespace:
-            query["namespace"] = namespace
+            query = and_namespace(query, {"namespace": namespace})
         if template_id:
             query["template_id"] = template_id
 
@@ -2825,9 +2832,7 @@ class DocumentService:
         """
         from bson import ObjectId
 
-        query: dict = {}
-        if ns_filter:
-            query.update(ns_filter)
+        query: dict = and_namespace({}, ns_filter)
         if template_id:
             query["template_id"] = template_id
         if template_value:
@@ -3439,9 +3444,7 @@ class DocumentService:
         ns_filter: dict | None = None,
     ) -> DocumentQueryResponse:
         """Query documents with complex filters."""
-        query = self._build_query(request)
-        if ns_filter:
-            query.update(ns_filter)
+        query = and_namespace(self._build_query(request), ns_filter)
 
         # Count total
         total = await Document.find(query).count()

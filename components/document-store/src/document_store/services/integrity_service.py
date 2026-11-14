@@ -104,14 +104,18 @@ class IntegritySummary(BaseModel):
     orphaned_file_refs: int = 0
     identity_hash_mismatches: int = Field(
         default=0,
-        description="Documents whose stored identity hash differs from the one recomputed",
+        description=(
+            "Stored identity hashes that differ from the recomputed one, one "
+            "per issue row; documents_with_issues counts distinct documents"
+        ),
     )
     identity_unverified: int = Field(
         default=0,
         description=(
-            "Documents whose identity could not be compared: an identity value "
-            "or resolution missing, or the template version they are pinned "
-            "to not found"
+            "Identity checks that could not be compared, one per issue row: a "
+            "missing identity value or resolution, or the pinned template "
+            "version not found. Three checks feed it, so one document can "
+            "account for several rows"
         ),
     )
     mandatory_fields_missing: int = Field(

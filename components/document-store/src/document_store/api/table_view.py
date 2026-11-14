@@ -19,13 +19,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import UserIdentity, check_readable, resolve_namespace_filter, resolve_or_404
+from wip_auth import (
+    UserIdentity,
+    check_readable,
+    miss_detail,
+    resolve_namespace_filter,
+    resolve_or_404,
+)
 from wip_auth.csv_cells import escape_cell
-from wip_auth.fastapi_helpers import unresolved_detail
 
 from ..models.document import Document, DocumentStatus
 from ..services.document_service import DocumentService
 from ..services.file_validation import content_disposition
+from ..services.namespace_scope import and_namespace
 from ..services.template_store_client import get_template_store_client
 from .auth import require_api_key
 
@@ -115,17 +121,26 @@ async def _template_not_found(template_id: str, namespace: str | None) -> str:
     """The 404 detail of a template this route cannot find: with
     ``namespace``, the resolver's (the identifier is resolved there first),
     else the route's own. A template in a namespace the caller cannot read
-    answers with it too, so the answer does not confirm the template exists."""
-    if namespace:
-        return await unresolved_detail(template_id, "template", namespace, "template_id")
-    return "Template not found"
+    answers with it too, so the answer does not confirm the template exists —
+    and a caller whose key implies no single namespace gets the route's own
+    text, which is what an unknown id gets there as well."""
+    return await miss_detail(
+        template_id, "template", namespace, "Template not found", "template_id",
+    )
+
+
+async def _readable_namespaces(identity: UserIdentity, namespace: str | None) -> dict[str, Any]:
+    """The caller's readable-namespace clause, asked before anything is
+    resolved in ``namespace``: naming a namespace the caller cannot read is
+    refused here, as on ``GET /documents``, and not only once the template has
+    been looked up there."""
+    return (await resolve_namespace_filter(identity, namespace)).query
 
 
 async def _documents_query(
     template_id: str,
     status: DocumentStatus | None,
-    identity: UserIdentity,
-    namespace: str | None,
+    ns_filter: dict[str, Any],
 ) -> dict[str, Any]:
     """The documents a table shows: each document's latest version on this
     template, with ``status`` judged on that version, in the namespaces the
@@ -137,8 +152,7 @@ async def _documents_query(
     older_versions: keep leaves several active), so a status filter alone
     would list one document several times.
     """
-    base: dict[str, Any] = {"template_id": template_id}
-    base.update((await resolve_namespace_filter(identity, namespace)).query)
+    base = and_namespace({"template_id": template_id}, ns_filter)
     try:
         return await DocumentService._latest_versions_query(base, status)
     except ValueError as e:  # more documents than the filter can name
@@ -376,6 +390,9 @@ async def get_table_view(
 ):
     """Get flattened table view for a template."""
 
+    # Read on the namespace is decided before anything is resolved in it.
+    ns_filter = await _readable_namespaces(identity, namespace)
+
     # Fetch template (resolve synonym first)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(
@@ -401,7 +418,7 @@ async def get_table_view(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    query_filter = await _documents_query(canonical_template_id, status, identity, namespace)
+    query_filter = await _documents_query(canonical_template_id, status, ns_filter)
 
     # Count total documents
     total_documents = await Document.find(query_filter).count()
@@ -520,6 +537,9 @@ async def export_table_csv(
     import csv
     import io
 
+    # Read on the namespace is decided before anything is resolved in it.
+    ns_filter = await _readable_namespaces(identity, namespace)
+
     # Fetch template (resolve synonym via template-store client)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(
@@ -544,7 +564,7 @@ async def export_table_csv(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    query_filter = await _documents_query(canonical_template_id, status, identity, namespace)
+    query_filter = await _documents_query(canonical_template_id, status, ns_filter)
 
     metadata_cols = ["_document_id", "_version", "_identity_hash", "_status", "_created_at", "_updated_at"]
     data_cols = [col.name for col in columns]

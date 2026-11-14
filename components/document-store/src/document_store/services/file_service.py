@@ -34,6 +34,7 @@ from .file_storage_client import (
     is_file_storage_enabled,
 )
 from .file_validation import content_type_matches
+from .namespace_scope import and_namespace
 from .nats_client import EventType, publish_file_event
 from .registry_client import RegistryError, get_registry_client
 
@@ -711,9 +712,7 @@ class FileService:
         Raises:
             ValueError: an unknown sort field or order.
         """
-        query: dict = {}
-        if ns_filter:
-            query.update(ns_filter)
+        query: dict = and_namespace({}, ns_filter)
 
         if status:
             query["status"] = status.value

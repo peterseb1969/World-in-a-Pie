@@ -127,9 +127,16 @@ export interface NamespaceIntegritySummary {
   /** References whose held document id lives in another namespace than the reference names. */
   misplaced_document_refs: number
   orphaned_file_refs: number
-  /** Documents whose stored identity hash differs from the one recomputed. */
+  /**
+   * Stored identity hashes that differ from the one recomputed, one per issue
+   * row; documents_with_issues counts distinct documents.
+   */
   identity_hash_mismatches: number
-  /** Documents whose identity could not be compared (a value or resolution missing, or the pinned template version not found). */
+  /**
+   * Identity checks that could not be compared, one per issue row (a value or
+   * resolution missing, or the pinned template version not found). Three checks
+   * feed it, so one document can account for several rows.
+   */
   identity_unverified: number
   /**
    * Mandatory fields of the pinned template version with no value in a
