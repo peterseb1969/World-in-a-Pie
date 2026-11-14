@@ -2027,15 +2027,24 @@ and the difference is reported among the fields where the target's value
 won. A schema difference still refuses.
 
 Neither change makes a merge of two archives with drifted **versioned**
-bootstrap templates work. `migrate` leaves each document's superseded row
-pinned to the old version, so the backup still carries it and pass 1 still
-refuses. `docs/design/restore-modes-merge-and-new-namespace.md` records this
-as open; it no longer offers a recipe.
+bootstrap templates work on its own: `migrate` leaves each document's
+superseded row pinned to the old version, so the backup still carries it and
+pass 1 still refuses that pair. It is not left open —
+`docs/design/restore-modes-merge-and-new-namespace.md` records the procedure
+that does get through (give the TARGET a version whose schema can take the
+archive's documents, then merge with `align_templates`, and retire that
+version afterwards), pinned by
+`components/document-store/tests/test_case_1159.py`. Running
+`wip-toolkit migrate` first is what does not work for a `versioned: true`
+template.
 
 - **`@wip/client` 0.94.0:** `BackupRequest.include_inactive_templates`.
 - **MCP:** `start_backup(include_inactive_templates=…)`.
-- **The WIP-Toolkit CLI export is unchanged.** With `include_inactive` off
-  (the default) it exports only active entities.
+- **The WIP-Toolkit CLI export is otherwise unchanged.** With `include_inactive`
+  off (the default) it still collects active entities — what it adds, besides
+  the active set, is what the archive needs to restore: every template version
+  an exported document pins, or a carried version extends or nests, inactive
+  included.
 
 ### `/relationships` and `/traverse` count only edge-type documents
 

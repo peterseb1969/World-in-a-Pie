@@ -16,9 +16,12 @@ into the second compares the archive's old v1 with the target's current v1
 (refused, or with `add_missing` inserted beside the target's unrelated v1
 under their archived numbers).
 
-An export carries every version, inactive ones included, because documents
-pin them (`BackupEngine._build_query`). The source's retired history therefore
-arrives in the archive and is compared like a live definition.
+An export carries the template versions its documents and carried definitions
+need — a version a document row pins, or a carried version extends or nests,
+travels even when it is inactive (`BackupEngine._template_versions_to_leave_out`;
+`include_inactive_templates` keeps every version regardless). The source's
+retired history therefore arrives in the archive, and is compared like a live
+definition.
 
 Observed on dev-test: a kb archive with 11 of 27 templates at v2–v6 could not
 be merged into a freshly bootstrapped kb at all.
@@ -90,8 +93,14 @@ against no documents, so it lists none.
   where the target adds a constraint the schema comparison cannot see (a
   narrowed enum, a new pattern). Those cases are refused at step 2 as
   incompatible, never discovered per document. Moving data across an
-  incompatible change stays the toolkit's job: `wip-toolkit migrate`, then
-  re-export, then merge.
+  incompatible change is not solved by running `wip-toolkit migrate` and
+  merging the result: on a `versioned: true` template `migrate` leaves each
+  document's superseded row pinned to the old version, which the archive
+  still carries and pass 1 still has to place. The procedure that does work
+  — converge a version of the TARGET's template that can take the archive's
+  documents, merge with `align_templates`, then retire that version — is in
+  `docs/design/restore-modes-merge-and-new-namespace.md` and pinned by
+  `components/document-store/tests/test_case_1159.py`.
 - **Changing the target's templates.** The target's versions are never
   edited; `add_missing` keeps its current meaning for templates the target
   lacks by value.
@@ -100,8 +109,11 @@ against no documents, so it lists none.
 
 1. **Schema-level check only.** Step 2 decides per version, from the two
    schemas; the merge does not validate each document's data. Data that has
-   to change to fit the target goes through `wip-toolkit migrate`, then
-   re-export, then merge.
+   to change to fit the target is not converged by migrating the archive and
+   merging it again (a `versioned: true` template keeps its superseded rows
+   pinned to the old version, which then has to map too); see
+   `docs/design/restore-modes-merge-and-new-namespace.md` for the
+   target-side converge that does.
 2. **Refused for a merge from the same install.** There the versions are
    already one entity's coordinates and line up by number, so the option has
    nothing to do and is refused rather than ignored.

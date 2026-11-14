@@ -104,12 +104,19 @@ _TERM_LIFECYCLE_FIELDS = frozenset({
     "status", "deprecated_reason", "replaced_by_term_id",
 })
 
+# A draft is a definition that has not been activated: it is not a retirement,
+# so a draft on either side of a comparison is a real difference (see
+# _status_split).
+_DRAFT_STATUS = "draft"
+
 # A template's or a terminology's lifecycle. Retiring a template version or a
-# terminology does not change what it accepts, so a difference never refuses
-# the merge: the target keeps its own status, and the difference is reported
-# like a cosmetic one. Unlike a term's, this retirement does not travel —
-# deactivating a target template or terminology is an operator's decision,
-# never a merge side effect.
+# terminology does not change what it accepts, so an active/inactive difference
+# never refuses the merge: the target keeps its own status, and the difference
+# is reported like a cosmetic one. Unlike a term's, this retirement does not
+# travel — deactivating a target template or terminology is an operator's
+# decision, never a merge side effect. A draft is the exception, and is judged
+# by _status_split: a definition that was never activated differs from one
+# that was.
 _DEFINITION_LIFECYCLE_FIELDS = frozenset({"status"})
 
 # Vocabulary metadata. A difference here does not make two definitions
@@ -367,13 +374,35 @@ def _lifecycle_fields(entity_type: str) -> tuple[frozenset[str], frozenset[str]]
 
 
 def _status_differs(
-    fields: frozenset[str], archive: dict[str, Any], target: dict[str, Any]
+    fields: frozenset[str], archive: dict[str, Any], target: dict[str, Any],
 ) -> list[str]:
     """The fields (sorted) whose value differs, an absent one read as active."""
     return [
         f for f in sorted(fields)
         if (archive.get(f) or "active") != (target.get(f) or "active")
     ]
+
+
+def _status_split(
+    fields: frozenset[str], archive: dict[str, Any], target: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """(cosmetic, substantive) for a template's or terminology's status.
+
+    Retiring changes nothing about what a definition accepts, so active against
+    inactive is cosmetic: the target keeps its own standing, since deactivating
+    the target is an operator's decision and never a merge side effect.
+
+    A draft is not a retirement. It marks a definition that was never activated
+    — never reference-validated, and not usable by documents — so a draft
+    against an active definition is a real difference about what the two sides
+    hold, and it refuses the pair rather than silently keeping one of them."""
+    differing = _status_differs(fields, archive, target)
+    if not differing:
+        return [], []
+    statuses = (archive.get("status") or "active", target.get("status") or "active")
+    if _DRAFT_STATUS in statuses:
+        return [], differing
+    return differing, []
 
 
 def _differing_content(
@@ -826,7 +855,13 @@ class DefinitionsPlanner:
                 archive_filled, target_filled, name, cosmetic, plan
             )
 
-        cosmetic = cosmetic + _status_differs(template_lifecycle, entity, target)
+        kept_status, draft_gap = _status_split(template_lifecycle, entity, target)
+        if draft_gap:
+            plan.incompatibilities.append(_differing_content(
+                entity_type, name, draft_gap, archive_row, target_row
+            ))
+            return
+        cosmetic = cosmetic + kept_status
         retired_here = False
         if lifecycle:
             kept = self._classify_term_lifecycle(entity, target, name, plan)
