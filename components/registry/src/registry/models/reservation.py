@@ -21,6 +21,8 @@ from beanie import Document
 from pydantic import Field
 from pymongo import IndexModel
 
+RESERVATION_ID_PREFIXES_INDEX = "reservation_id_prefixes_unique"
+
 
 class RuntimeReservation(Document):
     prefix: str = Field(..., description="The reserved namespace")
@@ -51,10 +53,28 @@ class RuntimeReservation(Document):
         default="console",
         description="Who wrote the reservation: the install's file, the API, or a restore",
     )
+    id_prefixes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The `prefixed` ID prefixes the reservation's id_config claims, derived "
+            "on every write (reservation_store.reservation_id_prefixes). A unique "
+            "multikey index keeps one prefix to one reservation, under concurrent "
+            "writes from any process."
+        ),
+    )
 
     class Settings:
         name = "namespace_reservations"
         indexes: ClassVar[list] = [
             IndexModel([("prefix", 1)], unique=True, name="reservation_prefix_unique"),
             IndexModel([("app", 1)], name="reservation_app"),
+            # As Namespace.id_prefixes: only string elements are indexed, so
+            # the empty default and records written before the field never
+            # conflict.
+            IndexModel(
+                [("id_prefixes", 1)],
+                unique=True,
+                name=RESERVATION_ID_PREFIXES_INDEX,
+                partialFilterExpression={"id_prefixes": {"$type": "string"}},
+            ),
         ]

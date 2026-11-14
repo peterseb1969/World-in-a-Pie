@@ -212,8 +212,9 @@ def _share_keys_published_meanwhile(
     if batch is None:
         return
     for key in [k for k in plan.pending if k in batch]:
-        _stats["batch_reused"] += 1
-        plan.shared.extend((index, batch[key]) for index in plan.pending.pop(key))
+        indexes = plan.pending.pop(key)
+        _stats["batch_reused"] += len(indexes)  # values, as at plan time
+        plan.shared.extend((index, batch[key]) for index in indexes)
 
 
 async def _resolve_keys(

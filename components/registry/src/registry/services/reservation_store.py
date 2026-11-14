@@ -48,6 +48,71 @@ class ReservationView:
     managed_by: str | None = None
 
 
+def reservation_id_prefixes(prefix: str, app: str, settings: dict[str, Any]) -> list[str]:
+    """The ID prefixes a reservation with these stored settings claims: the
+    field the unique index keeps to one reservation per prefix."""
+    effective = Reservation(
+        prefix=prefix, app=app, settings=ReservationSettings(**settings),
+    ).effective_settings()
+    return claimed_prefixes(effective["id_config"])
+
+
+async def backfill_id_prefixes() -> list[str]:
+    """Derive id_prefixes for every stored reservation whose field is
+    missing or stale (records written before the field). Returns the
+    prefixes of the reservations that cannot hold theirs because another
+    reservation already does: they are logged, and left as they were."""
+    clashing: list[str] = []
+    for doc in await RuntimeReservation.find_all().to_list():
+        try:
+            wanted = reservation_id_prefixes(doc.prefix, doc.app, doc.settings)
+        except (ValidationError, ValueError):
+            continue  # unreadable settings: nothing to claim
+        if doc.id_prefixes == wanted:
+            continue
+        try:
+            await RuntimeReservation.get_motor_collection().update_one(
+                {"_id": doc.id}, {"$set": {"id_prefixes": wanted}},
+            )
+        except DuplicateKeyError:
+            clashing.append(doc.prefix)
+            logger.critical(
+                "Reservation of namespace '%s' claims an id_config prefix another "
+                "reservation holds (%s); it was made before one prefix was kept to one "
+                "reservation. Release one of them (DELETE /reservations/{prefix}).",
+                doc.prefix, ", ".join(wanted),
+            )
+    return clashing
+
+
+def is_id_prefix_clash(exc: DuplicateKeyError) -> bool:
+    """Whether a duplicate-key error is the id_prefixes index (another
+    reservation claims one of the prefixes), not the namespace's own."""
+    from ..models.reservation import RESERVATION_ID_PREFIXES_INDEX
+
+    details = exc.details or {}
+    return RESERVATION_ID_PREFIXES_INDEX in str(details.get("errmsg", "")) or (
+        "id_prefixes" in (details.get("keyPattern") or {})
+    )
+
+
+async def _refuse_id_prefix_clash(prefix: str, id_prefixes: list[str]) -> None:
+    """Raise the refusal for a write the id_prefixes index refused: the
+    deployer's own (managed_by_deployer) when the reservation holding the
+    prefix is the install's, as the check before the write refuses it."""
+    holder = await RuntimeReservation.find_one(
+        {"id_prefixes": {"$in": id_prefixes}, "prefix": {"$ne": prefix}},
+    )
+    if holder is not None and holder.managed_by is not None:
+        raise reservation_refusal(holder.prefix, holder.app)
+    where = f" for namespace '{holder.prefix}'" if holder is not None else " for another namespace"
+    raise ReservationRefused(
+        409,
+        f"an id_config prefix of namespace '{prefix}' is reserved{where} (written while "
+        "this request ran); a prefix names one ID sequence on the install",
+    )
+
+
 def _as_reservation(doc: RuntimeReservation) -> Reservation:
     return Reservation(
         prefix=doc.prefix, app=doc.app, settings=ReservationSettings(**doc.settings)
@@ -178,6 +243,7 @@ async def save_reservation(
     and a refused create undoes only what it wrote.
     """
     stored = settings.model_dump(exclude_none=True)
+    id_prefixes = reservation_id_prefixes(prefix, owner, stored)
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
     _refuse_holder(prefix, doc, owner)
     if create_only and doc is not None:
@@ -191,52 +257,33 @@ async def save_reservation(
     if doc is None:
         doc = RuntimeReservation(
             prefix=prefix, namespace_id=namespace_id, app=owner, settings=stored,
-            created_by=actor,
+            created_by=actor, id_prefixes=id_prefixes,
         )
         try:
             await doc.insert()
-        except DuplicateKeyError:
+        except DuplicateKeyError as exc:
+            if is_id_prefix_clash(exc):
+                await _refuse_id_prefix_clash(prefix, id_prefixes)
             if create_only:
                 raise ReservationRefused(
                     409, f"namespace '{prefix}' was reserved while this key was created",
                 ) from None
             await _refuse_taken(prefix, owner)
-        await _yield_to_an_earlier_claim(doc)
         return doc, True
-    result = await RuntimeReservation.get_motor_collection().update_one(
-        {"prefix": prefix, "app": owner, "managed_by": None},
-        {"$set": {"settings": stored, "namespace_id": namespace_id}},
-    )
+    try:
+        result = await RuntimeReservation.get_motor_collection().update_one(
+            {"prefix": prefix, "app": owner, "managed_by": None},
+            {"$set": {"settings": stored, "namespace_id": namespace_id,
+                      "id_prefixes": id_prefixes}},
+        )
+    except DuplicateKeyError as exc:
+        if is_id_prefix_clash(exc):
+            await _refuse_id_prefix_clash(prefix, id_prefixes)
+        raise
     if result.matched_count == 0:
         await _refuse_taken(prefix, owner)
-    doc.settings, doc.namespace_id = stored, namespace_id
+    doc.settings, doc.namespace_id, doc.id_prefixes = stored, namespace_id, id_prefixes
     return doc, False
-
-
-async def _yield_to_an_earlier_claim(doc: RuntimeReservation) -> None:
-    """Refuse a reservation just written that claims an ID prefix another
-    reservation also claims, if that one was written first.
-
-    check_new_reservation refuses a claimed prefix, but two requests can
-    check at once and both write: one ID prefix would then name two
-    namespaces' sequences. So each writer looks again once its own record
-    is stored, and the later one (by record id, which orders inserts)
-    removes its reservation and is refused, whichever process wrote it.
-    """
-    mine = set(claimed_prefixes(_as_reservation(doc).effective_settings()["id_config"]))
-    if not mine:
-        return
-    for other in await RuntimeReservation.find(RuntimeReservation.prefix != doc.prefix).to_list():
-        claimed = claimed_prefixes(_as_reservation(other).effective_settings()["id_config"])
-        clash = sorted(mine & set(claimed))
-        if clash and other.id < doc.id:
-            await RuntimeReservation.find_one(RuntimeReservation.id == doc.id).delete()
-            raise ReservationRefused(
-                409,
-                f"id_config prefix {', '.join(repr(c) for c in clash)} was reserved for "
-                f"namespace '{other.prefix}' while this reservation was written; a prefix "
-                "names one ID sequence on the install",
-            )
 
 
 async def _refuse_taken(prefix: str, owner: str) -> None:

@@ -693,17 +693,18 @@ async def add_key_namespace(
     else:
         created = False
 
+    widened = prefix not in doc.namespaces
     try:
-        if prefix not in doc.namespaces:
+        if widened:
             doc.namespaces = [*doc.namespaces, prefix]
             await doc.save()
             await _refresh_provider(doc)
         await _set_grant(name, prefix, permission)
     except BaseException:
-        # A widen that did not land keeps no reservation it made; one the
-        # key held before stays (the widen re-reserved it).
-        if created:
-            await _drop_new_reservations(name, [prefix])
+        # A widen that did not land leaves the key as it was: the scope it
+        # added and the reservation it made are taken back (a reservation the
+        # key held before stays, re-reserved).
+        await _undo_widen(doc, prefix, widened=widened, reserved=created)
         raise
     await access_changed()
     logger.info(
@@ -711,6 +712,18 @@ async def add_key_namespace(
         name, prefix, permission, request.reserve is not None, get_identity_string(),
     )
     return _stored_to_response(doc, await _reserved_by(name))
+
+
+async def _undo_widen(doc: StoredAPIKey, prefix: str, *, widened: bool, reserved: bool) -> None:
+    """Take back what a failed widen wrote: the namespace it added to the
+    key's scope, and the reservation it created."""
+    if widened and prefix in doc.namespaces:
+        doc.namespaces = [n for n in doc.namespaces if n != prefix]
+        await doc.save()
+        await _refresh_provider(doc)
+        await access_changed()
+    if reserved:
+        await _drop_new_reservations(doc.name, [prefix])
 
 
 @router.delete(

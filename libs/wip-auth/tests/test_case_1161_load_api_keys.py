@@ -1,12 +1,11 @@
 """API key loading, pinned before load_api_keys' refactor.
 
-Provenance: CASE-1161. No test pinned which record wins, or where it sits,
-when a JSON key replaces an earlier key of the same name (later sources
-override earlier; test_shared_key_plaintext reached the branch). The suite
-did not reach the rest:
-unparseable WIP_AUTH_API_KEYS_JSON (warned, the other sources still load); a
-keys file that does not exist (skipped); and the warning for a key with no
-namespace scope outside the privileged groups.
+Provenance: CASE-1161. Before this file the suite did not pin these
+branches: which record wins, and where it sits, when a JSON key replaces an
+earlier key of the same name (later sources override earlier); unparseable
+WIP_AUTH_API_KEYS_JSON (warned, the other sources still load); a keys file
+that does not exist (skipped); and the warning for a key with no namespace
+scope outside the privileged groups.
 """
 
 import json
@@ -51,4 +50,3 @@ def test_bad_json_is_warned_and_a_missing_file_skipped(tmp_path, caplog):
                     api_keys_file=str(tmp_path / "absent.json")).load_api_keys()
     assert [k.name for k in keys] == ["legacy"]
     assert "Failed to parse WIP_AUTH_API_KEYS_JSON" in caplog.text
-

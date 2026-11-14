@@ -1,5 +1,7 @@
 """A key create that does not store its key, and a widen that does not
-land, keep no reservation they made (CASE-1266, 2d4fe859 R3)."""
+land, keep no reservation they made, and the widen takes back the scope it
+added (CASE-1266, 2d4fe859 R3, a225a5d9 R1). One ID prefix is held by one
+reservation, kept by a unique index (2d4fe859 R6, a225a5d9 R2)."""
 
 import uuid
 from unittest.mock import patch
@@ -48,23 +50,79 @@ async def test_a_widen_that_does_not_land_keeps_no_reservation(client, auth_head
         await client.put(f"{KEYS}/{name}/namespaces/{prefix}", headers=auth_headers,
                          json={"reserve": {}})
     assert await _reservation(prefix) is None
+    doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
+    assert doc.namespaces == [home], "the widened scope was left behind"
+
+
+def _id_settings(id_prefix: str):
+    from registry.services.reservations import ReservationSettings
+
+    return ReservationSettings.model_validate({
+        "id_config": {"documents": {"algorithm": "prefixed", "prefix": id_prefix, "pad": 6}},
+    })
 
 
 @pytest.mark.asyncio
 async def test_two_writes_claiming_one_id_prefix_leave_only_the_first(client):
     """Two requests can both pass check_new_reservation for one ID prefix;
-    the later write yields (2d4fe859 R6)."""
+    the unique index refuses the second write, whichever process makes it."""
     from registry.services import reservation_store
     from registry.services.reservation_store import ReservationRefused
-    from registry.services.reservations import ReservationSettings
 
-    id_prefix = f"R6{uuid.uuid4().hex[:4].upper()}-"
-    settings = ReservationSettings.model_validate({
-        "id_config": {"documents": {"algorithm": "prefixed", "prefix": id_prefix, "pad": 6}},
-    })
+    settings = _id_settings(f"R6{uuid.uuid4().hex[:4].upper()}-")
     first, second = _p("first"), _p("second")
     await reservation_store.save_reservation(first, settings, _p("key-a"), "test")
-    with pytest.raises(ReservationRefused, match="was reserved for namespace"):
+    with pytest.raises(ReservationRefused, match="is reserved for namespace"):
         await reservation_store.save_reservation(second, settings, _p("key-b"), "test")
     assert await _reservation(first) is not None
     assert await _reservation(second) is None
+
+
+@pytest.mark.asyncio
+async def test_a_re_reservation_moving_onto_a_held_prefix_is_refused(client):
+    """The update path is held by the same index (a225a5d9 R2): a key
+    re-reserving its namespace at a prefix another reservation holds keeps
+    its old settings."""
+    from registry.services import reservation_store
+    from registry.services.reservation_store import ReservationRefused
+
+    held, own = f"R2H{uuid.uuid4().hex[:4].upper()}-", f"R2O{uuid.uuid4().hex[:4].upper()}-"
+    first, second, key_b = _p("first"), _p("second"), _p("key-b")
+    await reservation_store.save_reservation(first, _id_settings(held), _p("key-a"), "test")
+    await reservation_store.save_reservation(second, _id_settings(own), key_b, "test")
+    with pytest.raises(ReservationRefused, match="is reserved for namespace"):
+        await reservation_store.save_reservation(second, _id_settings(held), key_b, "test")
+    assert (await _reservation(second)).id_prefixes == [own]
+
+
+@pytest.mark.asyncio
+async def test_records_from_before_the_field_are_backfilled_and_clashes_reported(client):
+    from registry.services.reservation_store import backfill_id_prefixes
+
+    id_prefix = f"R2B{uuid.uuid4().hex[:4].upper()}-"
+    config = {"id_config": {"documents": {"algorithm": "prefixed", "prefix": id_prefix, "pad": 6}}}
+    a, b = _p("old-a"), _p("old-b")
+    for prefix in (a, b):  # written before the field: no id_prefixes
+        await RuntimeReservation(prefix=prefix, app=_p("k"), settings=config).insert()
+    clashing = await backfill_id_prefixes()
+    assert (await _reservation(a)).id_prefixes == [id_prefix]
+    assert (await _reservation(b)).id_prefixes == []
+    assert clashing == [b]
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_the_deployer_holds_is_refused_as_the_deployers(client):
+    """a225a5d9 R8: the install's reservation holding the prefix is refused as
+    managed_by_deployer, as the check before the write refuses it."""
+    from registry.services import reservation_store
+    from registry.services.managed import ManagedRecordRefused
+
+    id_prefix = f"R8{uuid.uuid4().hex[:4].upper()}-"
+    managed = _p("managed")
+    await RuntimeReservation(
+        prefix=managed, app="the-app", managed_by="wip-deploy", origin="file",
+        settings={"id_config": {"documents": {"algorithm": "prefixed", "prefix": id_prefix, "pad": 6}}},
+        id_prefixes=[id_prefix],
+    ).insert()
+    with pytest.raises(ManagedRecordRefused):
+        await reservation_store.save_reservation(_p("api"), _id_settings(id_prefix), _p("k"), "test")

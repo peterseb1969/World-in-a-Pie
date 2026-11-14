@@ -57,6 +57,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
+from pymongo.errors import DuplicateKeyError
 
 from wip_auth import PRIVILEGED_GROUPS, APIKeyProvider, APIKeyRecord, privileged_scope_error
 from wip_auth.providers.api_key import api_key_prehash, hash_api_key, prehash_matches
@@ -483,40 +484,60 @@ async def _import_reservations(report: ImportReport) -> None:
         return
 
     for prefix, r in reservations.items():
-        settings = r.settings.model_dump(exclude_none=True)
-        doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
-        # The namespace's id while it exists; none otherwise (the install
-        # gives the name to its app, whichever namespace holds it).
-        namespace_id = await reservation_namespace_id(prefix, r.app, doc, managed=True)
-        if doc is None:
-            await RuntimeReservation(
-                prefix=prefix, namespace_id=namespace_id, app=r.app, settings=settings,
-                created_by=WIP_DEPLOY, managed_by=WIP_DEPLOY, origin="file",
-            ).insert()
-            report.reservations_changed.append(prefix)
-            continue
-        if doc.managed_by is None:
+        try:
+            await _import_reservation(prefix, r, report)
+        except DuplicateKeyError:
+            # Another reservation claims one of its id_config prefixes (the
+            # unique index); the rest of the file still imports.
             logger.critical(
-                "Namespace '%s' is reserved by runtime API key '%s' and by app '%s' in the "
-                "install's reservations; the install's reservation replaces it. Key '%s' "
-                "keeps its grants.", prefix, doc.app, r.app, doc.app,
+                "Namespace '%s' in the install's reservations claims an id_config prefix "
+                "another reservation holds; not imported. A prefix names one ID sequence "
+                "on the install.", prefix,
             )
-            report.taken_over.append(f"reservation:{prefix}")
-        if (doc.managed_by, doc.app, doc.settings, doc.origin, doc.namespace_id) != (
-            WIP_DEPLOY, r.app, settings, "file", namespace_id,
-        ):
-            doc.managed_by = WIP_DEPLOY
-            doc.app = r.app
-            doc.settings = settings
-            doc.origin = "file"
-            doc.namespace_id = namespace_id
-            await doc.save()
-            report.reservations_changed.append(prefix)
+            report.skipped.append(f"reservation:{prefix}: id_config prefix held elsewhere")
 
     for doc in await RuntimeReservation.find(RuntimeReservation.managed_by == WIP_DEPLOY).to_list():
         if doc.prefix not in reservations:
             await doc.delete()
             report.reservations_changed.append(f"-{doc.prefix}")
+
+
+async def _import_reservation(prefix: str, r: Any, report: ImportReport) -> None:
+    """Create or bring up to date the stored record of one file reservation."""
+    from .reservation_store import reservation_id_prefixes
+
+    settings = r.settings.model_dump(exclude_none=True)
+    id_prefixes = reservation_id_prefixes(prefix, r.app, settings)
+    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+    # The namespace's id while it exists; none otherwise (the install
+    # gives the name to its app, whichever namespace holds it).
+    namespace_id = await reservation_namespace_id(prefix, r.app, doc, managed=True)
+    if doc is None:
+        await RuntimeReservation(
+            prefix=prefix, namespace_id=namespace_id, app=r.app, settings=settings,
+            created_by=WIP_DEPLOY, managed_by=WIP_DEPLOY, origin="file",
+            id_prefixes=id_prefixes,
+        ).insert()
+        report.reservations_changed.append(prefix)
+        return
+    if doc.managed_by is None:
+        logger.critical(
+            "Namespace '%s' is reserved by runtime API key '%s' and by app '%s' in the "
+            "install's reservations; the install's reservation replaces it. Key '%s' "
+            "keeps its grants.", prefix, doc.app, r.app, doc.app,
+        )
+        report.taken_over.append(f"reservation:{prefix}")
+    wanted = (WIP_DEPLOY, r.app, settings, "file", namespace_id, id_prefixes)
+    if (doc.managed_by, doc.app, doc.settings, doc.origin, doc.namespace_id,
+            doc.id_prefixes) != wanted:
+        doc.managed_by = WIP_DEPLOY
+        doc.app = r.app
+        doc.settings = settings
+        doc.origin = "file"
+        doc.namespace_id = namespace_id
+        doc.id_prefixes = id_prefixes
+        await doc.save()
+        report.reservations_changed.append(prefix)
 
 
 async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:

@@ -3833,6 +3833,11 @@ class DirectRestoreEngine:
           must be deleted before a retry.
         """
         new_ids = set(remapper.template_map.values())
+        # The "resolved half cleared" warnings are said only once the whole
+        # pass has run: a pass the Registry stops part-way writes nothing,
+        # and its error says so, which a warning about an in-memory clear
+        # emitted before it would contradict.
+        cleared: list[str] = []
 
         # Per-target value index over the archive's own (post-remap) template
         # rows: value → new template_id, plus each row's new id keyed to
@@ -3877,8 +3882,7 @@ class DirectRestoreEngine:
                         hit, why = await self._resolve_endpoint_on_target(value_index, target, lookup)
                         entry["resolved"] = hit
                         if hit is None:
-                            self._emit(
-                                "warning",
+                            cleared.append(
                                 f"[{target}] edge type '{row.get('value')}' "
                                 f"endpoint '{entry['lookup_value']}' {why} — "
                                 "resolved half cleared; the lookup anchor is "
@@ -3888,6 +3892,8 @@ class DirectRestoreEngine:
                         repaired.append(entry)
                     if entries:
                         row[prop] = repaired
+        for warning in cleared:
+            self._emit("warning", warning)
 
     @staticmethod
     async def _resolve_endpoint_on_target(

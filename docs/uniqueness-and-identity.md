@@ -343,13 +343,11 @@ While the synonym infrastructure (above) enables any composite key to resolve to
 
 ### How It Works
 
-Every WIP service endpoint that accepts an entity ID will resolve it automatically:
+Every WIP service endpoint that accepts an entity ID resolves it at the API boundary, before business logic runs, through `wip-auth`'s door helper `resolve_or_404()`:
 
-1. **UUID format?** → pass through unchanged (no Registry call)
-2. **Non-UUID string?** → determine namespace (from `namespace` parameter, or implicitly from single-namespace API keys), build a composite key, call `POST /api/registry/entries/resolve`, use the returned canonical ID
-3. **Resolution fails?** → pass the raw value through unchanged (best-effort); downstream validation catches invalid IDs
-
-This is implemented in `wip-auth`'s `resolve_entity_id()` function, called at the API boundary before business logic runs.
+1. **Namespace context** comes from the `namespace` parameter, from a single-namespace API key, or from a qualified identifier's own prefix.
+2. **With context**, every identifier — a canonical UUID included — is verified by the Registry (`POST /api/registry/entries/resolve`, through `resolve_entity_id()`): there is no format-based bypass. A miss answers 404; a value several entities hold is refused as ambiguous, never one of them picked; a Registry that does not answer is a 503, never a miss.
+3. **Without context**, nothing is asked of the Registry: a UUID passes through unverified and, unless the door is `strict`, so does a value, for a door that has a by-value fallback of its own. A strict door (a filter with no fallback) answers 422 instead.
 
 ### Caching
 

@@ -484,7 +484,14 @@ async def resolve_entity_id(
         The canonical entity ID
 
     Raises:
-        EntityNotFoundError: If the identifier is not found in Registry
+        EntityNotFoundError: the Registry answered that it holds no such entity.
+        AmbiguousEntityError: the identifier names several entities (a
+            subclass of EntityNotFoundError).
+        RegistryUnavailableError: the Registry did not answer, answered an
+            error status, or answered the item with an error — never a miss.
+        RegistryError: the Registry refused the request itself (an
+            ``invalid_*`` item, e.g. an unknown entity type): a refusal a
+            retry will not change, not an outage.
     """
     cache_key = _entity_key(namespace, entity_type, raw_id, include_statuses)
     if _cache_readable(bypass_cache):
@@ -859,8 +866,10 @@ async def resolve_entity_ids(
         EntityNotFoundError: strict mode only — an identifier not found.
         AmbiguousEntityError: strict mode only — an identifier names
             several entities (a subclass of EntityNotFoundError).
-        RegistryUnavailableError: the Registry did not answer, or answered
-            an item with an error — never reported as a miss.
+        RegistryUnavailableError: the Registry did not answer, answered an
+            error status, or answered an item with an error — never a miss.
+        RegistryError: the Registry refused an item for what was sent (an
+            ``invalid_*`` error_code): a refusal, not an outage.
     """
     result, to_resolve = _cached_resolutions(
         raw_ids, entity_type, namespace, include_statuses, bypass_cache,

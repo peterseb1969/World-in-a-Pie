@@ -25,7 +25,7 @@ from document_store.services.backup_engine import (
 )
 from registry.models.entry import RegistryEntry
 from wip_auth.registry_client import RegistryUnavailableError
-from wip_auth.resolve import AmbiguousEntityError
+from wip_auth.resolve import AmbiguousEntityError, EntityNotFoundError
 
 from .test_remap_integration import (  # noqa: F401
     SOURCE,
@@ -64,6 +64,24 @@ async def test_an_unanswered_endpoint_check_fails_the_restore_and_clears_nothing
             pytest.raises(RestoreEngineError, match="did not answer"):
         await engine._repair_endpoint_declarations({"src": "tgt"}, {"src": plan}, remapper)
     assert edge["source_templates"] == [{"lookup_value": "FAR_TPL", "resolved": "old-foreign-id"}]
+    assert not [e for e in events if e.phase == "warning"]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_the_registry_stops_says_nothing_about_clearing():
+    """a225a5d9 R9: the first endpoint resolves to nothing, the second hits
+    an outage. The pass stops, nothing is written, and no "cleared" warning
+    contradicts the error's "Nothing was cleared"."""
+    events: list[ProgressEvent] = []
+    engine, edge, plan, remapper = _endpoint_setup(events)
+    edge["source_templates"].append({"lookup_value": "FAR_TWO", "resolved": "old-two"})
+    answers = AsyncMock(side_effect=[
+        EntityNotFoundError("FAR_TPL", "template"),
+        RegistryUnavailableError("registry unreachable"),
+    ])
+    with patch("wip_auth.resolve.resolve_entity_id", answers), \
+            pytest.raises(RestoreEngineError, match="did not answer"):
+        await engine._repair_endpoint_declarations({"src": "tgt"}, {"src": plan}, remapper)
     assert not [e for e in events if e.phase == "warning"]
 
 

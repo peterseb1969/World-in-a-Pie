@@ -171,6 +171,7 @@ from .key_salt import adopt as adopt_salt
 from .key_salt import current_salt
 from .key_salt import write_lock as key_salt_write_lock
 from .namespace_identity import id_held_for, new_namespace_id
+from .reservation_store import is_id_prefix_clash, reservation_id_prefixes
 
 logger = logging.getLogger("registry.system_backup")
 
@@ -548,6 +549,7 @@ SkipReason = Literal[
     "unrelated_namespace_here",  # archived with no namespace id; a namespace of its name here is another one
     "scoped_privileged_key",    # a key in wip-admins or wip-services with a namespaces list
     "key_not_restored",         # a grant to an archived key this restore does not write
+    "id_prefix_taken",          # a reservation's id_config prefix is another reservation's here
 ]
 
 
@@ -1778,17 +1780,27 @@ async def _restore_reservations(
             "created_at": r.created_at or datetime.now(UTC),
             "created_by": r.created_by or restored_by,
             "managed_by": None, "origin": "restored",
+            "id_prefixes": reservation_id_prefixes(r.prefix, r.app, dict(r.settings)),
         }
-        if existing is not None:
-            await existing.set(fields)
-            continue
         try:
-            await RuntimeReservation(prefix=r.prefix, **fields).insert()
-        except DuplicateKeyError:
+            if existing is not None:
+                await existing.set(fields)
+            else:
+                await RuntimeReservation(prefix=r.prefix, **fields).insert()
+        except DuplicateKeyError as exc:
             del planned[r.prefix]
-            _concurrent_write(out, r.prefix, _skip_reservation(
-                r.prefix, "concurrent_write", "reserved by another request during the restore",
-            ))
+            skip = (
+                _skip_reservation(
+                    r.prefix, "id_prefix_taken",
+                    "another reservation here claims one of its id_config prefixes; a "
+                    "prefix names one ID sequence on the install",
+                )
+                if is_id_prefix_clash(exc)
+                else _skip_reservation(
+                    r.prefix, "concurrent_write", "reserved by another request during the restore",
+                )
+            )
+            _concurrent_write(out, r.prefix, skip)
     return planned
 
 
@@ -1841,9 +1853,12 @@ async def _restore_keys(
 
 
 def _concurrent_write(out: RecordReport, record_id: str, skip: SkippedRecord) -> None:
-    """A record another request created between the restore's read and its
-    insert: listed as skipped instead of created; the restore goes on."""
-    out.created.remove(record_id)
+    """A record the restore could not write after planning it (another
+    request wrote it meanwhile, or it collides with a record here): listed as
+    skipped instead of created or replaced; the restore goes on."""
+    for planned in (out.created, out.replaced):
+        if record_id in planned:
+            planned.remove(record_id)
     if record_id in out.orphaned:
         out.orphaned.remove(record_id)
     out.skipped.append(skip)

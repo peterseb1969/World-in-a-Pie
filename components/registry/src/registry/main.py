@@ -286,6 +286,9 @@ async def _start_key_management(api_key_provider: APIKeyProvider) -> asyncio.Tas
         await key_import.run_pass(api_key_provider)
     except Exception as e:
         print(f"WARNING: Key import failed; the previous import stands: {e}")
+    # Reservations stored before id_prefixes was kept on each record.
+    from .services.reservation_store import backfill_id_prefixes
+    await backfill_id_prefixes()
 
     # Load runtime keys from MongoDB and add to provider. A managed key
     # the provider already holds as a config key of the same name stays

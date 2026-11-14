@@ -824,6 +824,11 @@ export type SystemRestoreSkipReason =
    * on both sides keeps the grants the API gave it.
    */
   | 'key_not_restored'
+  /**
+   * A reservation one of whose id_config prefixes another reservation here
+   * already claims: a prefix names one ID sequence on the install.
+   */
+  | 'id_prefix_taken'
 
 export interface SystemRestoreSkipped {
   /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */
