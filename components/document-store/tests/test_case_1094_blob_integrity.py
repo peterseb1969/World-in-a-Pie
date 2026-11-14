@@ -50,6 +50,9 @@ class _Storage:
     async def upload(self, storage_key, content, content_type=None):
         self.uploaded[storage_key] = content
 
+    async def exists(self, storage_key):
+        return storage_key in self.uploaded
+
 
 def _warnings(events) -> list[str]:
     return [e.message for e in events if e.phase == "warning"]

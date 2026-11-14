@@ -141,7 +141,7 @@ def assess_migration(
                     sources[from_version] = e
                 source_identity = sources[from_version]
                 if isinstance(source_identity, UnresolvableTemplate):
-                    if source_identity.missing in (None, (template_id, from_version)):
+                    if source_identity.missing == (template_id, from_version):
                         cohort.blocked = f"version {from_version} is not in the archive"
                     else:
                         cohort.blocked = (

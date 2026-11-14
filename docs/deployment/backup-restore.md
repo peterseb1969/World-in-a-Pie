@@ -371,6 +371,34 @@ all four tables alongside the document tables.
 
 ---
 
+## Order: restore a namespace's data before anything reserves its name
+
+A platform admin's ID-preserving restore re-creates each namespace under the
+`namespace_id` its archive records. A name reserved here **for another id**
+belongs to a different namespace, and the restore is refused with 409 (the
+job's error carries the Registry's text, naming the reservation and the way
+out). So restore the data first, then deploy the apps and create the keys
+that reserve its names:
+
+- **A reservation made by an API key** (`POST /api/registry/reservations`)
+  mints an id when no namespace of the name exists. Made before the restore,
+  it refuses it. To restore now, a platform admin releases it
+  (`DELETE /api/registry/reservations/{prefix}`), the restore runs, and the
+  key reserves the name again; it then takes the restored namespace's id.
+- **A reservation this install's wip-deploy makes for an app** holds no id
+  while its namespace is absent, so it does not refuse the restore. Restore
+  before the app's bootstrap writes into the namespace, though: a plain
+  restore needs the namespace empty, and once the namespace exists the
+  reservation holds its id, not the archive's. The API does not release a
+  wip-deploy reservation; if one ever refuses a restore, remove the app with
+  wip-deploy, restore, and add the app again.
+
+A reservation *holder's* own restore (not a platform admin's) creates the
+namespace under the reservation's id instead, and the job warns that the
+namespace is not the archived one.
+
+---
+
 ## Sharp edge: runtime API keys DO NOT survive the ritual
 
 Two kinds of API keys exist, and the ritual treats them very differently:
@@ -403,6 +431,7 @@ env).
 [ ] Backup job's `warnings` empty — a "created or deleted while the backup read them" warning means back up again
 [ ] Inventory of runtime API keys + grants that will need re-minting
 [ ] Mongo AND postgres volumes wiped together (or target namespaces + schemas absent)
+[ ] Data restored before the apps are deployed and before any key reserves the names
 [ ] Restore run; drop_stale_reporting only after understanding what it drops
 [ ] Job completed — check the job record's `warnings` list, not just its status
 [ ] check_reporting_parity green for every restored namespace

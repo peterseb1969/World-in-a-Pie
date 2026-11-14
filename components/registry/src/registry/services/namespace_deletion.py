@@ -50,6 +50,33 @@ _recovery_sleep = asyncio.sleep  # replaced in tests
 
 # Journal statuses resume_deletion picks up: not finished cleanly.
 _RESUMABLE = ("in_progress", "failed", "completed_with_warnings")
+# Journal statuses that keep a prefix from being created again: the deletion
+# has steps it has not run yet (in progress, or stopped on a failed step).
+# Once the prefix exists again those steps would keep the new namespace's
+# data, so the old namespace's stored files and reporting rows would never
+# be removed. A deletion that completed with warnings ran every step; it
+# does not hold the prefix.
+_HOLDS_PREFIX = ("in_progress", "failed")
+
+
+async def unfinished_deletion(prefix: str) -> str | None:
+    """Why ``prefix`` may not be created now, or None when it may: a
+    deletion of a namespace that held it has steps still to run."""
+    journal = await DeletionJournal.find_one(
+        {"namespace": prefix, "status": {"$in": list(_HOLDS_PREFIX)}},
+        sort=[("requested_at", -1)],
+    )
+    if journal is None:
+        return None
+    state = "is still running" if journal.status == "in_progress" else "stopped on a failed step"
+    return (
+        f"The deletion of an earlier namespace '{prefix}' {state} and has steps "
+        "left to run; the name cannot be created again until it finishes. "
+        f"Resume it with POST /api/registry/namespaces/{prefix}/resume-delete "
+        f"(GET /api/registry/namespaces/{prefix}/deletion-status shows its steps)."
+    )
+
+
 # How long a run's claim on a journal holds without a write. Every journal
 # write refreshes it; a run that died stops refreshing, and after this the
 # next run (the recovery loop, or a resume) takes the journal over.

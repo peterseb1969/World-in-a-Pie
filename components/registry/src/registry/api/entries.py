@@ -2081,21 +2081,41 @@ async def _lookup_by_key_value(
         query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
     if item.entity_type:
         query["entity_type"] = item.entity_type
-    matches = await RegistryEntry.find(query).sort("+created_at").limit(
+    fetched = await RegistryEntry.find(query).sort("+created_at").limit(
         _RESOLVE_CANDIDATE_LIMIT + 1,
     ).to_list()
-    matches = [m for m in matches if await access.allows(m.namespace, "read")]
+    matches = [m for m in fetched if await access.allows(m.namespace, "read")]
     if len(matches) > 1:
-        return LookupResponse(
-            index=i, status="ambiguous",
-            error=(
-                f"'{item.entry_id}' is carried by {len(matches)} entries; "
-                "qualify it (namespace, entity_type) or use a canonical ID."
-            ),
-            error_code="ambiguous",
-            candidates=[_candidate(m, item.entry_id) for m in matches[:_RESOLVE_CANDIDATE_LIMIT]],
-        )
+        return _ambiguous_lookup(i, item, fetched, matches)
     return matches[0] if matches else None
+
+
+def _ambiguous_lookup(
+    i: int, item: LookupByIdItem, fetched: list[RegistryEntry], matches: list[RegistryEntry],
+) -> LookupResponse:
+    """The answer for a value several readable entries carry."""
+    count, truncated = _match_count(fetched, matches)
+    return LookupResponse(
+        index=i, status="ambiguous",
+        error=(
+            f"'{item.entry_id}' is carried by {count} entries; "
+            "qualify it (namespace, entity_type) or use a canonical ID."
+        ),
+        error_code="ambiguous",
+        details={"truncated": True} if truncated else None,
+        candidates=[_candidate(m, item.entry_id) for m in matches[:_RESOLVE_CANDIDATE_LIMIT]],
+    )
+
+
+def _match_count(fetched: list[RegistryEntry], readable: list[RegistryEntry]) -> tuple[str, bool]:
+    """How many entries an ambiguous answer says match, and whether more may
+    match than it lists. The query stops one past the candidate limit, so a
+    full fetch says only that there are more."""
+    if len(readable) > _RESOLVE_CANDIDATE_LIMIT:
+        return f"more than {_RESOLVE_CANDIDATE_LIMIT}", True
+    if len(fetched) > _RESOLVE_CANDIDATE_LIMIT:
+        return f"{len(readable)} or more", True
+    return str(len(readable)), False
 
 
 def _candidate(entry: RegistryEntry, value: str) -> LookupCandidate:
@@ -2753,33 +2773,36 @@ async def _resolve_composite_key(
         query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
     if item.entity_type:
         query["entity_type"] = item.entity_type
-    matches = await RegistryEntry.find(query).sort("+created_at").limit(
+    fetched = await RegistryEntry.find(query).sort("+created_at").limit(
         _RESOLVE_CANDIDATE_LIMIT + 1,
     ).to_list()
-    matches = [m for m in matches if await access.allows(m.namespace, "read")]
+    matches = [m for m in fetched if await access.allows(m.namespace, "read")]
     if len(matches) > 1:
-        return _ambiguous_resolution(i, composite_key, key_hash, matches)
+        return _ambiguous_resolution(i, composite_key, key_hash, matches, fetched)
     return matches[0] if matches else None
 
 
 def _ambiguous_resolution(
     i: int, composite_key: dict[str, Any], key_hash: str, matches: list[RegistryEntry],
+    fetched: list[RegistryEntry],
 ) -> ResolveResponse:
     """The answer for a key several readable entries hold: ambiguous, with
     each candidate and whether it matched by primary key or synonym."""
+    count, truncated = _match_count(fetched, matches)
     logger.warning(
-        "Composite key %s resolves to %d entries %s: answered ambiguous.",
-        key_hash, len(matches), [e.entry_id for e in matches],
+        "Composite key %s resolves to %s entries %s: answered ambiguous.",
+        key_hash, count, [e.entry_id for e in matches],
     )
     return ResolveResponse(
         index=i,
         status="ambiguous",
         composite_key=composite_key,
         error=(
-            f"The key resolves to {len(matches)} entries; qualify it "
+            f"The key resolves to {count} entries; qualify it "
             "(namespace, a canonical ID) to name one."
         ),
         error_code="ambiguous",
+        details={"truncated": True} if truncated else None,
         candidates=[
             LookupCandidate(
                 entry_id=m.entry_id, namespace=m.namespace,

@@ -907,7 +907,12 @@ in §5.5.
   holding that id) is written as it was. Any other grant is written
   **orphaned**, with the id: on a name nobody holds here, and on a name held
   here by *another* namespace (a namespace or reservation of the same name
-  with another id, such as another owner's reservation). An orphan counts as
+  with another id, such as another owner's reservation). A grant archived
+  with **no** id was given while no namespace held its name on the source (a
+  key-file grant, or a key created listing a namespace not yet created): it
+  is written effective, as it was, for the namespace that takes the name
+  later, and skipped (`unrelated_namespace_here`) where a namespace of the
+  name is here already. An orphan counts as
   no grant until it is activated, and the report lists it. A key's own
   `namespaces` list does not stand in for it: the list is the key's scope
   and gives no access by itself. A grant the archive holds orphaned never replaces one
@@ -945,7 +950,10 @@ in §5.5.
   archive gets no such grants. A Registry from before version 2 refuses a
   version 2 archive.
 - **Archives without namespace ids are refused**, system and namespace
-  archives alike. To bring one forward, restore it on a WIP from before
+  archives alike. A namespace archive whose manifest records no namespace
+  config at all (the namespace had no Registry record when it was backed up)
+  is the exception: nothing in it names a namespace, so it is restored under
+  the id and settings this install gives the namespace, with a job warning. To bring one forward, restore it on a WIP from before
   namespace ids, start this version (its startup gives every namespace and
   reservation an id, and deletes orphaned grants it cannot match), and back
   up again.
@@ -970,8 +978,11 @@ in §5.5.
   re-creates the namespace under its archived `namespace_id`, unless a
   namespace on this install already holds that id (restoring beside the
   original makes a copy, with a new id; the job warns). Onto a name a runtime
-  key reserved here for another id it is refused (409): release that
-  reservation first. A name this install reserves for one of its apps holds no
+  key reserved here for another id it is refused (409), so restore a
+  namespace's data before creating the keys that reserve its name; to restore
+  now, a platform admin releases that reservation
+  (`DELETE /api/registry/reservations/{prefix}`) and the key reserves the name
+  again afterwards. A name this install reserves for one of its apps holds no
   id while no namespace of it exists, so the app can stay installed: delete
   the namespace, then restore it, before the app's bootstrap re-creates it. A
   reservation holder's restore creates the namespace under the reservation's

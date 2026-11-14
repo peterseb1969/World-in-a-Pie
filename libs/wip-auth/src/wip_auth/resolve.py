@@ -60,6 +60,11 @@ _resolution_cache: dict[CacheKey, tuple[str, float]] = {}
 # Registry's word that an entity lost its names (wip_auth.cache_events) drops
 # every spelling cached for it. Kept in step with _resolution_cache.
 _keys_by_id: dict[str, set[CacheKey]] = {}
+# Moves on every invalidation. A resolve reads it before asking the Registry
+# and caches its answer only if it has not moved meanwhile: an invalidation
+# handled while the answer was in flight would otherwise be undone by caching
+# the answer it invalidated, which is then served until its TTL runs out.
+_cache_epoch = 0
 # How long a read may answer from a cached resolution. It bounds how long a
 # read can lag a namespace deleted and re-created under the same name (the
 # cached id is the deleted entity's): 30 s keeps that window short while
@@ -331,8 +336,17 @@ def _drop_key(cache_key: CacheKey) -> None:
             del _keys_by_id[entry[0]]
 
 
-def _set_cached(cache_key: CacheKey, canonical_id: str) -> None:
-    """Cache a resolution result."""
+def cache_epoch() -> int:
+    """The invalidation count a resolve passes back to ``_set_cached``."""
+    return _cache_epoch
+
+
+def _set_cached(cache_key: CacheKey, canonical_id: str, epoch: int | None = None) -> None:
+    """Cache a resolution result, unless the cache was invalidated since
+    ``epoch`` (read before the Registry was asked): the answer may then be
+    the very one the invalidation dropped."""
+    if epoch is not None and epoch != _cache_epoch:
+        return
     _drop_key(cache_key)  # a key re-cached to another id leaves the old index
     _resolution_cache[cache_key] = (canonical_id, time.monotonic() + _CACHE_TTL)
     _keys_by_id.setdefault(canonical_id, set()).add(cache_key)
@@ -340,6 +354,8 @@ def _set_cached(cache_key: CacheKey, canonical_id: str) -> None:
 
 def clear_resolution_cache() -> None:
     """Clear the resolution cache (useful for testing)."""
+    global _cache_epoch
+    _cache_epoch += 1
     _resolution_cache.clear()
     _keys_by_id.clear()
 
@@ -348,6 +364,8 @@ def forget_resolutions(entity_ids: Iterable[str]) -> int:
     """Drop every cached resolution to one of ``entity_ids``: their names
     changed (removed, released, moved by a merge) or the entities are gone.
     Returns how many cache entries were dropped."""
+    global _cache_epoch
+    _cache_epoch += 1
     dropped = 0
     for entity_id in entity_ids:
         for cache_key in list(_keys_by_id.get(entity_id, ())):
@@ -407,22 +425,34 @@ class AmbiguousEntityError(EntityNotFoundError):
     entity some of the time.
     """
 
-    def __init__(self, identifier: str, entity_type: str, candidates: list[dict[str, Any]], total: int):
+    def __init__(
+        self, identifier: str, entity_type: str, candidates: list[dict[str, Any]], total: int,
+        *, truncated: bool = False,
+    ):
         Exception.__init__(self)
         self.identifier = identifier
         self.entity_type = entity_type
         self.namespace = None
         self.candidates = candidates
         self.total = total
+        # The Registry listed only some of the matches: ``total`` is a floor.
+        self.truncated = truncated
         keys = ", ".join(
             f"{c.get('entry_id')} via {c.get('matched_composite_key') or c.get('matched_via')}"
             for c in candidates[:5]
         )
+        count = f"{total} or more" if truncated else str(total)
         self.args = (
             f"{entity_type} identifier '{identifier}' is ambiguous: it resolves to "
-            f"{total} entities ({keys}{', …' if total > 5 else ''}); use a canonical ID "
+            f"{count} entities ({keys}{', …' if total > 5 else ''}); use a canonical ID "
             "or a qualified value",
         )
+
+
+def _truncated(answer: dict[str, Any]) -> bool:
+    """Whether the Registry's ambiguous answer lists fewer candidates than
+    match (it lists at most a fixed number)."""
+    return bool((answer.get("details") or {}).get("truncated"))
 
 
 async def resolve_entity_id(
@@ -463,6 +493,7 @@ async def resolve_entity_id(
             return cached
 
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
+    epoch = cache_epoch()
     try:
         canonical_id = await _post_resolve(payload, raw_id, entity_type, namespace)
     except AmbiguousEntityError:
@@ -488,7 +519,7 @@ async def resolve_entity_id(
         if canonical_id_or_none is None:
             raise
         canonical_id = canonical_id_or_none
-    _set_cached(cache_key, canonical_id)
+    _set_cached(cache_key, canonical_id, epoch)
     return canonical_id
 
 
@@ -538,7 +569,9 @@ async def _post_resolve(
     if results and results[0].get("status") == "ambiguous":
         # Several entities hold the key: refused, never one of them picked.
         candidates = results[0].get("candidates") or []
-        raise AmbiguousEntityError(identifier, entity_type, candidates, len(candidates))
+        raise AmbiguousEntityError(
+            identifier, entity_type, candidates, len(candidates), truncated=_truncated(results[0]),
+        )
 
     # Genuine "Registry looked and found nothing" — the only case where an
     # under-specified identifier is a plausible cause, so the namespace
@@ -746,13 +779,8 @@ async def resolve_term_by_fields(
         if namespace is not None:
             candidates.append((namespace, terminology))
 
-    canonical_id: str | None = None
-    for candidate_ns, terminology_value in candidates:
-        try:
-            canonical_id = await _resolve_term_at(candidate_ns, terminology_value, value)
-            break
-        except EntityNotFoundError:
-            continue
+    epoch = cache_epoch()
+    canonical_id = await _first_term_candidate(candidates, value)
 
     if canonical_id is None and ":" not in terminology:
         coordinates = await terminology_coordinates_by_id(terminology)
@@ -765,8 +793,23 @@ async def resolve_term_by_fields(
 
     if canonical_id is None:
         raise EntityNotFoundError(f"{terminology}/{value}", "term", namespace)
-    _set_cached(cache_key, canonical_id)
+    _set_cached(cache_key, canonical_id, epoch)
     return canonical_id
+
+
+async def _first_term_candidate(candidates: list[tuple[str, str]], value: str) -> str | None:
+    """The term the first (namespace, terminology value) reading that holds
+    ``value`` resolves to, or None when none does. An ambiguous reading is
+    refused, never taken as a miss that lets the next one resolve to another
+    term."""
+    for candidate_ns, terminology_value in candidates:
+        try:
+            return await _resolve_term_at(candidate_ns, terminology_value, value)
+        except AmbiguousEntityError:
+            raise
+        except EntityNotFoundError:
+            continue
+    return None
 
 
 # Chunk size for batch resolve calls — large bulk doors (a 35k-relation
@@ -820,6 +863,7 @@ async def resolve_entity_ids(
     api_key = _get_api_key()
     for start in range(0, len(to_resolve), _RESOLVE_CHUNK):
         chunk = to_resolve[start:start + _RESOLVE_CHUNK]
+        epoch = cache_epoch()
         answers = await _post_resolve_chunk(
             registry_url, api_key, chunk, entity_type, namespace, include_statuses,
         )
@@ -829,7 +873,9 @@ async def resolve_entity_ids(
                 raw_id, resolve_result, entity_type, namespace, strict,
             )
             if canonical_id is not None:
-                _set_cached(_entity_key(namespace, entity_type, raw_id, include_statuses), canonical_id)
+                _set_cached(
+                    _entity_key(namespace, entity_type, raw_id, include_statuses), canonical_id, epoch,
+                )
                 result[raw_id] = canonical_id
     return result
 
@@ -919,7 +965,9 @@ async def _settle_batch_resolution(
     if status == "ambiguous":
         if strict:
             candidates = resolve_result.get("candidates") or []
-            raise AmbiguousEntityError(raw_id, entity_type, candidates, len(candidates))
+            raise AmbiguousEntityError(
+                raw_id, entity_type, candidates, len(candidates), truncated=_truncated(resolve_result),
+            )
         return None
     canonical_id: str | None = None
     if entity_type != "term" and not _looks_like_uuid(raw_id):

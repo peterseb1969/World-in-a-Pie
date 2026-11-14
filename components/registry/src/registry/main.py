@@ -94,8 +94,11 @@ async def lifespan(app: FastAPI):
     await _ensure_wip_namespace()
 
     # NATS tells other services' caches when a namespace was deleted; without
-    # it they expire on their TTL. Started before recovery, whose deletions
-    # announce themselves. Connects in the background, never blocks startup.
+    # it they expire on their TTL. Started before recovery, but it connects in
+    # the background and never blocks startup: a deletion recovery finishes
+    # before the connection is up is not announced (its announcement is
+    # dropped, not queued), and other services' caches then expire on their
+    # TTL.
     if await start_event_bus(settings.NATS_URL):
         print("NATS cache-invalidation bus started (connecting in background)")
     else:

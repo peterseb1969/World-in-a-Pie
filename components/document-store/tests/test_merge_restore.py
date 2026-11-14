@@ -333,6 +333,7 @@ class TestMergeInserts:
             uploaded.append(storage_key)
 
         storage.upload = _upload
+        storage.exists = AsyncMock(return_value=False)
 
         reader = _archive(
             {"files": [

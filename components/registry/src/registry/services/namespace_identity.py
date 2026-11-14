@@ -89,12 +89,7 @@ async def id_for_create(prefix: str, archived_id: str | None = None) -> tuple[st
     if archived_id is None:
         return (reserved_id or new_namespace_id()), None
     if reservation is not None and reserved_id is not None and reserved_id != archived_id:
-        owner = f"app '{reservation.app}'" if reservation.managed_by else f"runtime key '{reservation.app}'"
-        raise NamespaceIdentityConflict(
-            f"Namespace '{prefix}' is reserved here ({owner}) for namespace id "
-            f"{reserved_id}, not the archived namespace {archived_id}. Release the "
-            "reservation first to restore the archived namespace under this name."
-        )
+        raise NamespaceIdentityConflict(_reserved_conflict(prefix, reservation, archived_id))
     holder = await Namespace.find_one(Namespace.namespace_id == archived_id)
     if holder is not None:
         return new_namespace_id(), (
@@ -103,6 +98,31 @@ async def id_for_create(prefix: str, archived_id: str | None = None) -> tuple[st
             "archive's orphaned grants stay orphaned"
         )
     return archived_id, None
+
+
+def _reserved_conflict(prefix: str, reservation: RuntimeReservation, archived_id: str) -> str:
+    """The refusal of an archived id carried onto a name reserved for another
+    id: what holds the name, and the order of steps that avoids it."""
+    if reservation.managed_by:
+        holder = f"for app '{reservation.app}' (by wip-deploy)"
+        release = (
+            "That reservation is wip-deploy's and the API does not release it: "
+            "remove the app with wip-deploy, restore, then add the app again"
+        )
+    else:
+        holder = f"by API key '{reservation.app}'"
+        release = (
+            "To restore it now, a platform admin releases that reservation "
+            f"(DELETE /api/registry/reservations/{prefix}) and the restore is "
+            "run again; the key can reserve the name again afterwards"
+        )
+    return (
+        f"Namespace '{prefix}' is reserved here {holder} for namespace id "
+        f"{reservation.namespace_id}, not the archived namespace {archived_id}: "
+        "the reservation is for a different namespace. Restore a namespace's "
+        "data before deploying the apps or creating the keys that reserve its "
+        f"name. {release}."
+    )
 
 
 async def adopt_on_reservation(prefix: str, namespace_id: str) -> None:

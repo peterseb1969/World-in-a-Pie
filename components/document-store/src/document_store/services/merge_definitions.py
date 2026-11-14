@@ -94,10 +94,12 @@ _RETIRED_FIELDS = frozenset({
 })
 
 # A term's lifecycle. A difference is not a disagreement about what the term
-# means, so it never refuses the merge. Retirement travels one way: a term
-# the archive retired (deprecated or inactive) while the target still has it
-# active is retired on the target too, with the archive's reason and
-# replacement; a term the target already retired stays retired.
+# means, so it never refuses the merge. Retirement travels one way, and only
+# under carry_retirements: then a term the archive retired (deprecated or
+# inactive) while the target still has it active is retired on the target
+# too, with the archive's reason and replacement. Without the flag it stays
+# active and is counted (retirements_not_carried). A term the target already
+# retired stays retired.
 _TERM_LIFECYCLE_FIELDS = frozenset({
     "status", "deprecated_reason", "replaced_by_term_id",
 })

@@ -51,6 +51,7 @@ def _ambiguous_409(e: AmbiguousEntityError) -> HTTPException:
             "identifier": e.identifier,
             "candidates": e.candidates,
             "total": e.total,
+            "truncated": e.truncated,
         },
     )
 

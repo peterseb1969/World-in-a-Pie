@@ -2668,7 +2668,10 @@ Registry.
   of the same name no longer receives the archive's grants.
 - **Hard cut-over: archives without namespace ids are refused.** That covers
   system archives (grants and reservations), namespace archives
-  (`namespace_config.namespace_id`, wip-archive 0.30.0). To bring an old
+  (`namespace_config.namespace_id`, wip-archive 0.30.0). A namespace archive
+  with no `namespace_config` at all (backed up while the namespace had no
+  Registry record) is not refused: it is restored under the id and settings
+  the target gives the namespace, and the job warns. To bring an old
   archive forward, restore it on a WIP
   from before this change, start this version, and back up again.
 - **Startup migration**, once: every namespace and reservation without an id
@@ -2811,7 +2814,10 @@ Plain, merge and fresh restores wrote file records first and uploaded the
 bytes at the very end, so a failure in between left file records whose bytes
 were never uploaded. The bytes now go up first (a merge's only for the files it
 inserts, a fresh restore's under their new ids). A failure afterwards leaves at
-most unreferenced bytes, which a retry overwrites. The blob step's progress
+most unreferenced bytes. A plain restore or merge retried with the same archive
+finds the same bytes under the same keys and leaves them as they are; a fresh
+restore mints new ids on every run, so a failed fresh restore's bytes stay
+unreferenced. The blob step's progress
 messages no longer carry a percentage, since the step now runs early in the job.
 
 ### A fresh restore folding several namespaces into one refuses key collisions before writing
@@ -3904,7 +3910,7 @@ neither exists nor is reserved. It writes it with `orphaned: true`:
   `overwrite`.
 - **It is activated** when a platform admin creates the namespace (a
   namespace restore an admin runs does this, as do `PUT`/`POST
-  /namespaces` and the namespace import, which list them in the response's
+  /namespaces`, which list them in the response's
   `activated_orphan_grants`), when a namespace admin activates it with `POST
   /api/registry/namespaces/{prefix}/grants/activate`, or when an admin
   grants it again.
@@ -4635,7 +4641,7 @@ refused now. Admin and service keys pass every inbound gate.
 writing keys read on it, or open it (`PUT /api/registry/namespaces/{prefix}`
 with `{"inbound_references": "open"}`, MCP `upsert_namespace`). After the
 upgrade, "not found" on a cross-namespace reference whose target exists means
-the writing key lacks read on it. Namespace exports and backups carry the
+the writing key lacks read on it. Backups carry the
 setting; restoring an archive from before it leaves the target namespace's
 own setting (`closed` for a namespace the restore creates).
 
@@ -4711,7 +4717,7 @@ event subjects, PostgreSQL schema names and URL paths, where a dot, a NATS
 wildcard (`*`, `>`) or whitespace shifts or widens the token it becomes.
 
 - Creating a namespace (`POST /api/registry/namespaces`, the creating
-  `PUT /api/registry/namespaces/{prefix}`, namespace import, and so every
+  `PUT /api/registry/namespaces/{prefix}`, and so every
   restore that creates one) refuses a prefix not matching
   `[a-z0-9][a-z0-9_-]*` with 400.
 - An existing namespace keeps its name and stays readable and writable,
@@ -5299,7 +5305,7 @@ parameter. Until now there was NO way to remove a term's description;
 consumers treating `""` as absent can drop that shim once their data is
 normalized.
 
-### Merging a newer backup into an older namespace works; merges carry term deprecations
+### Merging a newer backup into an older namespace works; merges can carry term deprecations
 
 A merge (`mode: merge`) of a newer backup of a namespace into an older state
 of it was refused whenever a term had been added since. The terminology's
@@ -5314,7 +5320,9 @@ Now:
   ends with the right count.
 - **A term the archive retired** (deprecated or inactive) that the target
   still has active is retired on the target, with the archive's reason and
-  replacement (mapped to the target's term ids).
+  replacement (mapped to the target's term ids), when the merge sets
+  `carry_retirements`. Without it the term stays active and the job counts
+  it (`retirements_not_carried`).
 - **Retirement travels one way:** a term the target retired stays retired,
   and the difference is reported like other target-wins fields.
 

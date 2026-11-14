@@ -593,7 +593,11 @@ if (preview.failed === 0) {
   })
 }
 // Per-document outcome in results[i]: status 'updated' | 'error'
-// (error_code 'validation_failed' | 'identity_fields_changed')
+// (error_code 'validation_failed', or 'identity_hash_stale': the stored identity
+// hash is not the one the document's identity produces under to_version; re-hash
+// the namespace (rehashIdentities, below) or create new documents).
+// Versions that declare different identity_fields reject the whole call
+// (HTTP 409, 'identity_fields_changed'), not per document.
 ```
 
 ### Maintenance: Rehashing Identities

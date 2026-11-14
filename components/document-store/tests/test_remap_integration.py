@@ -566,6 +566,12 @@ class _Storage:
     async def upload(self, storage_key, content, content_type=None):
         self.objects[storage_key] = content
 
+    async def exists(self, storage_key):
+        return storage_key in self.objects
+
+    async def download(self, storage_key):
+        return self.objects[storage_key]
+
 
 class TestRestoredFilesOwnTheirBytes:
     """A fresh restore re-mints every file id and copies the bytes under the

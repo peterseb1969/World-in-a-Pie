@@ -4,7 +4,9 @@ Provenance: CASE-1096 part 2. Every restore mode wrote its file records first
 and uploaded the bytes at the very end, so a failure in between (a later
 namespace's write, the object store) left file records whose bytes were
 never uploaded. The bytes now go up first: a failure afterwards leaves at
-most unreferenced bytes, which a retry overwrites.
+most unreferenced bytes. A plain restore or merge retried with the same
+archive finds them under the same keys and leaves them as they are; a fresh
+restore mints new ids on every run, so a failed run's bytes stay unreferenced.
 
 The stand-in object store checks, at every upload, that no file record has
 been written yet.
@@ -65,6 +67,7 @@ def _storage_checking(mongo, namespace: str):
 
     storage = MagicMock()
     storage.upload = upload
+    storage.exists = AsyncMock(return_value=False)
     storage.uploaded = uploaded
     return storage
 

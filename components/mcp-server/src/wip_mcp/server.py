@@ -3844,6 +3844,12 @@ async def migrate_documents(
     version is still present (`unknown_field`), or a newly-mandatory field is
     missing (`required`). Fix those (e.g. PATCH-null a removed field via
     update_document) while the source version is still writable, then re-run.
+    A document can also fail with `identity_hash_stale`: its stored identity
+    hash is not the one its identity produces under the target version. PATCH
+    does not fix that; re-hash the namespace (POST
+    /api/document-store/maintenance/rehash-identities) if the hash predates the
+    current identity rules, or create new documents if the target changes what
+    identifies them.
 
     The migration is IDENTITY-PRESERVING only: the two template versions must
     declare the same identity_fields. If they differ the re-pin would change the
@@ -5008,10 +5014,12 @@ async def start_restore(
 ) -> str:
     """Restore from a local archive file. Returns the initial BackupJobSnapshot.
 
-    Both modes are ID-preserving and write each namespace in the archive back
-    to ITSELF; writing under a different namespace name is not supported (it
-    requires re-minting IDs — a planned separate mode). Admin permission is
-    required on every namespace the archive carries.
+    Three modes. 'restore' and 'merge' are ID-preserving; 'fresh' re-mints
+    every id. 'restore' writes each namespace in the archive back to ITSELF.
+    'merge' does too, except that a single-namespace archive may be merged
+    into another namespace (target_namespace). Writing under a different name
+    otherwise is mode='fresh'. Admin permission is required on every
+    namespace the archive carries.
 
     mode='restore' (default) requires every target namespace to be EMPTY and
     inserts the archive wholesale, preserving every id.

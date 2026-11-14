@@ -2083,11 +2083,26 @@ class DirectRestoreEngine:
             processed = 0
             skipped = _skipped_types(skip_documents, skip_files)
 
+            # Every target namespace is created first: the Registry's
+            # refusal of a namespace is the last one a restore can meet
+            # before it writes, so a refused restore has written no bytes.
+            for src, tgt in targets:
+                entry = entry_by_prefix.get(src)
+                self._emit(
+                    "phase_namespace",
+                    f"Creating/updating namespace '{tgt}'",
+                    percent=self._pct(processed, total),
+                )
+                await self._upsert_namespace(
+                    tgt, entry.namespace_config if entry else manifest.namespace_config,
+                )
+
             # Bytes before the records that need them. Blobs are flat
             # (namespace-agnostic, globally unique file_ids), so the archive's
             # whole set goes up once, first: a restore that fails later leaves
-            # at most bytes no record points at yet (re-uploaded by a retry),
-            # never a file record whose bytes are missing.
+            # at most bytes no record points at yet (left as they are by a
+            # retry that brings the same bytes), never a file record whose
+            # bytes are missing. No key that holds other bytes is written.
             if not skip_files and self._storage:
                 await self._restore_blobs(reader, targets[0][1])
 
@@ -2179,17 +2194,8 @@ class DirectRestoreEngine:
         processed: int,
         total: int,
     ) -> int:
-        """Write one archived namespace into its target; returns the run's
-        processed count after it."""
-        ns_config = entry.namespace_config if entry else manifest.namespace_config
-
-        self._emit(
-            "phase_namespace",
-            f"Creating/updating namespace '{tgt}'",
-            percent=self._pct(processed, total),
-        )
-        await self._upsert_namespace(tgt, ns_config)
-
+        """Write one archived namespace into its target, which the run
+        created before any write; returns the run's processed count after it."""
         for entity_type in _PLAIN_RESTORE_ORDER:
             if entity_type in skipped:
                 continue
@@ -3493,8 +3499,13 @@ class DirectRestoreEngine:
         self._emit("phase_blobs", f"Copying {len(file_id_map)} blob(s)")
         checksums = self._archive_file_checksums(reader)
         report_missing = self._archive_includes_files(reader)
+        present = await self._blob_keys_holding_archive_bytes(
+            reader, {new_id: old_id for old_id, new_id in file_id_map.items()},
+        )
         copied = 0
         for old_id, new_id in file_id_map.items():
+            if new_id in present:
+                continue
             data = self._checked_blob(reader, old_id, checksums.get(old_id), report_missing)
             if data is None:
                 continue
@@ -6804,6 +6815,8 @@ class DirectRestoreEngine:
         This step is the one a restore takes as its requester, so a dry run
         that skipped it passed requests the real restore refused.
         """
+        if preserve_id_config:
+            self._warn_without_namespace_config(namespace, ns_config)
         body = self._namespace_body(ns_config, preserve_id_config=preserve_id_config)
         params = {"dry_run": "true"} if dry_run else None
         if self._requester.platform_admin:
@@ -6858,6 +6871,17 @@ class DirectRestoreEngine:
                     f"was NOT applied (it is {live.get(field)!r} here); only a platform "
                     "admin changes a namespace's settings"
                 ))
+
+    def _warn_without_namespace_config(self, namespace: str, ns_config: NamespaceConfig | None) -> None:
+        """An archive backed up while its namespace had no Registry record
+        carries no config, so no id: nothing says which namespace it was, and
+        restoring it is not a re-creation."""
+        if ns_config is None:
+            self._emit("warning", (
+                f"Namespace '{namespace}': the archive records no namespace config, "
+                "so no namespace id; the namespace is restored under the id and "
+                "settings this install gives it, not as the archived namespace"
+            ))
 
     def _requester_headers(self, namespace: str) -> dict[str, str]:
         """The credential a namespace create or configure goes out with: the
@@ -7075,6 +7099,55 @@ class DirectRestoreEngine:
             return None
         return data
 
+    async def _blob_keys_holding_archive_bytes(
+        self, reader: ArchiveReader, keys: dict[str, str],
+    ) -> set[str]:
+        """Which storage keys a restore is about to write already hold the
+        bytes it would write there; checked before any of them is written.
+
+        ``keys`` maps each storage key to the archived file whose bytes go
+        under it, for files the restore is about to insert. A free key is
+        written. A key a file record already points at belongs to that file
+        (the restore inserts none it already has), and a key holding other
+        bytes would have them replaced: either refuses the restore, before
+        anything is uploaded. A key no record points at that holds the same
+        bytes (left by a failed run of the same restore, say) is left as it
+        is — there is nothing to write. Existence is asked with a HEAD rather
+        than relied on from a conditional PUT, which a store may ignore.
+        """
+        assert self._storage is not None
+        present: set[str] = set()
+        taken: list[str] = []
+        for storage_key, file_id in keys.items():
+            if not await self._storage.exists(storage_key):
+                continue
+            data = reader.read_blob(file_id)
+            if data is None:
+                continue  # nothing would be written under this key
+            if await self._key_has_file_record(storage_key):
+                taken.append(storage_key)
+                continue
+            stored = await self._storage.download(storage_key)
+            if hashlib.sha256(stored).digest() == hashlib.sha256(data).digest():
+                present.add(storage_key)
+            else:
+                taken.append(storage_key)
+        if taken:
+            shown = ", ".join(taken[:10]) + (f" and {len(taken) - 10} more" if len(taken) > 10 else "")
+            raise RestoreEngineError(
+                f"{len(taken)} file key(s) this archive would write already hold "
+                f"another file's bytes on this install: {shown}. A restore never "
+                "writes over an existing file's bytes; nothing was uploaded."
+            )
+        return present
+
+    async def _key_has_file_record(self, storage_key: str) -> bool:
+        """Whether any file record, in any namespace, uses this storage key."""
+        db_name, coll_name = COLLECTION_MAP["files"]
+        return bool(await self._mongo[db_name][coll_name].count_documents(
+            {"$or": [{"storage_key": storage_key}, {"file_id": storage_key}]}, limit=1,
+        ))
+
     async def _restore_blobs(
         self,
         reader: ArchiveReader,
@@ -7102,11 +7175,17 @@ class DirectRestoreEngine:
         if not blob_ids:
             return
 
+        present = await self._blob_keys_holding_archive_bytes(
+            reader, {file_id: file_id for file_id in blob_ids},
+        )
+
         # No percent: the bytes go up before the records, so the step sits
         # early in the job and a figure here would make the bar jump back.
         self._emit("phase_blobs", f"Uploading {len(blob_ids)} file blobs")
 
         for i, file_id in enumerate(blob_ids):
+            if file_id in present:
+                continue
             data = self._checked_blob(reader, file_id, checksums.get(file_id), report_missing)
             if data is None:
                 continue

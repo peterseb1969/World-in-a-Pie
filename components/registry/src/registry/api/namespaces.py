@@ -43,6 +43,7 @@ from ..services.id_prefixes import (
     collision_error,
     is_prefix_collision,
 )
+from ..services.namespace_deletion import unfinished_deletion
 from ..services.namespace_identity import (
     NamespaceIdentityConflict,
     activate_orphans,
@@ -377,6 +378,8 @@ async def create_namespace(
     Create a new namespace with optional ID algorithm configuration.
 
     If id_config is not provided, defaults to UUID7 for all entity types.
+    409 while the deletion of an earlier namespace of the same name is in
+    progress or stopped on a failed step: resume that deletion first.
     """
     existing = await Namespace.find_one({"prefix": request.prefix})
     if existing:
@@ -386,6 +389,7 @@ async def create_namespace(
         )
     if error := prefix_error(request.prefix):
         raise HTTPException(status_code=400, detail=error)
+    await _refuse_while_deleting(request.prefix)
 
     id_config = request.model_dump(exclude_unset=True).get("id_config") or {}
     namespace_id, _ = await id_for_create(request.prefix)
@@ -467,6 +471,10 @@ async def upsert_namespace(
     `confirm_enable_deletion=true` in the body. The `wip` namespace
     cannot be closed to inbound references either.
 
+    A create answers 409 while the deletion of an earlier namespace of the
+    same name is in progress or stopped on a failed step: resume that
+    deletion first (`POST /namespaces/{prefix}/resume-delete`).
+
     With `dry_run=true` nothing is written: the answer is the namespace as
     the call would store it, and every refusal is the real call's.
     """
@@ -480,6 +488,10 @@ async def upsert_namespace(
         owner = await reservation_owner(identity, prefix)
         reserved = await _check_reserved_upsert(identity, prefix, ns, update_data, owner)
         if ns is not None:
+            # A namespace mid-deletion answers 409 to every caller, this
+            # one too, though it would write nothing.
+            if ns.status == "locked":
+                raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
             # Every supplied setting equals the live value: nothing to write.
             return namespace_to_response(ns)
     elif ns is None:
@@ -590,6 +602,7 @@ async def _create_namespace(
     then the defaults."""
     if error := prefix_error(prefix):
         raise HTTPException(status_code=400, detail=error)
+    await _refuse_while_deleting(prefix)
     settings = _create_settings(update_data, reserved)
     id_config = settings["id_config"]
     try:
@@ -626,6 +639,14 @@ async def _create_namespace(
         logger.warning("Namespace '%s': %s", prefix, identity_warning)
     await _after_create(ns, namespace_id, response, identity, owner)
     return response
+
+
+async def _refuse_while_deleting(prefix: str) -> None:
+    """409 while a deletion of an earlier namespace of this name has steps
+    left to run: they tell the namespace they delete from a new one by its
+    id, so once the name exists again they keep what they were to remove."""
+    if detail := await unfinished_deletion(prefix):
+        raise HTTPException(status_code=409, detail=detail)
 
 
 def _create_settings(update_data: dict[str, Any], reserved: dict[str, Any] | None) -> dict[str, Any]:

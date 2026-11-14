@@ -145,3 +145,15 @@ def test_a_missing_parent_is_reported_as_such_not_as_a_missing_version(tmp_path)
     blocked = report.cohorts[1].blocked
     assert "parent template" in blocked and "is not in the archive" in blocked
     assert not blocked.startswith("version 1 is not in the archive")
+
+
+def test_an_unpinned_parent_is_reported_as_such_not_as_a_missing_version(tmp_path):
+    """Provenance: CASE-1283. A source version the archive carries but cannot
+    resolve (an unpinned parent, circular inheritance, too deep a chain)
+    raises without ``missing``; that was reported as the version being absent."""
+    v1 = dict(V1, extends="0190c000-0000-7000-0000-000000parent")
+    v2 = _template(2, [CODE, {"name": "name", "type": "string"}])
+    report = _assess(tmp_path, [v1, v2], [_doc("d1", {"code": "A"})])
+    blocked = report.cohorts[1].blocked
+    assert "without a pinned extends_version" in blocked
+    assert not blocked.startswith("version 1 is not in the archive")

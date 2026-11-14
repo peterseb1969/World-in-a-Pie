@@ -37,11 +37,9 @@ async def require_admin_key(request: Request) -> str:
     runs and the admin-group set is read from the live auth config
     rather than frozen at import.
 
-    Returns the caller's raw API key header — the namespace export and
-    import endpoints forward it to the sibling stores as their outbound
-    credential. An admin authenticated via OIDC JWT has no API key to
-    forward; those two endpoints need an API-key caller, as they always
-    did.
+    Returns the caller's raw API key header (empty for an admin
+    authenticated by OIDC). No endpoint uses the value: callers bind it only
+    to run the gate.
     """
     from wip_auth import require_admin_identity
 
