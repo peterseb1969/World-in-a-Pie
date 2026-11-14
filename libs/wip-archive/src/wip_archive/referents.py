@@ -69,18 +69,21 @@ def referenced_ids(entity_type: str, row: dict[str, Any]) -> Iterator[str]:
     """Every id the archived row references, by the slot it sits in.
 
     Covers the slots a restore remaps: a term's terminology, parent and
-    successor, a
-    relation's two terms, a template's field references, parent and edge
-    endpoints, and a document's template, term, reference and file
-    references. Yields candidates only; a candidate may be carried by the
-    archive or be no id at all.
+    successor, a relation's two terms, its type and its two terminologies, a
+    template's field references, parent and edge endpoints, and a document's
+    template, term, reference and file references. Yields candidates only; a
+    candidate may be carried by the archive or be no id at all (a relation's
+    type is a term id or a plain value such as ``is_a``).
     """
     if entity_type == "terms":
         yield from _strings((
             row.get("terminology_id"), row.get("parent_term_id"), row.get("replaced_by_term_id"),
         ))
     elif entity_type == "term_relations":
-        yield from _strings((row.get("source_term_id"), row.get("target_term_id")))
+        yield from _strings((
+            row.get("source_term_id"), row.get("target_term_id"), row.get("relation_type"),
+            row.get("source_terminology_id"), row.get("target_terminology_id"),
+        ))
     elif entity_type == "templates":
         yield from _strings((row.get("extends"),))
         for field in _dicts(row.get("fields")):

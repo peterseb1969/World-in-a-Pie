@@ -47,12 +47,15 @@ def _claimed_groups(groups: object) -> list[str]:
 class JWKSCache:
     """The identity provider's signing keys (JWKS), re-read on a schedule.
 
-    Keys are re-read every ``refresh_seconds``, and on demand when a token
+    Keys are re-read every ``cache_ttl`` seconds, and on demand when a token
     names a key id the copy does not have (the provider rotated its keys), but
-    never more often than ``min_attempt_interval`` apart. A copy that could not
-    be re-read for ``max_key_age`` is no longer used: ``get_key`` raises
-    ``RuntimeError``, which the provider answers with 503. A failed or
-    malformed response never replaces the last good copy.
+    never more often than ``min_attempt_interval`` apart; callers that wait
+    on a re-read in progress use its result instead of fetching again. A copy
+    that could not be re-read for ``max_key_age`` is no longer used:
+    ``get_key`` raises ``RuntimeError``, which the provider answers with 503.
+    A failed response, or one that is not a JWKS document holding at least
+    one key with a ``kid``, never replaces the last good copy; the keys
+    themselves are not checked before they replace it.
     """
 
     def __init__(
@@ -80,6 +83,9 @@ class JWKSCache:
         self._last_fetch: float | None = None  # last success (monotonic)
         self._last_attempt: float | None = None
         self._last_error: str | None = None
+        # Attempts finished, successful or not: a caller that waited for the
+        # lock uses one that finished while it waited instead of fetching.
+        self._attempts_done = 0
         self._client: httpx.AsyncClient | None = None
         self._lock: asyncio.Lock | None = None
 
@@ -110,20 +116,39 @@ class JWKSCache:
                 ``max_key_age`` and the provider cannot be read.
         """
         now = time.monotonic()
-        age = self._age(now)
-        due = force or age is None or age >= self.cache_ttl
-        if due and self._may_attempt(now):
-            if self._lock is None:
-                self._lock = asyncio.Lock()
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        if self._should_read(now, force):
+            seen = self._attempts_done
             async with self._lock:
-                # Another request may have fetched while this one waited.
+                # An attempt that finished while this caller waited (a new
+                # copy, or a failure) is this caller's too. Checking only the
+                # attempt limit would fetch again whenever that attempt took
+                # longer than min_attempt_interval.
                 now = time.monotonic()
-                if self._may_attempt(now):
+                if self._attempts_done == seen and self._may_attempt(now):
                     await self._attempt(now)
         self._check_usable(time.monotonic())
 
+    def _should_read(self, now: float, force: bool) -> bool:
+        """Whether this caller takes part in a re-read: it is due (or
+        forced) and either may start one, or one is in progress that it
+        cannot be answered without (no usable copy, or a key the copy lacks
+        is looked for). Otherwise the copy answers while a re-read runs."""
+        age = self._age(now)
+        if not (force or age is None or age >= self.cache_ttl):
+            return False
+        needs_it = force or age is None or age > self.max_key_age
+        return self._may_attempt(now) or (needs_it and self._lock is not None and self._lock.locked())
+
     async def _attempt(self, now: float) -> None:
         self._last_attempt = now
+        try:
+            await self._read_keys(now)
+        finally:
+            self._attempts_done += 1
+
+    async def _read_keys(self, now: float) -> None:
         client = await self._ensure_client()
         try:
             response = await client.get(self.jwks_url)

@@ -207,6 +207,64 @@ class TestJWKSCacheRefreshOnKeyMiss:
         assert mock_client.get.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_callers_waiting_on_a_slow_fetch_use_its_result(self):
+        """CASE-1297 (daca49e7 R1): a caller queued behind a fetch in progress
+        re-checked only the attempt limit, so when one fetch took longer than
+        min_attempt_interval every waiter fetched again in turn and
+        authentication serialised behind a slow provider."""
+        import asyncio
+
+        cache = JWKSCache(
+            "https://auth.example.com/.well-known/jwks.json", min_attempt_interval=0.01,
+        )
+        calls = {"n": 0}
+
+        async def slow_get(url):
+            calls["n"] += 1
+            await asyncio.sleep(0.05)  # longer than min_attempt_interval
+            return _mock_response(SAMPLE_JWKS)
+
+        mock_client = AsyncMock()
+        mock_client.get = slow_get
+        cache._client = mock_client
+
+        first = asyncio.ensure_future(cache.get_key("key-1"))
+        await asyncio.sleep(0)  # the first fetch has started
+        during = [asyncio.ensure_future(cache.get_key("key-1")) for _ in range(4)]
+        await asyncio.sleep(0.02)  # past the attempt limit, the fetch still running
+        later = [asyncio.ensure_future(cache.get_key("key-1")) for _ in range(5)]
+        keys = await asyncio.gather(first, *during, *later)
+        assert all(k is not None for k in keys)
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_refresh_in_progress_does_not_hold_up_callers_with_a_copy(self):
+        import asyncio
+
+        cache = JWKSCache(
+            "https://auth.example.com/.well-known/jwks.json",
+            cache_ttl=0.0, min_attempt_interval=10.0,
+        )
+        cache._keys = {"key-1": SAMPLE_JWKS["keys"][0]}
+        cache._last_fetch = time.monotonic()
+        release = asyncio.Event()
+
+        async def blocked_get(url):
+            await release.wait()
+            return _mock_response(SAMPLE_JWKS)
+
+        mock_client = AsyncMock()
+        mock_client.get = blocked_get
+        cache._client = mock_client
+
+        refresh = asyncio.ensure_future(cache.get_key("key-1"))
+        await asyncio.sleep(0)
+        # Answered from the copy at once, while the refresh is still blocked.
+        assert await asyncio.wait_for(cache.get_key("key-1"), 0.5) is not None
+        release.set()
+        assert await refresh is not None
+
+    @pytest.mark.asyncio
     async def test_returns_none_if_key_still_missing_after_refresh(self):
         """get_key should return None if the key is not found even after refresh."""
         cache = JWKSCache("https://auth.example.com/.well-known/jwks.json")

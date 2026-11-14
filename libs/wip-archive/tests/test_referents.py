@@ -12,9 +12,15 @@ class TestReferencedIds:
         row = {"terminology_id": "TY", "parent_term_id": "TP", "value": "x"}
         assert set(referenced_ids("terms", row)) == {"TY", "TP"}
 
-    def test_a_relation_names_both_terms(self):
-        row = {"source_term_id": "S", "target_term_id": "T", "relation_type": "is_a"}
-        assert set(referenced_ids("term_relations", row)) == {"S", "T"}
+    def test_a_relation_names_its_terms_type_and_terminologies(self):
+        """Every slot the restore remaps (CASE-1297, 05c8bcec R3). A type is
+        a term id or a plain value such as is_a: a candidate either way, and
+        a value has no Registry entry, so a backup drops it."""
+        row = {
+            "source_term_id": "S", "target_term_id": "T", "relation_type": "is_a",
+            "source_terminology_id": "VS", "target_terminology_id": "VT",
+        }
+        assert set(referenced_ids("term_relations", row)) == {"S", "T", "is_a", "VS", "VT"}
 
     def test_a_template_names_every_field_reference_its_parent_and_endpoints(self):
         row = {

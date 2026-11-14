@@ -9,9 +9,11 @@
 - A terminology id written as a reference string (a lookup value, a data
   value) follows the terminology map like the other id kinds.
 
-The drift guard below takes the slots from ``referents.referenced_ids``,
-the one list of where archived rows name other entities: a slot added there
-without a remap rule fails here, not in a restore.
+The drift guard below runs both ways. Every slot ``referents.referenced_ids``
+reads must be remapped (a slot added there without a remap rule fails here,
+not in a restore), and every id a remap rewrites must be one
+``referenced_ids`` reads (a remap rule added without the slot, as a term
+relation's type and terminologies once were, fails here too).
 """
 
 from __future__ import annotations
@@ -99,7 +101,11 @@ def _rows() -> dict[str, dict]:
     return {
         "terms": {"term_id": "self", "terminology_id": next(_ids), "parent_term_id": next(_ids),
                   "replaced_by_term_id": next(_ids)},
-        "term_relations": {"source_term_id": next(_ids), "target_term_id": next(_ids)},
+        "term_relations": {
+            "source_term_id": next(_ids), "target_term_id": next(_ids),
+            "relation_type": next(_ids),
+            "source_terminology_id": next(_ids), "target_terminology_id": next(_ids),
+        },
         "templates": {
             "template_id": "self", "extends": next(_ids), "fields": [field],
             "source_templates": [{"lookup_value": "S", "resolved": next(_ids)}],
@@ -137,3 +143,32 @@ def test_every_slot_referents_names_is_remapped(entity_type):
     out = _REMAP[entity_type](remapper, row)
     left = [i for i in referenced_ids(entity_type, out) if i.startswith("OLD-")]
     assert left == [], f"{entity_type}: still the source's ids after remap: {left}"
+
+
+def _old_ids(value) -> set[str]:
+    """Every OLD- id anywhere in a row."""
+    if isinstance(value, str):
+        return {value} if value.startswith("OLD-") else set()
+    if isinstance(value, dict):
+        return set().union(*(_old_ids(v) for v in value.values())) if value else set()
+    if isinstance(value, list):
+        return set().union(*(_old_ids(v) for v in value)) if value else set()
+    return set()
+
+
+@pytest.mark.parametrize("entity_type", sorted(_REMAP))
+def test_every_id_a_remap_rewrites_is_a_slot_referents_names(entity_type):
+    """The other direction: an id the remap follows but referenced_ids does
+    not read is never collected as a referent, so a restore can neither
+    check it nor resolve it from the target."""
+    row = _rows()[entity_type]
+    present = _old_ids(row)
+    remapper = IDRemapper()
+    for mapping in (remapper.term_map, remapper.terminology_map, remapper.template_map,
+                    remapper.document_map, remapper.file_map):
+        mapping.update({i: f"NEW-{i}" for i in present})
+    rewritten = present - _old_ids(_REMAP[entity_type](remapper, row))
+    named = set(referenced_ids(entity_type, row))
+    assert rewritten - named == set(), (
+        f"{entity_type}: remapped but not named by referenced_ids: {sorted(rewritten - named)}"
+    )
