@@ -2620,12 +2620,12 @@ def _apply_and_persist_mutation(
     the whole tree.
 
     `removes_workloads`: the mutation drops workloads from the render
-    (remove-app). On k8s they go only through the full apply's prune —
-    the app's Deployment or StatefulSet and its Service; a volume claim it
-    declared is kept and named, never pruned — so such a mutation always
+    (remove-app, remove-module). On k8s they go only through the full apply's
+    prune — the removed Deployment or StatefulSet and its Service; a volume
+    claim it declared is kept and named, never pruned — so such a mutation always
     applies the whole tree there, however its scope was widened, and says
     so: a widened scope is a scoped apply, which never prunes, and the
-    removed app kept running. That apply waits for every workload, as any
+    removed workload kept running. That apply waits for every workload, as any
     whole-tree apply does.
 
     A scope is widened, never trusted blindly: services outside it whose
@@ -5515,6 +5515,13 @@ def remove_module(
         target_dir,
         f"Removed module {module_name!r} from {resolved_name}",
         repo_root=repo_root,
+        # Disabling a module drops its workloads from the render, so on k8s this
+        # is a removal like remove-app: the whole-tree prune is what deletes
+        # them. Without the signal the prune keeps PersistentVolumeClaim on its
+        # allowlist and takes the module's volume with the module — a storage
+        # class with reclaim policy Delete loses the data, while this command's
+        # help promises "without dropping anything".
+        removes_workloads=True,
     )
 
     # Only once the apply succeeded: a validation or render failure leaves

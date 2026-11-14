@@ -1607,8 +1607,8 @@ def apply_k8s(
 ) -> ApplyResult:
     """Materialize the tree and run `kubectl apply`.
 
-    `prune_volume_claims=False` (a removal: remove-app) keeps
-    PersistentVolumeClaims out of the full apply's prune, so removing an app
+    `prune_volume_claims=False` (a removal: remove-app, remove-module) keeps
+    PersistentVolumeClaims out of the full apply's prune, so removing a workload
     never deletes a volume and its data; the claims the render no longer
     names are printed, kept.
 
