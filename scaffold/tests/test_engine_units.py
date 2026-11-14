@@ -215,7 +215,11 @@ def _claim_bearing_outputs(tmp_path: Path, *, tier3: bool) -> dict[str, str]:
     # The CLAUDE.md render and the slash commands of both roles, keyed by role.
     ctx = _ctx(tmp_path, tier3=tier3, tokens=dict(_APP_TOKENS))
     out: dict[str, str] = {}
-    for role, surfaces in (("backend", backend_surfaces()), ("app", app_surfaces(dict(_APP_TOKENS)))):
+    for role, surfaces in (
+        ("backend", backend_surfaces()),
+        ("app", app_surfaces(dict(_APP_TOKENS))),
+        ("slim", app_surfaces(dict(_APP_TOKENS), profile="slim")),
+    ):
         for s in surfaces:
             if s.name in ("claude-md", "commands"):
                 for rel, data in s.produce(ctx).items():
@@ -230,7 +234,7 @@ def test_case_claim_rule_reaches_only_kb_clones(tmp_path):
     tier2 = _claim_bearing_outputs(tmp_path, tier3=False)
     assert not [k for k, v in tier2.items() if "CLAIM acquire" in v]
     tier3 = _claim_bearing_outputs(tmp_path, tier3=True)
-    for role in ("backend", "app"):
+    for role in ("backend", "app", "slim"):
         assert "CLAIM acquire" in tier3[f"{role}:CLAUDE.md"], role
         assert "CLAIM acquire" in tier3[f"{role}:.claude/commands/wip-case.md"], role
         # A held claim is not the only way an acquire fails: the step tells a
@@ -238,6 +242,10 @@ def test_case_claim_rule_reaches_only_kb_clones(tmp_path):
         # CLAUDE.md rule says the same.
         command = tier3[f"{role}:.claude/commands/wip-case.md"]
         assert "exit 2 is a transport failure" in command, role
+        # A transport failure says nothing about the claim: stop, then read
+        # the case's claims before retrying.
+        assert "report it verbatim and stop" in command, role
+        assert "whether the claim was taken is unknown" in command, role
         assert "names a holder" in command, role
         assert "names a holder" in tier3[f"{role}:CLAUDE.md"], role
 

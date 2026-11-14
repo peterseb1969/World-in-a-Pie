@@ -502,7 +502,8 @@ import json
 data = json.load(open('$RAW_DIR/doc-drift.json'))
 undoc = sum(len(v) for v in data.get('undocumented', {}).values())
 stale = len(data.get('count_mismatches', []))
-print(f'{undoc} undocumented exports, {stale} stale counts')
+synced = len(data.get('stale_synced_copies', []))
+print(f'{undoc} undocumented exports, {stale} stale counts, {synced} stale synced copies')
 " 2>/dev/null || echo "?")
 ok "Doc drift: $DOC_DRIFT ($(step_time $STEP_START))"
 

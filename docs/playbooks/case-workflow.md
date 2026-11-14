@@ -16,7 +16,7 @@ which talks only to the KB **gateway** (never the document-store backend).
 - `/wip-case respond <n>` — append a response (drives open→responded)
 - `/wip-case comment <n>` — add a comment (any state; no transition)
 - `/wip-case close <n>` — close without implementing (won't-fix / not-an-issue / deferred)
-- `/wip-case implement <n>` — apply the proposed patch, then close as implemented
+- `/wip-case implement <n>` — do every item in scope; implemented only when every item is done
 - `/wip-case reopen <n>` — bring a closed/implemented case back to open (regression / disproven close)
 
 ## Prerequisites
@@ -178,6 +178,18 @@ kbc case-fetch.py list --status open,responded
 APP-YACs: filter to your app (`--app <name>`) or cases you filed (`--filed-by <id>`).
 BE-YACs: list all. If none, say "No cases" and stop.
 
+The **Thread** column reads each case's responses: counts by kind (`R` respond,
+`I` implement, `C` comment, `X` close) and a marker:
+- `unanswered` — open, and no respond response yet;
+- `reopened` — finished once (implemented or closed) and open again, read from an
+  implement or close response in the thread, or from the case's earlier versions for
+  cases older than threaded responses;
+- `reopened · re-answered` — reopened, and a respond came after the reopen.
+
+`list --unanswered` lists only open cases never answered that are not reopens: the
+ones to send for a first response. `--format json` carries the same per row
+(`responses`, `reopened`, `reanswered`, `unanswered`).
+
 ---
 
 ## `/wip-case read <n>`
@@ -219,6 +231,10 @@ kbc kb-write.py CLAIM release <n> <kind>   # when done, failed or abandoned
 ```
 
 - The holder is your session (`.claude/.session-id`); a task runner passes `--holder <task-id>`.
+- A claim stays with the session that took it. After a `/wip-wake` the new session holds
+  none of its predecessor's claims: to finish or release a claim the predecessor parked,
+  pass `--holder <prior-session-id>` (the `continues_from` in your `session.md`).
+  Use this only for your own lineage. A claim held by any other session is that session's to release.
 - A refused acquire names who holds the case. Do not work around it: ask them, or wait.
 - An **active** claim has a lease (60 minutes unless the kind's `CLAIM_RULE` says
   otherwise). Renew on long work; an unrenewed lease runs out and the case is free.
@@ -227,6 +243,13 @@ kbc kb-write.py CLAIM release <n> <kind>   # when done, failed or abandoned
 - Each kind's `CLAIM_RULE` (a config document) sets how many may hold it at once and
   which kinds exclude each other. Without one: one holder, no exclusions.
 - Release when you are done. A posted response does not release a claim by itself.
+
+**What is in progress across the KB:** `kbc case-fetch.py claims` lists every claim
+holding a case (parked first, then by soonest lease end) and, separately, claims whose
+lease ran out without a release — usually an agent that stopped mid-work. Filter with
+`--kind`, `--holder`, `--state active|parked|lapsed`. `list --claimed` / `--unclaimed`
+narrow the case list to cases a claim holds, or none does. The KB's home page shows
+the same as an "In progress" panel.
 
 ---
 
@@ -282,8 +305,18 @@ convention, the file:line of every site beyond the request>
 
 ## Questions
 
-<optional: a change bigger than the case asked for, put to the project owner with
-evidence, options and cost — instead of recommending it>
+<optional: a decision for the project owner — for example a change bigger than the
+case asked for — one numbered item per question, each with:>
+
+1. **<the question, in one sentence>**
+   - **Context:** what happens today and why it matters, in plain words, for a reader
+     who has not read the code: who or what is affected, and when. `file:line` once,
+     as evidence.
+   - **Options**, at least two, each with its consequences: what it fixes, what it
+     costs (size, sites, a migration, a shared contract), what it risks or leaves open.
+     "Leave it as it is" is one of them when it is a real option.
+   - **Recommendation:** the option you would pick and why, naming the consequence
+     that decides it.
 ```
 
 - **Length:** about 600 words, 1,000 at most. Go longer only with a stated reason
@@ -299,8 +332,34 @@ evidence, options and cost — instead of recommending it>
 - **Scope** is a judgement, not a file list: whether the case asks for the right thing.
   Files in scope lists what the recommended fix touches, for the scheduler; a widened
   scope that is only a question lists no files there.
-- **Questions** is optional. When it holds the main point, the recommendation is
-  *question for the project owner*, and nothing is implemented until the owner answers.
+- **Questions** is optional, and it is **for the project owner only**. A question for
+  another agent is a comment on that agent's case, not a section here. The owner reads
+  the questions without the code: give each one its context, its options with their
+  consequences and your recommendation. A question without a recommendation hands the
+  analysis back to the owner. When the
+  questions hold the main point, the recommendation is *question for the project
+  owner*, and nothing is implemented until the owner answers. `kb-write.py` counts the
+  questions into the response's `questions` field (each top-level list item is one; a
+  prose paragraph is one). The case then shows as **waiting for the owner**: on the
+  KB's home page, as a chip in the case list, and in `kbc case-fetch.py list
+  --questions`. It stops waiting at the first later response that is the owner's
+  answer, or an `implement` or `close` (the decisions were taken):
+  - **In the browser**, the owner answers with the case page's Answer box: a comment
+    under their name, then a flag for the case's owner. By default it is an
+    **implement** flag, since an answer usually settles the questions. "Respond again"
+    raises the respond flag instead, for an answer that opens new ground; "Nothing"
+    raises no flag. An implementer picking it up reads the answer in the thread and
+    implements from it, with no second response first.
+  - Without an answer, the owner flags implementation in one click: "Flag: implement →
+    BE-YAC" on the case page, "Implement" on a responded case in the case list. While
+    an implement flag is pending, that button is greyed out ("Flagged: implement" on the
+    case page), until an implement or close response answers it.
+  - **Anywhere else** (the owner typing in a terminal, or deciding in a chat with an
+    agent), the response that records the answer carries `--owner-answer`:
+    `kbc kb-write.py CASE_RESPONSE answer.md --edge RESPONDS_TO:CASE_RECORD:<n> --owner-answer`.
+    The author stays the session that wrote it. Use it only for what the owner
+    actually said, quoted or attributed in the body. It raises no flag. It is refused
+    where the namespace's template has no `owner_answer` field yet.
 
 Then, two writes — the response doc + the status transition:
 
@@ -362,10 +421,23 @@ wait for a decision).
    don't trust. Stay in the response's scope: when a finding challenges your
    instructions (the fix contradicts a convention, the same defect sits elsewhere), stop
    and say so rather than widening the change yourself.
-2. **Apply each change**; if quoted "current text" no longer matches, flag and skip it.
+2. **Do every item in scope.** The scope is the case's Expected, as the response
+   narrowed it, and every item in it is done in this implementation. Where quoted
+   "current text" no longer matches, re-derive the change against the code as it is
+   now; that is part of the work, not a reason to skip the item.
+   - **The only item that may be left undone is one that needs an answer from the
+     project owner.** Put it to them as a question, and the case is **not**
+     implemented (see "When an item needs the owner's answer" below).
+   - "Left open", "follow-up", "out of time" or "deferred" for an item that needs no
+     answer is not allowed: do it, or stop without closing and say why. An
+     implementer never defers an item on their own; deferring is the owner's call
+     (a `close` with that reason).
+   - A comment on an implemented case is not read, so a "left open" note there is
+     lost until a review finds it and reopens the case.
 3. **Show the diff** (`git diff`) and let Peter review before committing.
-4. **Push, then record + close.** The implement response is where a reader finds the
-   fix, so write it only after the push, and cite each commit hash as it is on the
+4. **Push, then record + close**, when every item in scope is done. The implement
+   response is where a reader finds the fix, so write it only after the push, and
+   cite each commit hash as it is on the
    remote (`git log --format='%h %s' <remote>/develop`). If the push was rejected and
    you rebased, every hash changed. `kb-write.py` refuses an implement response that
    cites a commit present in your clone but on no remote branch; a hash it cannot find
@@ -380,7 +452,25 @@ wait for a decision).
    kbc kb-write.py CLAIM release <n> implement
    ```
 
-Terminal. Tell Peter what was applied and that the case is implemented.
+Terminal. Tell Peter what was applied, and that the case is implemented because every
+item in scope is done.
+
+**When an item needs the owner's answer**, the case stays `open` or `responded`, and
+the implementation stops on the question:
+
+```bash
+kbc kb-write.py CASE_RESPONSE questions.md --edge RESPONDS_TO:CASE_RECORD:<n>
+#   questions.md frontmatter: case_number: <n> / response_kind: respond / doc_status: published
+#   body: what is done so far, citing each pushed commit hash, then `## Questions`
+#   in the shape the respond template gives (context, options with consequences,
+#   recommendation)
+kbc kb-write.py CLAIM park <n> implement --note "waiting on the owner's answer in CASE-<n>#<seq>"
+```
+
+It is a `respond`, not an `implement` response. An implement response on a case that
+is not implemented misleads the review queue. The `## Questions` section puts the case
+on the owner's waiting list. Once they answer, `acquire` the claim again, finish, and
+close as above. Tell Peter which question the case is waiting on.
 
 ---
 
@@ -553,6 +643,28 @@ FLAG_RECORD's identity is `[flag_type, flagged_document]`.) Re-flagging the
 same doc in the UI upserts that identity back to `published`, which re-arms
 the trigger after a failed run. `--doc-status dispatched` / `all` list
 consumed / every flag.
+
+**What a flag says: kind, owner, worker.**
+- **The kind of work** is `flag_type`: respond, implement, fix or review, the same kinds claims use (`CLAIM_KIND`). On flags written since the field exists, `kind` holds the same value as a vocabulary term, so a kind outside the list is refused.
+- **The owner** is `target_yac`: whose code it is. Owners are the `KB_TARGET_YAC` terms, and every session role is one.
+- **The worker** is optional: `worker` names a purpose-built agent (an `AGENT_IDENTITY`, e.g. `RESPOND-YAC`). Without one, the dispatcher picks an active worker that performs the kind and serves the owner.
+
+```bash
+kbc case-fetch.py flags --kind respond --target-yac BE-YAC     # Kind | Owner | Worker columns
+kbc case-fetch.py flags --worker RESPOND-YAC
+kbc case-fetch.py read AGENT_IDENTITY --format json            # the workers (active, performs, serves)
+```
+
+**Workers are records,** one `AGENT_IDENTITY` per worker, keyed on `agent_value`, its name as it signs sessions. Adding, retiring (`active: false`) or extending one is one write:
+
+```bash
+kbc kb-write.py AGENT_IDENTITY worker.md
+# worker.md frontmatter: agent_value: RESPOND-YAC / title: RESPOND-YAC / authored_by: <session id>
+#   doc_status: published / performs: [respond] / serves: [BE-YAC] / active: true / runs: <how it is started>
+#   description: <what the worker does>   (frontmatter only: the template has no body field)
+```
+
+A worker is not an owner: it gets no `KB_TARGET_YAC` or `SESSION_ROLE` term.
 
 ---
 
