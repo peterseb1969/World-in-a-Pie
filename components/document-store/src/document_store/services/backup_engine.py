@@ -720,9 +720,13 @@ def _resolve_template_ref(
     ref: str, namespace: str,
     versions: dict[str, list[int]], by_value: dict[tuple[str, str], str],
 ) -> str | None:
-    """The template_id a nested ref names among the archive's templates. An
-    active template stores the template_id; a draft may still hold the
-    submitted value or NS:VALUE. None for a template outside the archive."""
+    """The template_id a ref (``extends`` or a nested slot) names among the
+    archive's templates. An active template stores the template_id; a row
+    stored before refs were resolved at write may still hold the submitted
+    value or NS:VALUE. None for a template outside the archive, and for a
+    slot holding anything but a string."""
+    if not isinstance(ref, str) or not ref:
+        return None
     if ref in versions:
         return ref
     ns, sep, value = ref.partition(":")
@@ -737,15 +741,19 @@ def _version_requirements(
 ) -> list[_TemplateLink]:
     """What one template version needs of others: the version it extends,
     and each nested template version a field pins (version None: every
-    version of it). A ref outside the archive is skipped: it cannot be
-    carried."""
+    version of it — a legacy stored row may lack the pin). Every ref is
+    resolved the same way (_resolve_template_ref), ``extends`` included. A
+    ref outside the archive is skipped: it cannot be carried."""
     links: list[_TemplateLink] = []
-    if row.get("extends") and row.get("extends_version") is not None:
-        links.append((row["extends"], row["extends_version"]))
-    for field in row.get("fields") or []:
+    parent = _resolve_template_ref(row.get("extends"), row["namespace"], versions, by_value)
+    if parent is not None and row.get("extends_version") is not None:
+        links.append((parent, row["extends_version"]))
+    fields = row.get("fields")
+    for field in fields if isinstance(fields, list) else []:
+        if not isinstance(field, dict):
+            continue  # a malformed legacy row: nothing it pins can be read
         for ref_key, version_key in _NESTED_PIN_SLOTS:
-            ref = field.get(ref_key)
-            tid = _resolve_template_ref(ref, row["namespace"], versions, by_value) if ref else None
+            tid = _resolve_template_ref(field.get(ref_key), row["namespace"], versions, by_value)
             if tid is not None:
                 links.append((tid, field.get(version_key)))
     return links
@@ -866,6 +874,7 @@ class DirectBackupEngine:
                 referent_count=len(referent_rows),
                 without_bytes=without_bytes,
                 include_documents=not skip_documents,
+                left_out=left_out,
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
@@ -1070,6 +1079,7 @@ class DirectBackupEngine:
         referent_count: int,
         without_bytes: dict[str, list[str]] | None = None,
         include_documents: bool = True,
+        left_out: dict[str, list[tuple[str, int]]] | None = None,
     ) -> Manifest:
         """The archive's manifest: one entry per namespace (its config,
         counts, provenance and the files it carries without their bytes)
@@ -1089,6 +1099,7 @@ class DirectBackupEngine:
                     counts=counts,
                     provenance=await self._read_provenance(ns),
                     files_without_bytes=sorted((without_bytes or {}).get(ns, [])) or None,
+                    template_versions_left_out=_left_out_record((left_out or {}).get(ns, [])),
                 )
             )
             for et in BACKUP_ENTITY_ORDER:
@@ -1143,7 +1154,16 @@ class DirectBackupEngine:
         for entries with nothing behind them."""
         query = self._build_query(namespace)
         if entity_type == "templates" and left_out:
-            query["$nor"] = [{"template_id": tid, "version": v} for tid, v in left_out]
+            # One clause per template, its left-out versions in one $in: a
+            # namespace with thousands of superseded versions stays a query
+            # of as many clauses as it has templates.
+            versions: dict[str, list[int]] = {}
+            for tid, v in left_out:
+                versions.setdefault(tid, []).append(v)
+            query["$nor"] = [
+                {"template_id": tid, "version": {"$in": sorted(vs)}}
+                for tid, vs in sorted(versions.items())
+            ]
         if entity_type == "registry_entries" and skip_documents:
             query["entity_type"] = {"$ne": "documents"}
         return query
@@ -1161,9 +1181,11 @@ class DirectBackupEngine:
         pins it as a nested template (a field's template_ref /
         template_ref_version, or array_template_ref /
         array_template_ref_version). Nested validation reads that exact
-        version, so a parent carried without it restores with its nested
-        objects unvalidated. A nested pin with no version (a draft's) keeps
-        every version of its template. A template whose versions would all be left out
+        version, so with a parent carried without it every later write to
+        that parent's documents is refused (template_not_found) and the
+        integrity scan reports orphaned_template_ref. A nested pin with no
+        version (only a row stored before nested pins were required has one)
+        keeps every version of its template. A template whose versions would all be left out
         keeps its highest one: other definitions name templates by id and the
         template's Registry entry travels, so the template itself never
         vanishes from the archive. A document whose pin has no version keeps
@@ -1588,6 +1610,11 @@ def _archived_template_rows(reader: Any, sources: list[str]) -> dict[str, Templa
                     (template.get("identity_fields") or [], template.get("extends")),
                 )
     return rows
+
+
+def _left_out_record(left_out: list[tuple[str, int]]) -> list[dict[str, Any]] | None:
+    """The manifest's record of the template versions a backup left out."""
+    return [{"template_id": tid, "version": v} for tid, v in sorted(left_out)] or None
 
 
 def _dry_run_blob_scope(

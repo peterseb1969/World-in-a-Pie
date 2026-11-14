@@ -83,6 +83,12 @@ class NamespaceEntry(BaseModel):
     # file's checksum. None when every file's bytes are in it, or the archive
     # predates the field (additive, like provenance).
     files_without_bytes: list[str] | None = None
+    # Inactive template versions the backup left out by design (nothing in
+    # the archive needed them), as {"template_id", "version"}: an archive
+    # that lacks a version says here whether it was left out or lost. None
+    # when none was left out (or include_inactive_templates), or the archive
+    # predates the field (additive, like provenance).
+    template_versions_left_out: list[dict[str, Any]] | None = None
 
 
 class Manifest(BaseModel):

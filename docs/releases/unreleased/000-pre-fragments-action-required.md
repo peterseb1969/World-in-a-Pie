@@ -2010,7 +2010,8 @@ it. A version is still carried when:
 - a document row of any status is pinned to it — including the superseded
   version rows of a document — so archives restore and `verify` cleanly, as
   before;
-- a carried template version extends it;
+- a carried template version extends it, or pins it as a nested template
+  (a field's `template_ref_version` / `array_template_ref_version`);
 - or it is the highest version of a template whose versions are all
   inactive. A template never disappears from an archive while other
   definitions and its Registry entry name it.

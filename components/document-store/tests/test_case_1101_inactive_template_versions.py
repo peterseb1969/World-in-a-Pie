@@ -87,6 +87,32 @@ async def test_a_backup_leaves_out_the_inactive_versions_nothing_needs(
 
 
 @pytest.mark.asyncio
+async def test_the_manifest_names_the_versions_left_out(session_mongo_client, seeded, tmp_path):
+    """#8 Q2: an archive that lacks a version says whether it was left out by
+    design; and the exclusion is one $nor clause per template, not per
+    version."""
+    from document_store.services.backup_engine import DirectBackupEngine as Engine
+
+    await _backup(session_mongo_client, seeded, tmp_path / "a.zip")
+    with ArchiveReader(tmp_path / "a.zip") as reader:
+        entry = reader.read_manifest().namespaces[0]
+    left = {(x["template_id"], x["version"]) for x in entry.template_versions_left_out}
+    assert left == {("T1", 1), ("T2", 1)}
+
+    query = Engine(session_mongo_client, None, lambda _e: None)._entity_query(
+        seeded, "templates", [("T1", 1), ("T1", 2), ("T2", 1)],
+    )
+    assert query["$nor"] == [
+        {"template_id": "T1", "version": {"$in": [1, 2]}},
+        {"template_id": "T2", "version": {"$in": [1]}},
+    ]
+
+    await _backup(session_mongo_client, seeded, tmp_path / "b.zip", include_inactive_templates=True)
+    with ArchiveReader(tmp_path / "b.zip") as reader:
+        assert reader.read_manifest().namespaces[0].template_versions_left_out is None
+
+
+@pytest.mark.asyncio
 async def test_include_inactive_templates_keeps_every_version(session_mongo_client, seeded, tmp_path):
     carried, counted, _ = await _backup(
         session_mongo_client, seeded, tmp_path / "a.zip", include_inactive_templates=True,

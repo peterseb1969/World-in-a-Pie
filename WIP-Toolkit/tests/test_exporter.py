@@ -767,3 +767,71 @@ class TestManifestExportTime:
         # Set by the exporter, not filled in by the model's default.
         assert "exported_at" in manifest.model_fields_set
         assert manifest.exported_at is not None and manifest.exported_at >= before
+
+
+# ===========================================================================
+# _carry_pinned_template_versions (CASE-1101 #8 Q1)
+# ===========================================================================
+class TestCarryPinnedTemplateVersions:
+    """An active-only export keeps the active documents, which may still be
+    pinned to a superseded (inactive) template version: that version, and
+    what it extends or nests, is carried too."""
+
+    def test_a_document_pin_and_what_it_nests_are_carried(self):
+        from wip_toolkit.export.exporter import _carry_pinned_template_versions
+
+        raw = {
+            ("T", 1): {"template_id": "T", "version": 1, "fields": [
+                {"name": "o", "template_ref": "N", "template_ref_version": 1}]},
+            ("N", 1): {"template_id": "N", "version": 1, "extends": "P", "extends_version": 1,
+                       "fields": []},
+            ("P", 1): {"template_id": "P", "version": 1, "fields": []},
+        }
+        collector = MagicMock()
+        collector.fetch_template_raw.side_effect = lambda tid, v: dict(raw[(tid, v)])
+        templates = [{"template_id": "T", "version": 2, "fields": []}]
+        documents = [{"document_id": "D", "template_id": "T", "template_version": 1}]
+
+        added = _carry_pinned_template_versions(collector, templates, documents)
+
+        assert sorted((t["template_id"], t["version"]) for t in added) == [
+            ("N", 1), ("P", 1), ("T", 1),
+        ]
+
+    def test_nothing_is_fetched_when_every_pin_is_carried(self):
+        from wip_toolkit.export.exporter import _carry_pinned_template_versions
+
+        collector = MagicMock()
+        templates = [{"template_id": "T", "version": 1, "fields": []}]
+        documents = [{"document_id": "D", "template_id": "T", "template_version": 1}]
+
+        assert _carry_pinned_template_versions(collector, templates, documents) == []
+        collector.fetch_template_raw.assert_not_called()
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_run_export_writes_the_pinned_version(self, MockCollector, mock_closure,
+                                                 MockWriter, mock_client,
+                                                 mock_collector, mock_writer):
+        tid = "0190c000-0000-7000-0000-000000000001"
+        mock_collector.fetch_templates.return_value = [
+            {"template_id": tid, "namespace": "wip", "version": 2, "fields": []},
+        ]
+        mock_collector.fetch_template_raw.side_effect = lambda t, v: {
+            "template_id": t, "namespace": "wip", "version": v, "fields": [],
+        }
+        mock_collector.fetch_documents.return_value = [
+            {"document_id": "D", "namespace": "wip", "version": 1,
+             "template_id": tid, "template_version": 1, "data": {}},
+        ]
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(mock_client, "wip", "/tmp/export.zip")
+
+        written = [c.args[1] for c in mock_writer.add_entity.call_args_list if c.args[0] == "templates"]
+        assert sorted(t["version"] for t in written) == [1, 2]
+        assert all(t["_source"] == "primary" for t in written)

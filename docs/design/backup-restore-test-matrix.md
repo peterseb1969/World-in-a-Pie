@@ -166,7 +166,7 @@ a named deployment, never part of the routine suites.
 | B-02 | C | P-SRVN of NS-A+NS-B: per-namespace subtrees, per-ns counts, blobs flat | counts |
 | B-03 | L | P-SRVALL: includes `wip`; admin required on every namespace (a partial-grant key is refused) | counts, perm |
 | B-04 | C | P-CLI of NS-A: archive equivalent to B-01's for every entity class (the producer-parity assert — diff the two archives' class counts) | counts |
-| B-05 | C | P-CLI `include_inactive` off/on: E12 entities absent/present (server backup 400-rejects the flag — it always copies every status) | counts |
+| B-05 | C | P-CLI `include_inactive` off/on: E12 entities absent/present (server backup 400-rejects the flag; it leaves out only the inactive template versions nothing in the archive needs, and `include_inactive_templates` keeps them) | counts |
 | B-06 | C | P-CLI `latest_only`: E6 docs carry 1 version; full: all versions (server backup 400-rejects the flag — it always copies every version) | counts |
 | B-07 | C | `skip_documents` (both producers), P-CLI `template_prefixes`/`skip_synonyms`/`skip_closure`: each drops exactly its class, LOUDLY (manifest counts reflect it) | counts |
 | B-09 | U | P-BAD family: no manifest / v2.0 / truncated → typed refusals; v2.0 message names `convert_archive` | refusal |

@@ -207,6 +207,12 @@ def run_export(
             terminologies.extend(extra_terms_list)
             terms.extend(extra_terms_items)
             templates.extend(extra_templates)
+        if not include_inactive:
+            pinned = _carry_pinned_template_versions(collector, templates, closure_docs)
+            for entity in pinned:
+                entity.setdefault("_source", "primary")
+                entity.setdefault("_namespace", namespace)
+            templates.extend(pinned)
 
         closure_info = ClosureInfo(
             external_terminologies=[t["terminology_id"] for t in extra_terms_list],
@@ -219,6 +225,12 @@ def run_export(
             console.print(f"  [yellow]Warning:[/yellow] {w}")
     else:
         console.print("\n[dim]Skipping closure (--skip-closure)[/dim]")
+        if not include_inactive:
+            console.print(
+                "  [yellow]Warning:[/yellow] without the closure the export does not read "
+                "the documents first, so an inactive template version they pin is not "
+                "carried (pass --include-inactive, or drop --skip-closure)"
+            )
 
     # Phase 1b: Count documents for dry run or prepare streaming
     doc_count = 0
@@ -409,7 +421,6 @@ def run_export(
         ],
         namespace=namespace,
         namespace_config=ns_config,
-        include_inactive=include_inactive,
         include_files=include_files,
         # True only when the archive can actually carry every version:
         # without include_inactive the active-only stream drops superseded
@@ -449,6 +460,70 @@ def _collect_terminology_refs(templates: list[dict[str, Any]]) -> set[str]:
             for tterm in field.get("target_terminologies") or []:
                 refs.add(tterm)
     return refs
+
+
+def _carry_pinned_template_versions(
+    collector: EntityCollector,
+    templates: list[dict[str, Any]],
+    documents: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The template versions the archive needs but an active-only fetch left
+    out: every version an exported document pins (its template_version), and
+    every version a carried version extends or pins as a nested template,
+    transitively. Each is fetched raw, as the others are. A pin the platform
+    does not answer for is left to verify, which reports it.
+
+    Without these, an active document still pinned to a superseded template
+    version would be exported without its schema (CASE-1101)."""
+    have = {(t.get("template_id"), t.get("version")) for t in templates}
+    wanted = set(_document_pins(documents))
+    added: list[dict[str, Any]] = []
+    frontier = list(templates)
+    while frontier:
+        for tpl in frontier:
+            wanted |= set(_template_version_pins(tpl))
+        missing = sorted(wanted - have)
+        have |= set(missing)
+        frontier = [t for t in (_fetch_raw_or_none(collector, *m) for m in missing) if t]
+        added += frontier
+    return added
+
+
+def _document_pins(documents: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    """(template_id, template_version) of each document that names both."""
+    return [
+        (d["template_id"], d["template_version"]) for d in documents
+        if d.get("template_id") and d.get("template_version") is not None
+    ]
+
+
+def _fetch_raw_or_none(collector: EntityCollector, template_id: str, version: Any) -> dict[str, Any] | None:
+    """A template version's raw row, or None when the platform does not
+    answer for it (verify then reports the pin)."""
+    try:
+        return collector.fetch_template_raw(template_id, int(version))
+    except Exception:
+        return None
+
+
+def _template_version_pins(template: dict[str, Any]) -> list[tuple[str, int]]:
+    """(template_id, version) of what a template version pins: the version
+    it extends, and each nested template version a field pins."""
+    pins: list[tuple[str, int]] = []
+    if isinstance(template.get("extends"), str) and template.get("extends_version") is not None:
+        pins.append((template["extends"], template["extends_version"]))
+    fields = template.get("fields")
+    for field in fields if isinstance(fields, list) else []:
+        if not isinstance(field, dict):
+            continue
+        for ref_key, version_key in (
+            ("template_ref", "template_ref_version"),
+            ("array_template_ref", "array_template_ref_version"),
+        ):
+            ref, version = field.get(ref_key), field.get(version_key)
+            if isinstance(ref, str) and ref and version is not None:
+                pins.append((ref, version))
+    return pins
 
 
 def _fetch_raw_templates(

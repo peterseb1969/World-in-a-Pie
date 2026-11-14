@@ -4,11 +4,13 @@ templates (CASE-1101, reopened).
 The leave-out rule followed document pins and `extends`, but not a field's
 nested pin: `template_ref` + `template_ref_version` (an object field) or
 `array_template_ref` + `array_template_ref_version` (an array of objects).
-Nested validation reads exactly that version, so an archive that carried the
-parent without it restored documents whose nested objects were silently left
-unvalidated. Now a carried version keeps every version it pins, transitively;
-a pin with no version (a draft's) keeps every version of its template, and a
-draft's ref may still be the submitted value rather than the template_id.
+Nested validation reads exactly that version, so with the parent carried
+without it every later write to its documents was refused
+(template_not_found). Now a carried version keeps every version it pins,
+transitively; a pin with no version (only a row stored before pins were
+required has one) keeps every version of its template, and a stored ref (an
+extends, too) may be the submitted value or NS:VALUE rather than the
+template_id. A malformed legacy row never stops the backup.
 """
 
 from __future__ import annotations
@@ -52,8 +54,8 @@ async def seeded(session_mongo_client):
         _template(ns, "N2", 2, "active"),
         _template(ns, "N4", 1, "inactive"),
         _template(ns, "N4", 2, "active"),
-        # A draft names N3 by its value, with no version yet: every version stays.
-        _template(ns, "DRAFT", 1, "draft", _object("N3", None)),
+        # A legacy row pins N3 with no version: every version stays.
+        _template(ns, "LEGACY", 1, "draft", _object("N3", None)),
         _template(ns, "N3", 1, "inactive"),
         _template(ns, "N3", 2, "active"),
         # Nothing carried needs N5 v1.
@@ -89,7 +91,7 @@ async def test_nested_pins_keep_the_versions_they_name(session_mongo_client, see
 
 
 @pytest.mark.asyncio
-async def test_a_drafts_value_form_pin_without_a_version_keeps_every_version(
+async def test_a_pin_without_a_version_keeps_every_version(
     session_mongo_client, seeded, tmp_path,
 ):
     carried = await _carried(session_mongo_client, seeded, tmp_path / "a.zip")
@@ -104,3 +106,65 @@ async def test_unneeded_inactive_versions_are_still_left_out(session_mongo_clien
     assert ("N5", 1) not in carried
     assert ("X", 1) not in carried
     assert ("N6", 1) not in carried, "a pin from a left-out version kept its target"
+
+
+
+def _named(ns: str, tid: str, value: str, version: int, status: str, *fields: dict, **extra) -> dict:
+    row = _template(ns, tid, version, status, *fields)
+    return {**row, "value": value, **extra}
+
+
+@pytest.mark.asyncio
+async def test_value_and_ns_value_refs_and_a_value_form_extends_resolve(
+    session_mongo_client, tmp_path,
+):
+    """f78f9fca R1 and R3: a ref stored as the template's value or as
+    NS:VALUE, extends included, names the template whose value it is."""
+    ns, other = f"itv-val-{uuid.uuid4().hex[:8]}", f"itv-oth-{uuid.uuid4().hex[:8]}"
+    db_t, coll_t = COLLECTION_MAP["templates"]
+    rows = [
+        _named(ns, "TID-OBJ", "OBJ_V", 1, "inactive"),
+        _named(ns, "TID-OBJ", "OBJ_V", 2, "active"),
+        _named(other, "TID-FAR", "FAR_V", 1, "inactive"),
+        _named(other, "TID-FAR", "FAR_V", 2, "active"),
+        _named(ns, "TID-PAR", "PAR_V", 1, "inactive"),
+        _named(ns, "TID-PAR", "PAR_V", 2, "active"),
+        _named(ns, "TID-USE", "USE_V", 1, "active",
+               _object("OBJ_V", 1), _array(f"{other}:FAR_V", 1),
+               extends="PAR_V", extends_version=1),
+    ]
+    await session_mongo_client[db_t][coll_t].insert_many(rows)
+    try:
+        await DirectBackupEngine(session_mongo_client, None, lambda _e: None).run_backup(
+            [ns, other], tmp_path / "v.zip",
+        )
+        with ArchiveReader(tmp_path / "v.zip") as reader:
+            carried = {
+                (r["template_id"], r["version"])
+                for n in (ns, other) for r in reader.read_entities("templates", namespace=n)
+            }
+    finally:
+        for n in (ns, other):
+            await session_mongo_client[db_t][coll_t].delete_many({"namespace": n})
+    assert ("TID-OBJ", 1) in carried, "a value-form nested pin was not resolved"
+    assert ("TID-FAR", 1) in carried, "an NS:VALUE nested pin was not resolved"
+    assert ("TID-PAR", 1) in carried, "a value-form extends was not resolved"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_legacy_row_does_not_stop_the_backup(session_mongo_client, tmp_path):
+    """f78f9fca R5: ref slots are read raw; a non-string ref, a non-dict
+    field or a dict where fields belong is skipped, as the referent
+    collector skips them."""
+    ns = f"itv-bad-{uuid.uuid4().hex[:8]}"
+    db_t, coll_t = COLLECTION_MAP["templates"]
+    await session_mongo_client[db_t][coll_t].insert_many([
+        {**_template(ns, "B1", 1, "active"), "fields": [{"name": "x", "template_ref": 7}, "junk"]},
+        {**_template(ns, "B2", 1, "active"), "fields": {"x": {"template_ref": "B1"}}},
+        {**_template(ns, "B3", 1, "active"), "extends": 42, "extends_version": 1},
+    ])
+    try:
+        carried = await _carried(session_mongo_client, ns, tmp_path / "b.zip")
+    finally:
+        await session_mongo_client[db_t][coll_t].delete_many({"namespace": ns})
+    assert {("B1", 1), ("B2", 1), ("B3", 1)} <= carried

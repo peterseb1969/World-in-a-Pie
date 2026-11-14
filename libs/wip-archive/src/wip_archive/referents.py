@@ -47,6 +47,14 @@ def _strings(values: Iterable[Any]) -> Iterator[str]:
             yield value
 
 
+def _dicts(value: Any) -> Iterator[dict[str, Any]]:
+    """The mappings of a list slot; anything else a malformed legacy row
+    holds there (a dict where a list belongs, a string item) carries nothing
+    to read."""
+    if isinstance(value, list):
+        yield from (item for item in value if isinstance(item, dict))
+
+
 def _endpoint_ids(entries: Iterable[Any]) -> Iterator[str]:
     """Ids of edge-type endpoint entries: the resolved half of a two-half
     entry, or a legacy bare string."""
@@ -75,20 +83,22 @@ def referenced_ids(entity_type: str, row: dict[str, Any]) -> Iterator[str]:
         yield from _strings((row.get("source_term_id"), row.get("target_term_id")))
     elif entity_type == "templates":
         yield from _strings((row.get("extends"),))
-        for field in row.get("fields") or []:
+        for field in _dicts(row.get("fields")):
             yield from _strings(field.get(slot) for slot in _FIELD_SCALAR_SLOTS)
             for slot in _FIELD_LIST_SLOTS:
-                yield from _strings(field.get(slot) or [])
+                listed = field.get(slot)
+                yield from _strings(listed if isinstance(listed, list) else [])
         yield from _endpoint_ids(row.get("source_templates") or [])
         yield from _endpoint_ids(row.get("target_templates") or [])
     elif entity_type == "documents":
         yield from _strings((row.get("template_id"),))
-        for tref in row.get("term_references") or []:
+        for tref in _dicts(row.get("term_references")):
             yield from _strings((tref.get("term_id"), tref.get("terminology_ref")))
-        for ref in row.get("references") or []:
-            resolved = ref.get("resolved") or {}
-            yield from _strings(resolved.get(key) for key in _RESOLVED_ID_KEYS)
-        for fref in row.get("file_references") or []:
+        for ref in _dicts(row.get("references")):
+            resolved = ref.get("resolved")
+            if isinstance(resolved, dict):
+                yield from _strings(resolved.get(key) for key in _RESOLVED_ID_KEYS)
+        for fref in _dicts(row.get("file_references")):
             yield from _strings((fref.get("file_id"),))
 
 
