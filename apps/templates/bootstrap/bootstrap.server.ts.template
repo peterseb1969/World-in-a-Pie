@@ -158,6 +158,13 @@
  *   - Adapt the BOOTSTRAP_RECORD field assembly if your spec adds fields.
  *   - Verify your `wip-api.ts` exposes wipGet / wipPost / wipPut. APP-CT
  *     ships these in server/lib/wip-api.ts; the same shape is expected.
+ *   - Make wipGet's error carry the HTTP status WIP answered with, as
+ *     `status` (or `statusCode`, as @wip/client's errors do), and carry none
+ *     when WIP did not answer. checkStatusDetail() reads it to tell a refused
+ *     key (401/403) and a WIP error from WIP being unreachable; without it
+ *     every failure reads as unreachable. For example:
+ *         if (!res.ok) throw Object.assign(new Error(`WIP GET ${path}: ${res.status}`),
+ *                                          { status: res.status })
  */
 
 import { wipGet, wipPost, wipPut } from './wip-api.js'
@@ -229,18 +236,41 @@ function assertBulkSuccess(response: unknown, context: string): void {
   }
 }
 
+// How the status check went, as the gate tells it apart:
+//   wip_unreachable — no answer from WIP at all (connection refused, timeout, DNS);
+//   wip_key_refused — WIP answered, and refused the app's API key (401/403): a key
+//                     not yet accepted after an install (on k8s, until the mounted
+//                     key file refreshes, a few minutes), rotated, or revoked. Not an
+//                     outage; the gate re-checks it on its own for a few minutes;
+//   wip_error       — WIP answered with another error status (a 5xx, typically);
+//   check_failed    — the check itself failed in this server, before or after asking
+//                     WIP (set by the status route, never by checkStatusDetail).
 export type BootstrapStatus =
   | 'unknown'
   | 'wip_unreachable'
+  | 'wip_key_refused'
+  | 'wip_error'
+  | 'check_failed'
   | 'needs_bootstrap'
   | 'incomplete'
   | 'resume_blocked'
   | 'ready'
 
-/** The status plus, for 'resume_blocked', the sentence the gate shows. */
+/** The status plus, for 'resume_blocked', the sentence the gate shows, and for a
+ *  failed WIP call, the HTTP status WIP answered with and the error. */
 export interface BootstrapStatusDetail {
   status: BootstrapStatus
   message?: string
+  http_status?: number
+  error?: string
+}
+
+/** The HTTP status a failed WIP call carries, or undefined when WIP did not
+ *  answer. Read defensively: wipGet is the app's own (see the TODO above). */
+function httpStatusOf(e: unknown): number | undefined {
+  const err = e as { status?: unknown; statusCode?: unknown }
+  const status = typeof err?.status === 'number' ? err.status : err?.statusCode
+  return typeof status === 'number' ? status : undefined
 }
 
 export interface BootstrapProgress {
@@ -470,14 +500,19 @@ export async function checkStatus(): Promise<BootstrapStatus> {
   return (await checkStatusDetail()).status
 }
 
-/** checkStatus() plus the message the gate shows for 'resume_blocked'. */
+/** checkStatus() plus the message the gate shows for 'resume_blocked', and the
+ *  HTTP status and error of a failed WIP call. */
 export async function checkStatusDetail(): Promise<BootstrapStatusDetail> {
   // Use namespace listing as health probe — no dedicated /health endpoint
   let namespaces: Array<{ prefix: string }>
   try {
     namespaces = (await wipGet('/api/registry/namespaces')) as Array<{ prefix: string }>
-  } catch {
-    return { status: 'wip_unreachable' }
+  } catch (e) {
+    const http = httpStatusOf(e)
+    const error = (e as Error)?.message
+    if (http === undefined) return { status: 'wip_unreachable', error }
+    if (http === 401 || http === 403) return { status: 'wip_key_refused', http_status: http, error }
+    return { status: 'wip_error', http_status: http, error }
   }
   const existing = new Set(namespaces.map((ns) => ns.prefix))
   const { roles } = loadRoles()
@@ -955,6 +990,13 @@ export async function ensureRegisteredViews(): Promise<{
  * startup AFTER checkStatus() returned 'ready' — on 'needs_bootstrap'
  * there is nothing to register against yet; runBootstrap handles the
  * first registration itself.
+ *
+ * A startup check that answers 'wip_key_refused', 'wip_unreachable' or
+ * 'wip_error' says nothing about the namespace yet: check again (with a
+ * backoff, as the gate does for a refused key) before deciding not to
+ * register. On k8s a just-added app's key is refused for a few minutes; a
+ * server that skips registration on its first check leaves the views
+ * unregistered until the pod restarts, though the gate recovers.
  */
 export async function ensureRegisteredViewsWithRetry(
   attempts = 10,

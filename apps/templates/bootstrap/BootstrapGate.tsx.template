@@ -4,7 +4,16 @@
  * Implements the offer-on-empty / use-on-exists pattern at the UI level:
  *   - On mount, hits /server-api/bootstrap/status.
  *   - If 'ready' → renders {children}, the actual app.
- *   - If 'wip_unreachable' → shows a "WIP is unreachable, retry" panel.
+ *   - If 'wip_unreachable' → no answer from WIP at all: "WIP is unreachable" + retry.
+ *   - If 'wip_key_refused' → WIP answered 401/403: "WIP refused the app's API
+ *     key", naming the key. Re-checked on its own with backoff (5 s doubling
+ *     to 30 s, for five minutes from the first refusal), since a just-added
+ *     app's key can take that long to be accepted on k8s; then it waits for
+ *     "Retry now".
+ *   - If 'wip_error' → WIP answered with another error (a 5xx): its HTTP
+ *     status and error + retry.
+ *   - If 'check_failed' / 'app_error' → this app's own server failed its
+ *     check, or did not answer: not WIP's fault, says so + retry.
  *   - If 'needs_bootstrap' → shows the user the bootstrap offer with TWO
  *     options: "Bootstrap" (proceeds) or "Check Again" (re-poll, in case
  *     the user is restoring from a backup via the console — see §3.4).
@@ -34,6 +43,8 @@
  *   - Set NAMESPACE_LABEL to match the namespace prefix you set in
  *     bootstrap.server.ts.template (so the user-facing message is
  *     accurate: "the <namespace> namespace does not exist").
+ *   - Set APP_KEY_NAME to your app's key: wip-deploy names it
+ *     app-<manifest name> (the refused-key panel shows it).
  *   - Replace the lucide-react icons if your app uses a different icon
  *     library; the imports here match the canonical stack.
  *   - Consider whether you want the gate to render INSIDE your normal
@@ -52,9 +63,20 @@ const NAMESPACE_LABEL = 'TODO_APP_NAMESPACE'
 // TODO: your app's display name
 const APP_TITLE = 'TODO_APP_NAME'
 
+// TODO: your app's API key name — wip-deploy names it app-<manifest name>
+const APP_KEY_NAME = 'app-TODO_APP_NAME'
+
 type AppStatus =
-  | 'checking' | 'wip_unreachable' | 'needs_bootstrap' | 'incomplete' | 'resume_blocked'
+  | 'checking' | 'wip_unreachable' | 'wip_key_refused' | 'wip_error' | 'check_failed'
+  | 'app_error' | 'needs_bootstrap' | 'incomplete' | 'resume_blocked'
   | 'bootstrapping' | 'ready' | 'error'
+
+// A refused key is re-checked on its own: 5 s, doubling to at most 30 s, for
+// five minutes from the first refusal. After that the gate waits for Retry.
+const KEY_RETRY_WINDOW_MS = 5 * 60_000
+function keyRetryDelay(attempt: number): number {
+  return Math.min(5_000 * 2 ** attempt, 30_000)
+}
 
 interface BootstrapProgress {
   step: string
@@ -70,23 +92,74 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
   // The server's explanation for 'resume_blocked' (which namespace, how many
   // documents) — shown verbatim, since it says exactly what was found.
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  // The HTTP status WIP answered a failed check with (refused key, WIP error).
+  const [httpStatus, setHttpStatus] = useState<number | null>(null)
+  // Automatic re-checks of a refused key: when the first refusal was seen, how
+  // many re-checks have run, and when the next one is due (null: none scheduled).
+  const [refusedSince, setRefusedSince] = useState<number | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const [nextAt, setNextAt] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
 
-  const checkStatus = useCallback(async () => {
-    setStatus('checking')
+  // quiet: an automatic re-check keeps the current panel instead of the spinner.
+  const checkStatus = useCallback(async (quiet = false) => {
+    if (!quiet) setStatus('checking')
     setError(null)
     setStatusMessage(null)
+    let res: Response
     try {
-      const res = await fetch(serverApiUrl('/bootstrap/status'))
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      res = await fetch(serverApiUrl('/bootstrap/status'))
+    } catch (e) {
+      // This app's own server did not answer: not a statement about WIP.
+      setError((e as Error).message)
+      setStatus('app_error')
+      return
+    }
+    try {
+      if (!res.ok) throw new Error(`the app's server answered HTTP ${res.status}`)
       const data = await res.json()
       setStatusMessage(data.message ?? null)
+      setHttpStatus(data.http_status ?? null)
+      setError(data.error ?? null)
       setStatus(data.status as AppStatus)
-    } catch {
-      setStatus('wip_unreachable')
+    } catch (e) {
+      setError((e as Error).message)
+      setStatus('app_error')
     }
   }, [])
 
+  // A manual check (Retry, Check Again) starts a fresh retry window.
+  const checkNow = useCallback(() => {
+    setRefusedSince(null)
+    setAttempt(0)
+    setNextAt(null)
+    checkStatus()
+  }, [checkStatus])
+
   useEffect(() => { checkStatus() }, [checkStatus])
+
+  // While the key is refused, schedule the next automatic re-check, within the window.
+  useEffect(() => {
+    if (status !== 'wip_key_refused') { setNextAt(null); return }
+    const since = refusedSince ?? Date.now()
+    if (refusedSince === null) setRefusedSince(since)
+    if (Date.now() - since >= KEY_RETRY_WINDOW_MS) { setNextAt(null); return }
+    const due = Date.now() + keyRetryDelay(attempt)
+    setNextAt(due)
+    const t = setTimeout(() => { setAttempt((a) => a + 1); checkStatus(true) }, due - Date.now())
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, attempt])
+
+  // A one-second tick for the countdown, only while a re-check is scheduled.
+  useEffect(() => {
+    if (nextAt === null) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [nextAt])
+  const secondsLeft = nextAt === null ? null : Math.max(0, Math.ceil((nextAt - now) / 1000))
+  // The window ran out: no re-check is scheduled for a refusal already seen.
+  const gaveUp = refusedSince !== null && nextAt === null
 
   const startBootstrap = useCallback(async () => {
     setStatus('bootstrapping')
@@ -159,12 +232,95 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
               <div>
                 <p className="font-medium text-red-800">WIP is unreachable</p>
                 <p className="mt-1 text-sm text-red-600">
-                  Cannot connect to the WIP backend. Make sure WIP is running and accessible.
+                  The app's server got no answer from WIP. Make sure WIP is running and
+                  reachable from the app.
                 </p>
+                {error && <p className="mt-1 break-words font-mono text-xs text-red-500">{error}</p>}
               </div>
             </div>
             <button
-              onClick={checkStatus}
+              onClick={checkNow}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
+            >
+              <RefreshCw className="h-4 w-4" /> Retry
+            </button>
+          </div>
+        )}
+
+        {status === 'wip_key_refused' && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+              <ServerCrash className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+              <div>
+                <p className="font-medium text-red-800">WIP refused the app's API key</p>
+                <p className="mt-1 text-sm text-red-600">
+                  WIP is running, but it does not accept this app's key
+                  (<code className="rounded bg-red-100 px-1">{APP_KEY_NAME}</code>
+                  {httpStatus ? `, HTTP ${httpStatus}` : ''}). Right after an install, an added app or a
+                  key rotation, the key can take a few minutes to be accepted (on k8s, until the mounted
+                  key file refreshes). If it persists, the key was revoked or the app was removed from
+                  the install; redeploying the app gives it a valid key.
+                </p>
+              </div>
+            </div>
+            {secondsLeft !== null ? (
+              <p className="flex items-center justify-center gap-2 text-sm text-gray-500">
+                <Loader2 className="h-4 w-4 animate-spin" /> Checking again in {secondsLeft} s…
+              </p>
+            ) : gaveUp ? (
+              <p className="text-center text-xs text-gray-400">Stopped checking on its own after a few minutes.</p>
+            ) : null}
+            <button
+              onClick={checkNow}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
+            >
+              <RefreshCw className="h-4 w-4" /> Retry now
+            </button>
+          </div>
+        )}
+
+        {status === 'wip_error' && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+              <ServerCrash className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+              <div>
+                <p className="font-medium text-red-800">
+                  WIP answered with an error{httpStatus ? ` (HTTP ${httpStatus})` : ''}
+                </p>
+                <p className="mt-1 text-sm text-red-600">
+                  WIP is reachable and accepted the key, but failed to answer the check. A WIP service
+                  may be starting or unhealthy; check the install's status.
+                </p>
+                {error && <p className="mt-1 break-words font-mono text-xs text-red-500">{error}</p>}
+              </div>
+            </div>
+            <button
+              onClick={checkNow}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
+            >
+              <RefreshCw className="h-4 w-4" /> Retry
+            </button>
+          </div>
+        )}
+
+        {(status === 'check_failed' || status === 'app_error') && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+              <div>
+                <p className="font-medium text-red-800">
+                  {status === 'app_error' ? "The app's server did not answer" : "The app's server could not run its check"}
+                </p>
+                <p className="mt-1 text-sm text-red-600">
+                  This is {APP_TITLE}'s own server, not WIP. {status === 'app_error'
+                    ? 'It may be restarting; check the app container.'
+                    : 'Its log says more.'}
+                </p>
+                {error && <p className="mt-1 break-words font-mono text-xs text-red-500">{error}</p>}
+              </div>
+            </div>
+            <button
+              onClick={checkNow}
               className="flex w-full items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
             >
               <RefreshCw className="h-4 w-4" /> Retry
@@ -193,7 +349,7 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
                 <Database className="h-4 w-4" /> Bootstrap
               </button>
               <button
-                onClick={checkStatus}
+                onClick={checkNow}
                 className="flex flex-1 items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
               >
                 <RefreshCw className="h-4 w-4" /> Check Again
@@ -229,7 +385,7 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
                 <Database className="h-4 w-4" /> Resume Bootstrap
               </button>
               <button
-                onClick={checkStatus}
+                onClick={checkNow}
                 className="flex flex-1 items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
               >
                 <RefreshCw className="h-4 w-4" /> Check Again
@@ -251,7 +407,7 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <button
-              onClick={checkStatus}
+              onClick={checkNow}
               className="flex w-full items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
             >
               <RefreshCw className="h-4 w-4" /> Check Again
@@ -291,7 +447,7 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
                 <RefreshCw className="h-4 w-4" /> Retry Bootstrap
               </button>
               <button
-                onClick={checkStatus}
+                onClick={checkNow}
                 className="flex flex-1 items-center justify-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium hover:bg-gray-200"
               >
                 <RefreshCw className="h-4 w-4" /> Check Status

@@ -2,7 +2,7 @@
  * Bootstrap routes — wires the bootstrap library to two HTTP endpoints
  * the React BootstrapGate consumes.
  *
- *   GET  /server-api/bootstrap/status  → { status: BootstrapStatus, message? }
+ *   GET  /server-api/bootstrap/status  → { status: BootstrapStatus, message?, http_status?, error? }
  *   POST /server-api/bootstrap/run     → SSE stream of BootstrapProgress
  *
  * Mount this on your Express app under whatever path the React side
@@ -31,14 +31,18 @@ const router = Router()
 
 /**
  * GET /server-api/bootstrap/status
- * Check if WIP is reachable and the namespace exists.
+ * Check if WIP answers, accepts the app's key, and the namespace exists.
+ * The check answers 200 with what it found; a failure of the check itself
+ * (loading the seed roles, reading the bootstrap record) is 'check_failed'
+ * with its message, never "WIP is unreachable".
  */
 router.get('/bootstrap/status', async (_req, res) => {
   try {
-    // { status, message? } — message explains a 'resume_blocked' namespace.
+    // { status, message?, http_status?, error? } — message explains a
+    // 'resume_blocked' namespace; http_status/error a failed WIP call.
     res.json(await checkStatusDetail())
   } catch (err) {
-    res.json({ status: 'wip_unreachable', error: (err as Error).message })
+    res.json({ status: 'check_failed', error: (err as Error).message })
   }
 })
 

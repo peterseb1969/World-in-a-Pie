@@ -8,7 +8,7 @@ libs/wip-proxy/README.md sha256:e63cb4241bccc1e7 reviewed:4bb50871
 docs/wip-deployable-app-contract.md sha256:bf1a6ac8c52d79c8 reviewed:9f761e23
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:6b9cda0da7c6c00d reviewed:06668a40
-scaffold/templates/claude-md/app.md sha256:a97241890b7b5d5e reviewed:95322445
+scaffold/templates/claude-md/app.md sha256:5b1689c74d00df71 reviewed:fc5a10e0
 -->
 # WIP build card — Phase 4: writing the app
 
