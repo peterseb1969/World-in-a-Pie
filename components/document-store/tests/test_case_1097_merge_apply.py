@@ -118,9 +118,10 @@ async def test_an_overwrite_moves_the_count_to_the_new_heads_files(mongo):
 
 
 @pytest.mark.asyncio
-async def test_a_version_older_versions_keep_leaves_active_still_counts(mongo):
-    """keep leaves the overwritten version active, and it still references
-    F1: a live referrer, so F1 must not drop to 0."""
+async def test_only_the_head_counts_when_older_versions_keep_leaves_one_active(mongo):
+    """keep leaves the overwritten version active, but a document's edit or
+    delete releases only its head's references: the recount counts the head
+    alone, as document writes do, so the count stays in step with them."""
     await _seed_namespace(mongo)
     await _seed(mongo, "templates", [_template()])
     await _seed(mongo, "files", [_file("F1", count=1), _file("F2")])
@@ -130,7 +131,48 @@ async def test_a_version_older_versions_keep_leaves_active_still_counts(mongo):
         "documents": [_doc(1, doc_id="D1", ident="h1", data={"n": "new"}, files=["F2"])],
     }), on_clash="overwrite", older_versions="keep")
 
-    assert await _counts(mongo) == {"F1": 1, "F2": 1}
+    assert await _active(mongo, "D1") == [1, 2]
+    assert await _counts(mongo) == {"F1": 0, "F2": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_head_naming_a_file_twice_holds_it_twice(mongo):
+    """Document writes count one per file_references entry; so does the
+    recount, or a later edit dropping both entries would take a shared
+    file's count to 0 while another document still holds it."""
+    await _seed_namespace(mongo)
+    await _seed(mongo, "templates", [_template()])
+    await _seed(mongo, "files", [_file("F1")])
+    twice = _doc(1, doc_id="D2", ident="h2", files=["F1"])
+    twice["file_references"].append({"field_path": "g", "file_id": "F1"})
+
+    await _run_merge(mongo, _archive({
+        "documents": [twice, _doc(1, doc_id="D3", ident="h3", files=["F1"])],
+    }))
+
+    assert (await _counts(mongo))["F1"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_merge_still_recounts_what_it_wrote(mongo, monkeypatch):
+    await _seed_namespace(mongo)
+    await _seed(mongo, "templates", [_template()])
+    await _seed(mongo, "files", [_file("F1")])
+    from document_store.services import backup_engine
+
+    real = backup_engine.DirectRestoreEngine._merge_documents
+
+    async def documents_then_fail(self, *args, **kwargs):
+        await real(self, *args, **kwargs)
+        raise backup_engine.RestoreEngineError("stopped after the documents")
+
+    monkeypatch.setattr(backup_engine.DirectRestoreEngine, "_merge_documents", documents_then_fail)
+    with pytest.raises(Exception, match="stopped after the documents"):
+        await _run_merge(mongo, _archive({
+            "documents": [_doc(1, doc_id="D2", ident="h2", files=["F1"])],
+        }))
+
+    assert (await _counts(mongo))["F1"] == 1
 
 
 ELSEWHERE = "merge-elsewhere-ns"
@@ -296,3 +338,23 @@ async def test_the_reporting_gate_runs_before_documents_move(mongo):
 
     assert seen == [0]
     assert len(await _rows(mongo, "documents")) == 1
+
+
+# ── a deletion is not an identical copy ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_overwrite_revives_a_document_deleted_here(mongo):
+    """The same content, deleted here and active in the archive: the copies
+    differ in status, so overwrite writes the archive's (a revival)."""
+    await _seed_namespace(mongo)
+    await _seed(mongo, "templates", [_template()])
+    deleted = _doc(1, doc_id="D1", ident="h1", data={"n": "same"})
+    deleted["status"] = "inactive"
+    await _seed(mongo, "documents", [deleted])
+
+    await _run_merge(mongo, _archive({
+        "documents": [_doc(1, doc_id="D1", ident="h1", data={"n": "same"})],
+    }), on_clash="overwrite", older_versions="retire")
+
+    assert await _active(mongo, "D1") == [2]

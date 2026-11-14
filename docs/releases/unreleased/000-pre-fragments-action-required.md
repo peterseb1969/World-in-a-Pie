@@ -3206,19 +3206,19 @@ unknown `<label>.<hostname>`, whether anyone attached an app or not.
 
 ### Merge restores: reference counts, dates, partial failures, identical copies, the reporting gate
 
-Five fixes to what a merge restore writes:
+Six fixes to what a merge restore writes:
 
-- **File reference counts follow the merge.** After the documents, every
-  file's `reference_count` in the namespace is recounted from the latest
-  version of each active document, as document writes keep it. Before, a
-  file only merged-in documents used kept a count of 0 and could be deleted
-  without `force`.
+- **File reference counts follow the merge.** After the documents, file
+  reference counts are recounted (the rule is in the CASE-1097 fragment,
+  `case-1097-merge-file-counts.md`). Before, a file only merged-in documents
+  used kept a count of 0 and could be deleted without `force`.
 - **An overwrite in place stores dates as dates.** On a `versioned: false`
   template the replaced row kept the archive's timestamps as strings, which
   timestamp filters then skipped.
-- **A batch that fails partway never leaves two active versions.** The
-  older versions of the overwriting rows that did land are retired, and the
-  error says how many landed.
+- **A batch that fails partway never leaves two active versions** under
+  `older_versions: retire`. The older versions of the overwriting rows that
+  did land are retired, and the error says how many landed. (Under `keep`,
+  older versions stay active by design.)
 - **An identical archive copy adds no version.** Under `overwrite` and
   `newer`, a clash whose data, resolved references and `metadata.custom`
   equal the target's is left alone and reported.

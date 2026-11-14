@@ -115,6 +115,29 @@ class TestStructuralGate:
             await eng._reporting_phase_structure("ns1")
 
 
+    @pytest.mark.asyncio
+    async def test_a_merge_halts_only_on_the_tables_of_templates_it_writes(self):
+        """A live namespace's broken table for a template the merge writes no
+        documents of was there before it: reported, never a refusal."""
+        broken = dict(CLEAN, structural_issues=2, templates=[
+            {"template_value": "OTHER", "table_present": False,
+             "missing_columns": [], "error": None},
+            {"template_value": "MINE", "table_present": False,
+             "missing_columns": [], "error": None},
+        ])
+        events = []
+        eng = _engine(_reporting_stub(broken), events)
+        eng._template_ids_of = AsyncMock(
+            return_value={("ns1", "OTHER"): "T-other", ("ns1", "MINE"): "T-mine"},
+        )
+        await eng._reporting_phase_structure("ns1", merge=True, templates={"T-none"})
+        assert any(ev.phase == "warning" and "OTHER" in ev.message for ev in events)
+
+        with pytest.raises(RestoreEngineError, match="MINE") as halted:
+            await eng._reporting_phase_structure("ns1", merge=True, templates={"T-mine"})
+        assert "OTHER" not in str(halted.value)
+
+
 class TestCountParity:
     @pytest.mark.asyncio
     async def test_parity_ok_no_warning(self):

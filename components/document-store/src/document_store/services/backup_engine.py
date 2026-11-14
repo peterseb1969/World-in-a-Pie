@@ -175,6 +175,8 @@ _DOCUMENT_KEY_FIELDS = ("document_id", "template_id", "identity_hash", "version"
 
 # Ids per $in when reading the out-of-archive referents' Registry entries.
 _REFERENT_LOOKUP_BATCH = 1000
+# Ids per $in in the merge's file reference recount.
+_RECOUNT_BATCH = 500
 
 # Unresolved referents named individually on a restore job; the rest are
 # counted in one more warning.
@@ -1324,12 +1326,17 @@ _CONTENT_FIELDS = ("data", "term_references", "references", "file_references")
 def _same_document_content(archive_row: dict[str, Any], target_row: dict[str, Any]) -> bool:
     """The parts of a document that version, compared as document writes
     compare them (document_service._document_has_changed): data, the three
-    resolved-reference lists and metadata.custom. Equal means a write would
-    add a version that changes nothing."""
+    resolved-reference lists and metadata.custom — and its status, since a
+    copy that is deleted on one side and not on the other is a deletion (or
+    a revival) for the merge's policy to carry, not an identical copy.
+    Equal means a write would add a version that changes nothing."""
     import json
 
     def norm(value: Any) -> str:
         return json.dumps(value, sort_keys=True, default=str)
+
+    if (archive_row.get("status") or "active") != (target_row.get("status") or "active"):
+        return False
 
     for name in _CONTENT_FIELDS:
         if norm(archive_row.get(name) or ([] if name != "data" else {})) != norm(
@@ -1339,6 +1346,20 @@ def _same_document_content(archive_row: dict[str, Any], target_row: dict[str, An
     custom_a = (archive_row.get("metadata") or {}).get("custom") or {}
     custom_t = (target_row.get("metadata") or {}).get("custom") or {}
     return norm(custom_a) == norm(custom_t)
+
+
+def _recounted_file(row: dict[str, Any], want: int) -> dict[str, Any]:
+    """The fields to set on a file row whose recounted reference count is
+    ``want``: the count, and the status that follows it as
+    update_reference_count keeps it (an inactive file stays inactive)."""
+    update: dict[str, Any] = {}
+    if row.get("reference_count") != want:
+        update["reference_count"] = want
+    if row.get("status") != "inactive":
+        status = "active" if want > 0 else "orphan"
+        if row.get("status") != status:
+            update["status"] = status
+    return update
 
 
 def _activation_failure_cause(failed: list[dict[str, Any]]) -> str:
@@ -5698,36 +5719,29 @@ class DirectRestoreEngine:
         new_entries = entries_plan.to_insert if entries_plan else []
         definition_entries = [e for e in new_entries if _is_definition_entry(e)]
         other_entries = [e for e in new_entries if not _is_definition_entry(e)]
-        entries_written = False
-        for entity_type in MERGE_ENTITY_ORDER:
-            plan = plans.get(entity_type)
-            if plan is None:
-                continue
-            db_name, coll_name = COLLECTION_MAP[entity_type]
-            collection = self._mongo[db_name][coll_name]
-            if entity_type in ("documents", "registry_entries") and not entries_written:
-                entries_db, entries_coll = COLLECTION_MAP["registry_entries"]
-                await self._merge_insert_rows(
-                    namespace, self._mongo[entries_db][entries_coll],
-                    "registry_entries", definition_entries, batch_size,
-                )
-                entries_written = True
-            if entity_type == "registry_entries":
-                await self._merge_insert_rows(
-                    namespace, collection, entity_type, other_entries, batch_size,
-                )
-                continue
-            if entity_type != "documents":
-                await self._merge_insert_rows(
-                    namespace, collection, entity_type, plan.to_insert, batch_size,
-                )
-                continue
-            await self._merge_documents(
-                namespace, collection, plan, doc_groups, on_clash=on_clash,
-                older_versions=older_versions, batch_size=batch_size, streamed=streamed,
+        recount = plans.get("documents") is not None or plans.get("files") is not None
+        try:
+            await self._write_merge_types(
+                namespace, plans, doc_groups, definition_entries, other_entries,
+                on_clash=on_clash, older_versions=older_versions,
+                batch_size=batch_size, streamed=streamed,
             )
-
-        if plans.get("documents") is not None or plans.get("files") is not None:
+        except BaseException:
+            # Documents land before files, so a merge stopped part-way has
+            # written rows whose files are not yet counted: recount them
+            # anyway, and let the merge's own failure stand.
+            if recount:
+                try:
+                    await self._recount_file_references(namespace)
+                except Exception as exc:  # noqa: BLE001 — the merge's error is the one to raise
+                    self._emit(
+                        "warning",
+                        f"[{namespace}] the file reference recount after the failed "
+                        f"merge failed too ({exc}); counts may be stale until the next "
+                        "write to each file's documents",
+                    )
+            raise
+        if recount:
             await self._recount_file_references(namespace)
 
         if new_entries:
@@ -5756,9 +5770,14 @@ class DirectRestoreEngine:
         # correctly shaped before any document moves. A merge plans templates
         # separately (definitions), so it runs here, once, ahead of the
         # documents.
-        await self._reporting_phase_structure(namespace, merge=True)
-
         overwrites = on_clash in ("overwrite", "newer")
+        written = {
+            str(row.get("template_id"))
+            for row in [*plan.to_insert, *(c.entity for c in plan.clashes if overwrites)]
+            if row.get("template_id")
+        }
+        await self._reporting_phase_structure(namespace, merge=True, templates=written)
+
         if streamed is not None:
             await self._merge_insert_streamed(namespace, collection, streamed, batch_size)
             if overwrites:
@@ -6032,7 +6051,9 @@ class DirectRestoreEngine:
         landed. Returns the versions retired."""
         try:
             await self._insert_batch(collection, rows, "documents")
-        except RestoreEngineError as exc:
+        except Exception as exc:
+            # Any failure, the driver's own included (a lost connection, a
+            # timeout): some rows may have landed either way.
             landed = await self._landed_rows(collection, namespace, rows)
             await _retire_superseded(collection, namespace, landed, older_versions)
             raise RestoreEngineError(
@@ -6115,20 +6136,66 @@ class DirectRestoreEngine:
                 present.add((row.get("document_id"), row.get("version")))
         return [r for r in rows if (r["document_id"], r["version"]) in present]
 
+    async def _write_merge_types(
+        self,
+        namespace: str,
+        plans: dict[str, EntityPlan],
+        doc_groups: dict[str, list[dict[str, Any]]],
+        definition_entries: list[dict[str, Any]],
+        other_entries: list[dict[str, Any]],
+        *,
+        on_clash: str,
+        older_versions: str,
+        batch_size: int,
+        streamed: _StreamedDocuments | None,
+    ) -> None:
+        """Each planned type's rows, in MERGE_ENTITY_ORDER; the definitions'
+        Registry entries go with the first of documents / registry_entries."""
+        entries_written = False
+        for entity_type in MERGE_ENTITY_ORDER:
+            plan = plans.get(entity_type)
+            if plan is None:
+                continue
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            collection = self._mongo[db_name][coll_name]
+            if entity_type in ("documents", "registry_entries") and not entries_written:
+                entries_db, entries_coll = COLLECTION_MAP["registry_entries"]
+                await self._merge_insert_rows(
+                    namespace, self._mongo[entries_db][entries_coll],
+                    "registry_entries", definition_entries, batch_size,
+                )
+                entries_written = True
+            if entity_type == "registry_entries":
+                await self._merge_insert_rows(
+                    namespace, collection, entity_type, other_entries, batch_size,
+                )
+                continue
+            if entity_type != "documents":
+                await self._merge_insert_rows(
+                    namespace, collection, entity_type, plan.to_insert, batch_size,
+                )
+                continue
+            await self._merge_documents(
+                namespace, collection, plan, doc_groups, on_clash=on_clash,
+                older_versions=older_versions, batch_size=batch_size, streamed=streamed,
+            )
+
     async def _recount_file_references(self, namespace: str) -> None:
         """Recount the reference_count (and the status that follows it) of
         every file this merge can have changed: the files of the namespace,
         and every file its documents reference, wherever that file lives.
 
         A merge writes documents as raw rows, so counts are recomputed
-        afterwards rather than adjusted. The rule is the platform's own,
-        which is not namespace-scoped: a file is held by each active
-        document, in any namespace, that references it (live_referrers,
-        and the drift repair that raises a count to match it). An active
-        row counts whatever its version, since older_versions=keep leaves a
-        superseded version active and still holding its files. Files no
+        afterwards rather than adjusted, by the rule document writes keep
+        (document_service._update_file_reference_counts): a file's count is
+        the number of file_references entries naming it across the head
+        version of each document, in any namespace — one per entry, so a
+        head that names a file in two fields holds it twice. The head is a
+        document's highest active version; an older version that
+        older_versions=keep leaves active is not counted, since an edit or a
+        delete of the document releases only its head's references. Files no
         document of this namespace references and that live elsewhere are
-        never read or written."""
+        never read or written. Every id list is sent in batches."""
         files_db, files_coll = COLLECTION_MAP["files"]
         docs_db, docs_coll = COLLECTION_MAP["documents"]
         files = self._mongo[files_db][files_coll]
@@ -6145,39 +6212,56 @@ class DirectRestoreEngine:
         if not touched:
             return
         ids = sorted(touched)
-        holders: dict[str, int] = {}
-        async for row in docs.aggregate([
-            {"$match": {"status": "active", "file_references.file_id": {"$in": ids}}},
-            {"$project": {"document_id": 1, "file_references.file_id": 1}},
-            {"$unwind": "$file_references"},
-            {"$match": {"file_references.file_id": {"$in": ids}}},
-            {"$group": {"_id": {"f": "$file_references.file_id", "d": "$document_id"}}},
-            {"$group": {"_id": "$_id.f", "n": {"$sum": 1}}},
-        ]):
-            holders[str(row["_id"])] = int(row["n"])
+        counts = await self._head_file_reference_counts(docs, ids)
 
-        changed = 0
-        async for f in files.find(
-            {"file_id": {"$in": ids}}, {"file_id": 1, "reference_count": 1, "status": 1},
-        ):
-            want = holders.get(str(f.get("file_id")), 0)
-            update: dict[str, Any] = {}
-            if f.get("reference_count") != want:
-                update["reference_count"] = want
-            # The status follows the count as update_reference_count keeps it;
-            # an inactive file stays inactive.
-            if f.get("status") != "inactive":
-                status = "active" if want > 0 else "orphan"
-                if f.get("status") != status:
-                    update["status"] = status
-            if update:
-                await files.update_one({"_id": f["_id"]}, {"$set": update})
-                changed += 1
-        if changed:
+        recounted = status_only = 0
+        for start in range(0, len(ids), _RECOUNT_BATCH):
+            async for f in files.find(
+                {"file_id": {"$in": ids[start:start + _RECOUNT_BATCH]}},
+                {"file_id": 1, "reference_count": 1, "status": 1},
+            ):
+                update = _recounted_file(f, counts.get(str(f.get("file_id")), 0))
+                if update:
+                    await files.update_one({"_id": f["_id"]}, {"$set": update})
+                    if "reference_count" in update:
+                        recounted += 1
+                    else:
+                        status_only += 1
+        if recounted or status_only:
             self._emit(
                 "phase_files",
-                f"[{namespace}] {changed} file reference count(s) recounted from the documents",
+                f"[{namespace}] merge: {recounted} file reference count(s) recounted "
+                f"and {status_only} file status(es) corrected from the documents "
+                "(files in any namespace its documents reference)",
             )
+
+    @staticmethod
+    async def _head_file_reference_counts(docs: Any, ids: list[str]) -> dict[str, int]:
+        """Per file id, its file_references entries across the head version
+        of each document that holds one of ``ids`` in an active version."""
+        holders: set[str] = set()
+        for start in range(0, len(ids), _RECOUNT_BATCH):
+            holders |= {
+                str(d) for d in await docs.distinct("document_id", {
+                    "status": "active",
+                    "file_references.file_id": {"$in": ids[start:start + _RECOUNT_BATCH]},
+                }) if d
+            }
+        wanted = set(ids)
+        counts: dict[str, int] = {}
+        documents = sorted(holders)
+        for start in range(0, len(documents), _RECOUNT_BATCH):
+            async for row in docs.aggregate([
+                {"$match": {"status": "active",
+                            "document_id": {"$in": documents[start:start + _RECOUNT_BATCH]}}},
+                {"$sort": {"document_id": 1, "version": -1}},
+                {"$group": {"_id": "$document_id",
+                            "refs": {"$first": "$file_references.file_id"}}},
+            ]):
+                for file_id in row.get("refs") or []:
+                    if file_id and str(file_id) in wanted:
+                        counts[str(file_id)] = counts.get(str(file_id), 0) + 1
+        return counts
 
     async def _template_versioned_flags(
         self, namespace: str, template_ids: list[str | None]
@@ -6688,7 +6772,7 @@ class DirectRestoreEngine:
             )
 
     async def _reporting_phase_structure(
-        self, namespace: str, *, merge: bool = False
+        self, namespace: str, *, merge: bool = False, templates: set[str] | None = None,
     ) -> None:
         """Post-templates gate: reporting tables must materialize correctly.
 
@@ -6697,6 +6781,10 @@ class DirectRestoreEngine:
         green. A persistent structural failure HALTS the restore before any
         document moves. ``merge`` says the namespace held data before this
         run, which the halt's advice must not tell the operator to delete.
+        ``templates``: for a merge, the ids of the templates whose documents
+        it writes. Only their tables (and unusable bookkeeping) halt it; a
+        live namespace's issue with another template's table was there
+        before the merge and is reported, not a reason to refuse it.
         """
         if not self._reporting:
             return
@@ -6714,23 +6802,53 @@ class DirectRestoreEngine:
                 return
             if parity.get("bookkeeping_tables_ok", True) and parity.get("structural_issues", 0) == 0:
                 return
+            if templates is not None and await self._merge_passes_structure(
+                namespace, parity, templates,
+            ):
+                return
             await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
+        raise RestoreEngineError(_structure_halt(
+            namespace, self._REPORTING_STRUCTURE_TIMEOUT_S,
+            await self._structure_issues(namespace, parity, templates), merge=merge,
+        ))
+
+    async def _structure_issues(
+        self, namespace: str, parity: dict[str, Any] | None, templates: set[str] | None,
+    ) -> list[str]:
+        """The failing tables to name in the halt (for a merge, only those of
+        templates it writes), each with reporting-sync's reason for it. The
+        jobs are matched by template id, since another namespace can hold a
+        template of the same value; a missing table says only that the sync
+        did not get there."""
         failing = _structure_failures(parity)
-        # Why reporting-sync's jobs failed, by template: a missing table
-        # says only that the sync did not get there. The jobs are matched by
-        # template id, since another namespace can hold a template of the
-        # same value.
         ids = await self._template_ids_of(namespace, failing)
-        sync_errors = await self._reporting.failed_jobs(
-            namespace, set(ids.values())
-        )
-        issues = [
+        if templates is not None:
+            failing = [t for t in failing if ids.get(_parity_owner(namespace, t)) in templates]
+        sync_errors = await self._reporting.failed_jobs(namespace, set(ids.values()))
+        return [
             _structure_issue(t, sync_errors.get(ids.get(_parity_owner(namespace, t), "")))
             for t in failing
         ]
-        raise RestoreEngineError(_structure_halt(
-            namespace, self._REPORTING_STRUCTURE_TIMEOUT_S, issues, merge=merge,
-        ))
+
+    async def _merge_passes_structure(
+        self, namespace: str, parity: dict[str, Any], templates: set[str],
+    ) -> bool:
+        """Whether a merge may go on although the structure check is not
+        green: the bookkeeping is usable and no failing table is one of a
+        template whose documents it writes. The others are reported."""
+        if not parity.get("bookkeeping_tables_ok", True):
+            return False
+        failing = _structure_failures(parity)
+        ids = await self._template_ids_of(namespace, failing)
+        if any(ids.get(_parity_owner(namespace, t)) in templates for t in failing):
+            return False
+        self._emit(
+            "warning",
+            f"[{namespace}] reporting tables of templates this merge writes no "
+            "documents of are missing or misshaped; the merge goes on: "
+            f"{', '.join(sorted(str(t.get('template_value')) for t in failing))}",
+        )
+        return True
 
     async def _template_ids_of(
         self, namespace: str, templates: list[dict[str, Any]]

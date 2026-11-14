@@ -130,10 +130,14 @@ runs only where documents are written, so the plan (and the dry run) counts a
 clashing document as `not_compared`, never as unchanged or clash. After the
 documents, the `reference_count` (and the status that follows it) of every
 file the merge can have changed is recounted: the namespace's files and every
-file its documents reference, wherever it lives. A file is held by each active
-document, in any namespace, that references it, the rule the platform's own
-referrer check and drift repair use, so a reference from another namespace, or
-from a version `older_versions: keep` left active, keeps the file counted.
+file its documents reference, wherever it lives. The count follows the rule
+document writes keep: one per `file_references` entry naming the file, across
+the head (highest active) version of each document in any namespace, so a
+reference from another namespace keeps the file counted. A version
+`older_versions: keep` leaves active does not count: an edit or a delete of
+the document releases only its head's references, and a count that included
+it would never come down. The recount runs even when the merge fails
+part-way, since documents are written before files.
 `newer` does what `overwrite` does only where the archive's copy has a more
 recent `updated_at`; ties and missing/unparseable timestamps keep the
 target's and are reported as job warnings — across installs `newer` is only

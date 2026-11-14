@@ -15,6 +15,11 @@ file's count.
 
 The recount now covers the files the merge can have changed (the namespace's
 files and every file its documents reference, wherever it lives) and counts
-each active document in any namespace that references the file, the platform's
-own rule. The file's status follows the count (`active` above 0, `orphan` at 0;
-an `inactive` file stays inactive).
+them by the rule document writes keep: one per `file_references` entry naming
+the file, across the head version of each document in any namespace. A head
+that names a file in two fields holds it twice. Only the head counts: an older
+version `older_versions: keep` leaves active does not, since editing or
+deleting the document releases only its head's references. The file's status
+follows the count (`active` above 0, `orphan` at 0; an `inactive` file stays
+inactive). A merge that fails part-way still recounts the files of what it
+wrote, and the recount's id lists are sent in batches of 500.
