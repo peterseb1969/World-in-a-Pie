@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
 # Re-exported here under the def-store-facing names so existing callers
@@ -22,6 +22,21 @@ from .terminology import TerminologyMetadata
 class StrictModel(BaseModel):
     """Base for API request models — rejects unknown fields."""
     model_config = ConfigDict(extra='forbid')
+
+
+# The by-value routes address a terminology value as one URL path segment
+# (/terminologies/by-value/<value>), and '%2F' is percent-decoded to '/'
+# before routing, so '/' inside a value can never be sent back on that door.
+PATH_SPLITTING_CHAR = "/"
+
+
+def path_splitting_reason(value: str, what: str) -> str:
+    return (
+        f"{what} {value!r} contains {PATH_SPLITTING_CHAR!r}: the value is one "
+        "URL path segment on the by-value routes, and a percent-encoded %2F "
+        "is decoded back to '/' before routing — such a value could never be "
+        "read back by value"
+    )
 
 
 # =============================================================================
@@ -76,6 +91,13 @@ class CreateTerminologyRequest(StrictModel):
         default=None,
         description="Ignored: created_by is the authenticated caller. Accepted for compatibility"
     )
+
+    @field_validator("value")
+    @classmethod
+    def _value_is_addressable(cls, v: str) -> str:
+        if PATH_SPLITTING_CHAR in v:
+            raise ValueError(path_splitting_reason(v, "Terminology value"))
+        return v
 
 
 class UpdateTerminologyRequest(StrictModel):
