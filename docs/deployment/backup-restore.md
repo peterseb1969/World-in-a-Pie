@@ -196,8 +196,10 @@ document pass uses that mapping to repoint incoming data.
 
 Compatible means, per definition:
 
-- **Template** — the target has one with the same value and identical content,
-  or has none with that value.
+- **Template** — the target has one with the same value and version and
+  identical content, or has none with that value. With `align_templates`
+  (below), templates are matched by value instead, and each archive version
+  maps onto the target version whose schema can take its documents.
 - **Terminology** — the target has none with that value, or has one whose
   terms reconcile.
 - **Terms** — extra terms on the archive side can be added; extra terms on the
@@ -210,12 +212,15 @@ contract.
 
 **The default changes nothing.** Verify-only is deliberate: altering a live
 namespace's definitions is an active decision, never a side effect of
-restoring data into it. Two separate opt-ins let the merge extend them:
+restoring data into it. Separate opt-ins let the merge extend them, or match
+them differently:
 
 | Flag | Effect |
 |---|---|
 | `add_missing` | Insert terminologies and templates the target does not have |
 | `extend_terminologies` | Add terms the target's terminology is missing, and the names a term has only in the archive |
+| `carry_retirements` | Retire the target's active terms that the archive retired, with the archive's reason and replacement |
+| `align_templates` | For an archive from another install: match templates by value, map each archive version onto the target version whose schema can take its documents, and re-pin the documents. Documents no target version can take are listed on the job (`template_alignment.unplaceable_documents`) and not merged; reshape them with `wip-toolkit migrate`, export again and merge again. A template that is the same on both sides is matched by version number, as without the option |
 
 They are separate because allowing new vocabulary entries is not the same
 decision as allowing new schemas.
@@ -287,7 +292,19 @@ every difference the target won, and the document counts. Documents the
 target already holds are counted as `not_compared`, not as unchanged or
 clashing: the plan does not read their content, and a real run compares each
 one when it writes, leaving an identical copy alone. It still fails on
-everything a real run would refuse, a file key another file holds included.
+everything a real run would refuse, a file key another file holds included,
+except the reporting structure gate below, which only a real run reaches.
+
+One check cannot run before writing: the reporting structure gate, which
+needs the merged templates written so reporting-sync can build their tables.
+A merge therefore writes in three steps across all the archive's namespaces:
+every namespace's definitions (terminologies, terms, relations, templates and
+their Registry entries), then every namespace's reporting gate, then every
+namespace's documents, files and remaining entries. A gate that refuses does
+so before any document is written anywhere, and says so. Nothing a merge has
+written is undone: any failure after the first write names, per target, what
+was written (`details.written` on the failed job, `result_kind:
+merge_partial`).
 
 ```bash
 # See what would happen, decide, then run it

@@ -3,9 +3,11 @@
 Provenance: CASE-1161. The suite never reached the streamed path's mid-stream
 batch flush, nor a plan holding neither documents nor files (no file
 reference recount). Pinned here with the engine's collaborators recorded:
-the order and batches of inserts, the reporting structure gate before
-documents, the clash overwrite on the streamed and in-memory paths, the
-recount, and the claim of inserted Registry entries.
+the order and batches of inserts, the clash overwrite on the streamed and
+in-memory paths, the recount, and the claim of inserted Registry entries.
+The definitions are written by _apply_merge_definitions and the reporting
+gate runs between the two (CASE-1297 batch C), so _apply_merge itself
+writes neither and runs no gate.
 """
 
 from __future__ import annotations
@@ -79,7 +81,6 @@ async def test_streamed_documents_flush_in_batches_then_overwrite_clashes(engine
     streamed = _Streamed([_rows("a1", "a2"), _rows("b1"), _rows("c1", "c2", "c3"), _rows("d1")])
     await engine._apply_merge("ns", plans, {}, on_clash=on_clash, batch_size=3, streamed=streamed)
     expected = [
-        ("structure", "ns"),
         ("insert", "documents", ["a1", "a2", "b1"]),
         ("insert", "documents", ["c1", "c2", "c3"]),
         ("insert", "documents", ["d1"]),
@@ -97,7 +98,6 @@ async def test_in_memory_documents_bring_their_chains_and_overwrite_without_sour
     groups = {"x": _rows("x1", "x2", "x3")}
     await engine._apply_merge("ns", plans, groups, on_clash="newer", older_versions="keep", batch_size=2)
     assert engine.calls == [
-        ("structure", "ns"),
         ("insert", "documents", ["x1", "x2"]),
         ("insert", "documents", ["x3"]),
         ("emit", "phase_documents", "[ns] inserted 3 documents"),
@@ -113,6 +113,7 @@ async def test_a_plan_without_documents_or_files_inserts_in_order_and_claims_ent
         "terms": EntityPlan("terms", to_insert=_rows("t1", "t2", "t3")),
         "terminologies": EntityPlan("terminologies"),
     }
+    await engine._apply_merge_definitions("ns", plans, batch_size=2)
     await engine._apply_merge("ns", plans, {}, on_clash="skip", batch_size=2)
     inserts = [c for c in engine.calls if c[0] == "insert"]
     assert inserts == [

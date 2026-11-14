@@ -5090,7 +5090,11 @@ async def start_restore(
 
     dry_run is exact for a merge: the plan is computed before anything is
     written, so the report is what a real run would do, and it still fails on
-    what a real run would refuse.
+    what a real run would refuse — except the reporting structure gate, which
+    needs the merged templates written. A real merge writes every namespace's
+    definitions first, then runs every gate, then writes documents, so a gate
+    refusal comes before any document is written; any failure after the
+    first write lists what each target received (details.written).
 
     The restore verifies the PostgreSQL reporting layer at phase boundaries:
     a stale reporting schema fails the precondition unless
@@ -5140,7 +5144,9 @@ async def start_restore(
             documents leave empty), and documents are re-pinned to it.
             Documents no target version can take are listed on the job
             (result template_alignment.unplaceable_documents) and not
-            merged. Refused for a template both sides share. Dry-run first.
+            merged. A template that is the same on both sides (one install
+            minted it) is matched by version number, as without the option.
+            Dry-run first.
         carry_retirements: Merge only — retire the target's active terms
             that the archive has retired, with the archive's reason and
             replacement. Without it they stay active and are reported as

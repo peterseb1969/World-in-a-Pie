@@ -222,6 +222,9 @@ class DefinitionsPlan:
     # align_templates: the archive templates matched by value, keyed by the
     # archive's template_id.
     alignment: dict[str, TemplateAlignment] = field(default_factory=dict)
+    # align_templates: archive template versions mapped onto a target version.
+    # Not "unchanged": the two differ at least in their version number.
+    aligned: int = 0
 
     @property
     def compatible(self) -> bool:
@@ -233,6 +236,7 @@ class DefinitionsPlan:
                 "unchanged": self.unchanged[entity_type],
                 "add": len(self.to_add[entity_type]),
                 "mapped": len(self.mapping[entity_type]),
+                **({"aligned": self.aligned} if entity_type == "templates" else {}),
                 **({
                     "retire": len(self.retire_terms),
                     "extend_names": len(self.extend_names),
@@ -1114,10 +1118,13 @@ class DefinitionsPlanner:
     ) -> list[dict[str, Any]]:
         """align_templates: match templates by value, map versions by schema.
 
-        Returns the archive templates whose value the target does not hold;
-        those go through the per-version path as before (refused, or added
-        under add_missing). Everything else is recorded in ``plan.alignment``
-        or refused into ``plan.incompatibilities`` here.
+        Returns the archive templates to match by (value, version) instead:
+        those whose value the target does not hold (refused, or added under
+        add_missing), and those that are the same template on both sides (one
+        install minted it, so its versions already line up; an archive mixing
+        such templates with another install's is aligned template by
+        template). Everything else is recorded in ``plan.alignment`` or
+        refused into ``plan.incompatibilities`` here.
         """
         db_name, coll_name = self._collection_map["templates"]
         target_by_value: dict[str, list[dict[str, Any]]] = {}
@@ -1138,6 +1145,9 @@ class DefinitionsPlanner:
                 continue
             archive_id = str(rows[0].get("template_id"))
             target_id = str(targets[0].get("template_id"))
+            if archive_id == target_id:
+                unmatched.extend(rows)
+                continue
             refusal = self._alignment_refusal(value, archive_id, target_id, rows, targets)
             if refusal:
                 plan.incompatibilities.append(refusal)
@@ -1152,8 +1162,9 @@ class DefinitionsPlanner:
         # template_ref_version) compare through the referenced template's
         # alignment, so the mapping is refined until it stops changing.
         remapper = self._remapper(plan)
+        unsettled: set[str] = set()
         for _ in range(len(aligned) + 1):
-            changed = False
+            unsettled = set()
             for archive_id, (rows, targets) in aligned.items():
                 alignment = plan.alignment[archive_id]
                 for row in rows:
@@ -1161,14 +1172,57 @@ class DefinitionsPlanner:
                     result = self._align_version(row, targets, remapper, plan)
                     if alignment.versions.get(version) != result:
                         alignment.versions[version] = result
-                        changed = True
-            if not changed:
+                        unsettled.add(alignment.value)
+            if not unsettled:
                 break
-        for alignment in plan.alignment.values():
-            plan.unchanged["templates"] += sum(
-                1 for a in alignment.versions.values() if a.target_version is not None
-            )
+        if unsettled:
+            # Still changing after a round per template: the mapping depends
+            # on itself in a way that does not settle. Refused rather than
+            # used: documents would be re-pinned by a mapping that is not
+            # stable.
+            plan.incompatibilities.append(Incompatibility(
+                entity_type="templates",
+                name=", ".join(sorted(unsettled)),
+                reason=(
+                    "the version alignment of templates that reference each "
+                    f"other's versions did not settle in {len(aligned) + 1} "
+                    "rounds, so no mapping can be trusted; merge them without "
+                    "align_templates after reshaping the archive with "
+                    "wip-toolkit migrate"
+                ),
+            ))
+        for archive_id, (rows, targets) in aligned.items():
+            self._count_aligned(plan, plan.alignment[archive_id], rows, targets)
         return unmatched
+
+    @staticmethod
+    def _count_aligned(
+        plan: DefinitionsPlan,
+        alignment: TemplateAlignment,
+        rows: list[dict[str, Any]],
+        targets: list[dict[str, Any]],
+    ) -> None:
+        """Count the template's versions that map onto a target version, and
+        report where the target version's label, description or other
+        cosmetic field differs from the archive's (the target's is kept)."""
+        by_version = {int(t.get("version") or 1): t for t in targets}
+        for row in rows:
+            version = alignment.versions.get(int(row.get("version") or 1))
+            if version is None or version.target_version is None:
+                continue
+            plan.aligned += 1
+            target = by_version.get(version.target_version)
+            if target is None:
+                continue
+            cosmetic, _ = compare_definitions(
+                with_defaults("templates", row), with_defaults("templates", target),
+            )
+            if cosmetic:
+                plan.target_wins.append(_target_wins(
+                    "templates",
+                    f"{alignment.value} v{version.archive_version} (as v{version.target_version})",
+                    cosmetic, row, target,
+                ))
 
     @staticmethod
     def _alignment_refusal(
@@ -1179,16 +1233,6 @@ class DefinitionsPlanner:
         targets: list[dict[str, Any]],
     ) -> Incompatibility | None:
         """Why this template cannot be aligned at all, or None."""
-        if archive_id == target_id:
-            return Incompatibility(
-                entity_type="templates",
-                name=value,
-                reason=(
-                    "it is the same template on both sides (one install minted "
-                    "it), so its versions already line up — merge without "
-                    "align_templates"
-                ),
-            )
         archive_latest = max(rows, key=lambda r: int(r.get("version") or 1))
         target_latest = max(targets, key=lambda r: int(r.get("version") or 1))
         archive_latest = with_defaults("templates", archive_latest)

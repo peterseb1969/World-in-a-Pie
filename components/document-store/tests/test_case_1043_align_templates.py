@@ -12,6 +12,8 @@ test_merge_restore.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
@@ -213,12 +215,31 @@ class TestAlignment:
 
 class TestRefusals:
     @pytest.mark.asyncio
-    async def test_a_template_both_sides_share_is_refused(self, mongo):
-        await _target(mongo, _tpl("A-tpl", 1, [AGE_INT]))
-        archive = _archive({"templates": [_tpl("A-tpl", 1, [AGE_INT])]})
-        with pytest.raises(RestoreEngineError) as refused:
-            await _run_merge(mongo, archive, align_templates=True)
-        assert "merge without align_templates" in str(refused.value.details)
+    async def test_a_template_both_sides_share_is_matched_by_version(self, mongo):
+        """CASE-1297 (0bbef660 R3): it used to be refused with "merge without
+        align_templates", which an archive also carrying another install's
+        template could not follow (that one needs the option). It is matched
+        by (value, version), as without the option; the other is aligned."""
+        await _target(mongo, _tpl("A-tpl", 1, [AGE_INT]), {
+            **_tpl("B-tpl", 1, [AGE_INT]), "value": "VISIT", "label": "Visit",
+        })
+        archive = _archive({
+            "templates": [
+                _tpl("A-tpl", 1, [AGE_INT]),
+                {**_tpl("X-tpl", 3, [AGE_INT]), "value": "VISIT", "label": "Visit"},
+            ],
+            "documents": [
+                _doc("D1", 1, {"age": 4}),
+                {**_doc("D2", 3, {"age": 5}), "template_id": "X-tpl"},
+            ],
+        })
+        events: list = []
+        await _run_merge(mongo, archive, events, align_templates=True)
+        rows = {d["document_id"]: d for d in await _rows(mongo, "documents")}
+        assert (rows["D1"]["template_id"], rows["D1"]["template_version"]) == ("A-tpl", 1)
+        assert (rows["D2"]["template_id"], rows["D2"]["template_version"]) == ("B-tpl", 1)
+        [aligned] = _result(events)["templates"]
+        assert aligned["value"] == "VISIT"
 
     @pytest.mark.asyncio
     async def test_different_identity_fields_are_a_fork(self, mongo):
@@ -263,3 +284,121 @@ class TestVersionReferences:
         await _run_merge(mongo, archive, align_templates=True)
         [doc] = await _rows(mongo, "documents")
         assert (doc["template_id"], doc["template_version"]) == ("B-tpl", 1)
+
+
+class TestSkippedClashes:
+    """CASE-1297 (0bbef660 R2): under on_clash=skip, a document the target
+    already holds is never written, so a field it fills cannot make its
+    version unplaceable for the documents that do arrive."""
+
+    TARGET_D2: ClassVar[dict] = {
+        "document_id": "D2", "namespace": NAMESPACE, "template_id": "B-tpl",
+        "template_version": 1, "identity_hash": "h-D2", "version": 1,
+        "data": {"age": 5}, "status": "active",
+    }
+
+    def _archive(self):
+        return _archive({
+            "templates": [_tpl("A-tpl", 2, [AGE_INT, NOTE])],
+            "documents": [_doc("D1", 2, {"age": 4}), _doc("D2", 2, {"age": 5, "note": "kept"})],
+        })
+
+    @pytest.mark.asyncio
+    async def test_a_held_document_does_not_decide_the_version(self, mongo):
+        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT]))
+        await _seed(mongo, "documents", [dict(self.TARGET_D2)])
+        events: list = []
+        await _run_merge(mongo, self._archive(), events, align_templates=True, on_clash="skip")
+
+        rows = {d["document_id"]: d for d in await _rows(mongo, "documents")}
+        assert sorted(rows) == ["D1", "D2"]
+        assert rows["D2"]["data"] == {"age": 5}  # the target's copy, untouched
+        report = _result(events)
+        assert report["unplaceable_count"] == 0
+        assert report["held_by_target_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_held_document_is_matched_by_identity_too(self, mongo):
+        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT]))
+        await _seed(mongo, "documents", [{**self.TARGET_D2, "document_id": "T-OTHER-ID"}])
+        events: list = []
+        await _run_merge(mongo, self._archive(), events, align_templates=True, on_clash="skip")
+        assert _result(events)["held_by_target_count"] == 1
+        assert _result(events)["unplaceable_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_under_overwrite_the_held_document_still_counts(self, mongo):
+        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT]))
+        await _seed(mongo, "documents", [dict(self.TARGET_D2)])
+        events: list = []
+        await _run_merge(mongo, self._archive(), events, align_templates=True, on_clash="overwrite")
+        report = _result(events)
+        assert report["held_by_target_count"] == 0
+        assert report["unplaceable_count"] == 2
+
+
+class TestDefinitionsOnly:
+    @pytest.mark.asyncio
+    async def test_a_merge_without_documents_reports_none_unplaceable(self, mongo):
+        """CASE-1297 (0bbef660 R4): with skip_documents the alignment read
+        every archived document anyway and listed as unplaceable documents
+        that were never to be merged."""
+        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT]))
+        archive = _archive({
+            "templates": [_tpl("A-tpl", 2, [AGE_INT, NOTE])],
+            "documents": [_doc("D2", 2, {"age": 5, "note": "kept"})],
+        })
+        events: list = []
+        await _run_merge(mongo, archive, events, align_templates=True, skip_documents=True)
+        report = _result(events)
+        assert report["unplaceable_count"] == 0
+        assert report["templates"][0]["versions"][0]["rows"] == 0
+        assert not any(e.phase == "warning" and "not merged" in e.message for e in events)
+
+
+class TestAlignedReport:
+    @pytest.mark.asyncio
+    async def test_aligned_versions_are_not_called_identical_and_cosmetics_are_reported(self, mongo):
+        """CASE-1297 (0bbef660 R5): a version aligned onto another number was
+        counted and announced as "already identical", and a label the two
+        sides disagree on went unreported (the target's is kept)."""
+        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT], label="Patient (target)"))
+        archive = _archive({
+            "templates": [_tpl("A-tpl", 2, [AGE_INT])],
+            "documents": [_doc("D1", 2, {"age": 4})],
+        })
+        events: list = []
+        await _run_merge(mongo, archive, events, align_templates=True, dry_run=True)
+        plan = next(e for e in events if e.phase == "complete").details["namespaces"][NAMESPACE]
+        assert plan["definitions"]["templates"]["unchanged"] == 0
+        assert plan["definitions"]["templates"]["aligned"] == 1
+        messages = [e.message for e in events]
+        assert any("1 version(s) aligned onto a target version" in m for m in messages)
+        assert any("PATIENT v2 (as v1)': target's label kept" in m for m in messages)
+
+
+class TestUnsettledAlignment:
+    @pytest.mark.asyncio
+    async def test_an_alignment_that_does_not_settle_refuses(self, mongo, monkeypatch):
+        """CASE-1297 (0bbef660 R9): the refinement for templates that
+        reference each other's versions stopped after its last round whether
+        or not the mapping had settled, and nothing said so."""
+        from document_store.services import merge_definitions
+
+        rounds = iter(range(1000))
+
+        def flapping(self, row, targets, remapper, plan):
+            n = next(rounds)
+            return merge_definitions.VersionAlignment(
+                archive_version=int(row.get("version") or 1),
+                target_version=1 if n % 2 else None, reason=f"round {n}",
+            )
+
+        monkeypatch.setattr(merge_definitions.DefinitionsPlanner, "_align_version", flapping)
+        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT]))
+        archive = _archive({"templates": [_tpl("A-tpl", 2, [AGE_INT])]})
+        with pytest.raises(RestoreEngineError) as refused:
+            await _run_merge(mongo, archive, align_templates=True)
+        [issue] = refused.value.details["incompatibilities"]
+        assert "did not settle" in issue["reason"]
+        assert issue["name"] == "PATIENT"

@@ -21,6 +21,7 @@ import os
 import socket
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple, NoReturn, TypeVar, cast
@@ -1799,6 +1800,9 @@ class _StagedMerge:
     streamed: _StreamedDocuments | None
     arriving: dict[str, set[str]]
     wanted: dict[str, set[str]]
+    # Documents align_templates left out as unplaceable: a reference to one
+    # is refused for that reason, not as one the archive does not carry.
+    left_out: set[str] = dataclass_field(default_factory=set)
 
 
 class _AligningRemapper(IDRemapper):
@@ -2093,6 +2097,139 @@ def _served_on_archived_keys(
         for entity_type, config in archived.items()
         if isinstance(config, dict)
     }
+
+
+# The types a merge writes ahead of every namespace's reporting gate.
+_MERGE_DEFINITION_TYPES = frozenset({"terminologies", "terms", "term_relations", "templates"})
+
+
+def _merge_written_templates(plan: EntityPlan, on_clash: str) -> set[str]:
+    """The ids of the templates a merge's documents are written under: the
+    inserted ones', and the clashing ones' when the policy overwrites."""
+    overwrites = on_clash in ("overwrite", "newer")
+    return {
+        str(row.get("template_id"))
+        for row in [*plan.to_insert, *(c.entity for c in plan.clashes if overwrites)]
+        if row.get("template_id")
+    }
+
+
+_MERGE_WRITTEN_NOUN = {
+    "definitions": "definitions and their Registry entries",
+    "documents": "documents, files and the remaining entries",
+}
+
+
+def _partial_merge_error(exc: Exception, written: dict[str, list[str]]) -> RestoreEngineError:
+    """A merge failure after its first write: the failure, and what each
+    target received before it, which is not undone."""
+    lines = [
+        f"'{target}': " + (" and ".join(_MERGE_WRITTEN_NOUN[s] for s in steps) or "nothing")
+        for target, steps in written.items()
+    ]
+    details = dict(getattr(exc, "details", None) or {})
+    details.update({"result_kind": "merge_partial", "written": {
+        target: list(steps) for target, steps in written.items()
+    }})
+    return RestoreEngineError(
+        f"{exc} — This merge had already written: {'; '.join(lines)}. What is "
+        "written stays: a failed merge is not undone.",
+        details=details,
+    )
+
+
+def _refuse_left_out_references(namespace: str, left_out: list[str]) -> NoReturn:
+    """Refuse a merge whose documents reference documents align_templates
+    left out as unplaceable."""
+    more = f" and {len(left_out) - 5} more" if len(left_out) > 5 else ""
+    raise RestoreEngineError(
+        f"Merge into '{namespace}' refused — documents it would merge reference "
+        f"{len(left_out)} document(s) that align_templates left out as "
+        f"unplaceable: {', '.join(repr(d) for d in left_out[:5])}{more}. They are "
+        "in the archive, but no version of the target's template can take them "
+        "(template_alignment.unplaceable_documents on the job says why). Merging "
+        "the documents that reference them would import references that resolve "
+        "to nothing. Reshape the target template so it can take them, or merge "
+        "without the documents that reference them.",
+        details={"result_kind": "unplaceable_referenced", "documents": left_out[:50]},
+    )
+
+
+def _alignment_rows(
+    alignment: dict[str, Any], chains: Any, held: set[str],
+) -> tuple[dict[tuple[str, int], list[str]], dict[tuple[str, int], dict[str, int]]]:
+    """Per (template, version) of the alignment: the documents with a row
+    pinned to it, and how many of its rows fill each field the target
+    version lacks. A held document's chain is not counted."""
+    rows_per_version: dict[tuple[str, int], list[str]] = {}
+    carrying: dict[tuple[str, int], dict[str, int]] = {}
+    for chain in chains:
+        if chain and str(chain[0].get("document_id")) in held:
+            continue
+        for row in chain:
+            template_id = str(row.get("template_id"))
+            if template_id not in alignment:
+                continue
+            key = (template_id, int(row.get("template_version") or 1))
+            rows_per_version.setdefault(key, []).append(str(row.get("document_id")))
+            version = alignment[template_id].versions.get(key[1])
+            if version is None or not version.removed_fields:
+                continue
+            data = row.get("data") or {}
+            for name in version.removed_fields:
+                if not _is_empty(data.get(name)):
+                    counts = carrying.setdefault(key, {})
+                    counts[name] = counts.get(name, 0) + 1
+    return rows_per_version, carrying
+
+
+def _alignment_report(
+    alignment: dict[str, Any],
+    rows_per_version: dict[tuple[str, int], list[str]],
+    unplaceable: dict[str, dict[str, Any]],
+    held: set[str],
+) -> dict[str, Any]:
+    """The job's account of a template alignment: where each archive version
+    went, and which documents stay out."""
+    return {
+        "templates": [
+            {
+                "value": template.value,
+                "target_template_id": template.target_template_id,
+                "versions": [
+                    {
+                        "archive_version": number,
+                        "target_version": version.target_version,
+                        "rows": len(rows_per_version.get((archive_id, number), [])),
+                        "history": (archive_id, number) not in rows_per_version,
+                        "reason": version.reason,
+                    }
+                    for number, version in sorted(template.versions.items())
+                ],
+            }
+            for archive_id, template in sorted(
+                alignment.items(), key=lambda item: item[1].value
+            )
+        ],
+        "held_by_target_count": len(held),
+        "unplaceable_count": len(unplaceable),
+        "unplaceable_documents": list(unplaceable.values())[:ALIGNMENT_UNPLACEABLE_SAMPLE],
+        "unplaceable_truncated": max(0, len(unplaceable) - ALIGNMENT_UNPLACEABLE_SAMPLE),
+    }
+
+
+def _aligned_heads(
+    alignment: dict[str, Any], reader: ArchiveReader, src: str,
+    doc_groups: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    """The head row of every archived document on an aligned template."""
+    chains: Any = (
+        doc_groups.values() if doc_groups is not None else iter_chains(reader, src)
+    )
+    return [
+        chain[0] for chain in chains
+        if chain and str(chain[0].get("template_id")) in alignment
+    ]
 
 
 def _definitions_added(plans: dict[str, EntityPlan]) -> int:
@@ -4555,9 +4692,16 @@ class DirectRestoreEngine:
         left out (docs/design/merge-template-version-alignment.md).
 
         Both passes, and the reference check, run for every namespace in the
-        archive before anything is written to any of them, so a refusal never
-        follows a write and ``dry_run`` is exact rather than indicative: it
-        fails on everything a real run would refuse, and nothing else.
+        archive before anything is written to any of them, so ``dry_run`` is
+        exact rather than indicative: it fails on everything those checks
+        would refuse in a real run. One check needs writes first: the
+        reporting structure gate, which needs the merged templates written so
+        their tables can be built. So the write runs in three steps across
+        all namespaces: every namespace's definitions, then every gate, then
+        every namespace's documents, files and remaining entries. A gate that
+        refuses does so before any document is written anywhere. Any failure
+        after the first write names what each target received
+        (``details.written``), since nothing written is undone.
         """
         self._check_merge_policies(on_clash, older_versions)
         policy = {
@@ -4625,11 +4769,10 @@ class DirectRestoreEngine:
                 )
                 return
 
-            for stage in staged:
-                await self._apply_staged_merge(
-                    stage, archive_path, manifest, raw_manifest,
-                    policy=policy, batch_size=batch_size, skip_documents=skip_documents,
-                )
+            await self._write_staged_merges(
+                staged, archive_path, manifest, raw_manifest,
+                policy=policy, batch_size=batch_size, skip_documents=skip_documents,
+            )
 
         self.result["reporting_synced"] = list(self._reporting_synced)
         self._finish_reporting_verification(
@@ -4692,10 +4835,12 @@ class DirectRestoreEngine:
             archive_entities, tgt, remapper, policy=policy, dry_run=dry_run,
         )
         alignment_report: dict[str, Any] | None = None
+        left_out: set[str] = set()
         if definitions.alignment:
-            doc_groups, alignment_report = await self._align_merge(
+            doc_groups, alignment_report, left_out = await self._align_merge(
                 definitions, reader, src, tgt, archive_entities, doc_groups, remapper,
-                dry_run=dry_run,
+                dry_run=dry_run, on_clash=policy["on_clash"],
+                skip_documents=skip_documents,
             )
         dropped = await self._report_unresolved_references(
             reader, [src], remapper, referents, tgt,
@@ -4721,6 +4866,7 @@ class DirectRestoreEngine:
             src=src, tgt=tgt, definitions=definitions, remapper=remapper,
             built=built, doc_groups=doc_groups, streamed=streamed,
             arriving=_merge_arriving(definitions, built), wanted=wanted,
+            left_out=left_out,
         )
 
     async def _rescope_merge_inputs(
@@ -4800,13 +4946,30 @@ class DirectRestoreEngine:
         remapper: _AligningRemapper,
         *,
         dry_run: bool,
-    ) -> tuple[dict[str, list[dict[str, Any]]] | None, dict[str, Any]]:
+        on_clash: str = "overwrite",
+        skip_documents: bool = False,
+    ) -> tuple[dict[str, list[dict[str, Any]]] | None, dict[str, Any], set[str]]:
         """Settle the template alignment: re-pin documents onto the target
         versions, and leave out the documents whose versions map nowhere.
-        Returns the held document groups and the alignment report."""
+        Returns the held document groups, the alignment report and the ids
+        of the documents left out.
+
+        Under ``on_clash=skip`` a document the target already holds is never
+        written, so its rows neither decide whether a version can be placed
+        nor are left out: the target keeps its own copy. With
+        ``skip_documents`` no document arrives: the versions are settled
+        against none, and the archive's documents are not read."""
+        if skip_documents:
+            doc_groups = {}
+        held: set[str] = set()
+        if on_clash == "skip" and not skip_documents:
+            heads = await self._off_loop(
+                _aligned_heads, definitions.alignment, reader, src, doc_groups,
+            )
+            held = await self._held_by_target(tgt, heads, definitions.alignment)
         unplaceable, report = await self._off_loop(
             self._settle_alignment,
-            definitions.alignment, reader, src, doc_groups,
+            definitions.alignment, reader, src, doc_groups, held,
         )
         remapper.version_map = {
             (archive_id, version): target_version
@@ -4816,7 +4979,7 @@ class DirectRestoreEngine:
         self._emit_alignment(tgt, report, dry_run=dry_run)
         if unplaceable:
             doc_groups = _drop_merge_rows(archive_entities, doc_groups, unplaceable)
-        return doc_groups, report
+        return doc_groups, report, unplaceable
 
     async def _plan_merge_entities(
         self,
@@ -5092,9 +5255,12 @@ class DirectRestoreEngine:
         for stage in staged:
             for entity_type, ids in stage.arriving.items():
                 arriving_anywhere.setdefault(entity_type, set()).update(ids)
+        left_out = {doc_id for stage in staged for doc_id in stage.left_out}
         for stage in staged:
             if stage.wanted:
-                await self._check_merge_wanted(stage.tgt, stage.wanted, arriving_anywhere)
+                await self._check_merge_wanted(
+                    stage.tgt, stage.wanted, arriving_anywhere, left_out=left_out,
+                )
 
     async def _upload_merge_blobs(
         self, reader: ArchiveReader, staged: list[_StagedMerge], namespace: str,
@@ -5122,6 +5288,56 @@ class DirectRestoreEngine:
             return
         await self._restore_blobs(reader, namespace, only=inserting)
 
+    async def _write_staged_merges(
+        self,
+        staged: list[_StagedMerge],
+        archive_path: Path,
+        manifest: Any,
+        raw_manifest: Any,
+        *,
+        policy: dict[str, Any],
+        batch_size: int,
+        skip_documents: bool,
+    ) -> None:
+        """Write every planned namespace in three steps across all of them:
+        definitions, then the reporting gates, then the rest. What each target
+        has received is kept in ``self.result["written"]``, and a failure after
+        the first write carries it."""
+        written: dict[str, list[str]] = {stage.tgt: [] for stage in staged}
+        self.result["written"] = written
+        try:
+            for stage in staged:
+                await self._apply_definitions(
+                    stage.tgt, stage.definitions, stage.remapper, batch_size,
+                )
+                await self._apply_merge_definitions(stage.tgt, stage.built, batch_size)
+                written[stage.tgt].append("definitions")
+            for stage in staged:
+                await self._merge_reporting_gate(stage, on_clash=policy["on_clash"])
+            for stage in staged:
+                await self._apply_staged_merge(
+                    stage, archive_path, manifest, raw_manifest,
+                    policy=policy, batch_size=batch_size, skip_documents=skip_documents,
+                )
+                written[stage.tgt].append("documents")
+        except Exception as exc:
+            if not any(written.values()):
+                raise
+            raise _partial_merge_error(exc, written) from exc
+
+    async def _merge_reporting_gate(self, stage: _StagedMerge, *, on_clash: str) -> None:
+        """The reporting structure gate a plain restore runs after templates:
+        the tables of the templates this namespace's merged documents use must
+        exist and be correctly shaped before any document moves. It runs once
+        every namespace's definitions are written, and before any documents."""
+        plan = stage.built.get("documents")
+        if plan is None:
+            return
+        await self._reporting_phase_structure(
+            stage.tgt, merged_definitions=_definitions_added(stage.built),
+            templates=_merge_written_templates(plan, on_clash),
+        )
+
     async def _apply_staged_merge(
         self,
         stage: _StagedMerge,
@@ -5133,9 +5349,10 @@ class DirectRestoreEngine:
         batch_size: int,
         skip_documents: bool,
     ) -> None:
-        """Write one planned namespace, then record what arrived."""
+        """Write one planned namespace's documents, files and remaining
+        entries (its definitions are written already), then record what
+        arrived."""
         src, tgt, built = stage.src, stage.tgt, stage.built
-        await self._apply_definitions(tgt, stage.definitions, stage.remapper, batch_size)
         await self._apply_merge(
             tgt, built, stage.doc_groups or {},
             on_clash=policy["on_clash"], older_versions=policy["older_versions"],
@@ -5479,12 +5696,45 @@ class DirectRestoreEngine:
             for doc_id, rows in doc_groups.items()
         }
 
+    async def _held_by_target(
+        self, namespace: str, heads: list[dict[str, Any]], alignment: dict[str, Any],
+    ) -> set[str]:
+        """The archived documents the target already holds, by the merge
+        planner's rule: the same document_id, or the same identity on the
+        target template the archive's is aligned to. Read in batches."""
+        db_name, coll_name = COLLECTION_MAP["documents"]
+        docs = self._mongo[db_name][coll_name]
+        held: set[str] = set()
+        for start in range(0, len(heads), 1000):
+            batch = heads[start:start + 1000]
+            by_id = {str(h.get("document_id")): h for h in batch if h.get("document_id")}
+            by_identity = {
+                (alignment[str(h["template_id"])].target_template_id, str(h["identity_hash"])):
+                    str(h.get("document_id"))
+                for h in batch if h.get("identity_hash")
+            }
+            clauses: list[dict[str, Any]] = [{"document_id": {"$in": list(by_id)}}]
+            clauses += [
+                {"template_id": tid, "identity_hash": ih} for tid, ih in by_identity
+            ]
+            async for row in docs.find(
+                {"namespace": namespace, "$or": clauses},
+                {"document_id": 1, "template_id": 1, "identity_hash": 1},
+            ):
+                if str(row.get("document_id")) in by_id:
+                    held.add(str(row["document_id"]))
+                key = (str(row.get("template_id")), str(row.get("identity_hash")))
+                if key in by_identity:
+                    held.add(by_identity[key])
+        return held
+
     def _settle_alignment(
         self,
         alignment: dict[str, TemplateAlignment],
         reader: ArchiveReader,
         src: str,
         doc_groups: dict[str, list[dict[str, Any]]] | None,
+        held: set[str] | None = None,
     ) -> tuple[set[str], dict[str, Any]]:
         """Finish the template alignment against the arriving documents.
 
@@ -5492,28 +5742,15 @@ class DirectRestoreEngine:
         holds only if those fields are empty in every arriving row pinned to
         it. Then every document with a row pinned to a version that maps
         nowhere is unplaceable: a document is placed whole or not at all.
+        ``held`` are documents that will not arrive (the target holds them
+        and the clash policy skips them): their rows are not counted.
         Returns the unplaceable document ids and the report for the job.
         """
         chains: Any = (
             doc_groups.values() if doc_groups is not None else iter_chains(reader, src)
         )
-        rows_per_version: dict[tuple[str, int], list[str]] = {}
-        carrying: dict[tuple[str, int], dict[str, int]] = {}
-        for chain in chains:
-            for row in chain:
-                template_id = str(row.get("template_id"))
-                if template_id not in alignment:
-                    continue
-                key = (template_id, int(row.get("template_version") or 1))
-                rows_per_version.setdefault(key, []).append(str(row.get("document_id")))
-                version = alignment[template_id].versions.get(key[1])
-                if version is None or not version.removed_fields:
-                    continue
-                data = row.get("data") or {}
-                for name in version.removed_fields:
-                    if not _is_empty(data.get(name)):
-                        counts = carrying.setdefault(key, {})
-                        counts[name] = counts.get(name, 0) + 1
+        held = held or set()
+        rows_per_version, carrying = _alignment_rows(alignment, chains, held)
 
         for (template_id, number), counts in carrying.items():
             version = alignment[template_id].versions[number]
@@ -5539,30 +5776,7 @@ class DirectRestoreEngine:
                 })
                 entry["versions"][str(number)] = reason
 
-        report = {
-            "templates": [
-                {
-                    "value": template.value,
-                    "target_template_id": template.target_template_id,
-                    "versions": [
-                        {
-                            "archive_version": number,
-                            "target_version": version.target_version,
-                            "rows": len(rows_per_version.get((archive_id, number), [])),
-                            "history": (archive_id, number) not in rows_per_version,
-                            "reason": version.reason,
-                        }
-                        for number, version in sorted(template.versions.items())
-                    ],
-                }
-                for archive_id, template in sorted(
-                    alignment.items(), key=lambda item: item[1].value
-                )
-            ],
-            "unplaceable_count": len(unplaceable),
-            "unplaceable_documents": list(unplaceable.values())[:ALIGNMENT_UNPLACEABLE_SAMPLE],
-            "unplaceable_truncated": max(0, len(unplaceable) - ALIGNMENT_UNPLACEABLE_SAMPLE),
-        }
+        report = _alignment_report(alignment, rows_per_version, unplaceable, held)
         return set(unplaceable), report
 
     def _emit_alignment(
@@ -5590,7 +5804,7 @@ class DirectRestoreEngine:
                 f"[{namespace}] {report['unplaceable_count']} document(s) not merged: "
                 "a version they pin maps onto no target version. They are listed "
                 "on the job (template_alignment.unplaceable_documents); reshape "
-                "them with wip-archive migrate, re-export and merge again.",
+                "them with wip-toolkit migrate, export again and merge again.",
             )
 
     def _emit_definitions_plan(
@@ -5607,11 +5821,15 @@ class DirectRestoreEngine:
                 f", {counts['extend_names']} to gain the archive's names"
                 if counts.get("extend_names") else ""
             )
+            aligned = (
+                f", {counts['aligned']} version(s) aligned onto a target version"
+                if counts.get("aligned") else ""
+            )
             self._emit(
                 phase,
                 f"[{namespace}] {entity_type}: {counts['unchanged']} already "
                 f"identical, {counts['add']} to add, {counts['mapped']} mapped "
-                f"to the target's IDs{retire}{names}",
+                f"to the target's IDs{aligned}{retire}{names}",
             )
         # Never silent: an operator who loses a label or an alias list to the
         # target's copy finds out later from a UI that changed under them.
@@ -5921,43 +6139,26 @@ class DirectRestoreEngine:
             )
         return found
 
-    async def _check_merge_references(
-        self,
-        namespace: str,
-        rows_to_write: list[dict[str, Any]],
-        arriving: dict[str, set[str]],
-    ) -> None:
-        """Refuse a merge that would import references resolving to nothing.
-
-        Checked BEFORE writing, unlike a restore's post-hoc verification, and
-        for one reason: a merge lands in a live namespace that cannot be
-        deleted to recover. A restore into a fresh namespace can be thrown
-        away and retried; a merge that pollutes production data cannot.
-
-        A reference is satisfied if the target already holds its target, or if
-        this merge is about to insert it, into any of the archive's
-        namespaces. ``arriving`` carries the second set; the merge checks every
-        namespace before writing any.
-
-        This is the same question ``integrity_service`` answers after the fact,
-        asked on a different substrate: that one walks Beanie documents through
-        the service clients, this walks raw archive dicts through direct Mongo
-        batches. The post-merge validation job remains the authoritative check.
-        """
-        if not rows_to_write:
-            return
-        await self._check_merge_wanted(
-            namespace, self._referenced_ids(rows_to_write), arriving
-        )
-
     async def _check_merge_wanted(
         self,
         namespace: str,
         wanted: dict[str, set[str]],
         arriving: dict[str, set[str]],
+        *,
+        left_out: set[str] | None = None,
     ) -> None:
-        """`_check_merge_references` on ids already collected — the form a
-        streamed merge uses, which gathers them chain by chain."""
+        """Refuse a merge whose documents reference entities that neither the
+        target holds nor the merge supplies, from the referenced ids by kind
+        (a streamed merge gathers them chain by chain).
+
+        Checked before writing, unlike a restore's post-hoc verification: a
+        merge lands in a live namespace that cannot be deleted to recover. A
+        reference is satisfied if the target already holds its target, or if
+        the merge inserts it into any of the archive's namespaces
+        (``arriving``). The post-merge validation job remains the
+        authoritative check. A reference to a document ``align_templates``
+        left out as unplaceable is refused for that reason: the document is in
+        the archive, and including it again would not help."""
         problems: list[str] = []
         total = 0
         for entity_type, ids in wanted.items():
@@ -5965,6 +6166,8 @@ class DirectRestoreEngine:
             if not unresolved:
                 continue
             unresolved -= await self._resolvable_ids(entity_type, unresolved)
+            if entity_type == "documents" and left_out and unresolved & left_out:
+                _refuse_left_out_references(namespace, sorted(unresolved & left_out))
             total += len(unresolved)
             for missing in sorted(unresolved)[:5]:
                 problems.append(f"{_MERGE_REFERENCE_NOUN[entity_type]} '{missing}'")
@@ -6014,22 +6217,21 @@ class DirectRestoreEngine:
         batch_size: int,
         streamed: _StreamedDocuments | None = None,
     ) -> None:
-        """Write the plan. Inserts first, then policy-driven clash handling.
+        """Write the plan's documents, files and remaining Registry entries:
+        inserts first, then policy-driven clash handling, then the remaining
+        entries' key claims. The definitions, their entries and those entries'
+        claims are written before, by _apply_merge_definitions.
 
         With ``streamed``, documents are read from the archive again chain by
         chain and written in batches instead of coming from ``doc_groups``.
         """
-        # The definitions' Registry entries are written with the definitions,
-        # before the documents and their reporting gate; the rest at the end
-        # (_DEFINITION_ENTRY_TYPES).
         entries_plan = plans.get("registry_entries")
         new_entries = entries_plan.to_insert if entries_plan else []
-        definition_entries = [e for e in new_entries if _is_definition_entry(e)]
         other_entries = [e for e in new_entries if not _is_definition_entry(e)]
         recount = plans.get("documents") is not None or plans.get("files") is not None
         try:
             await self._write_merge_types(
-                namespace, plans, doc_groups, definition_entries, other_entries,
+                namespace, plans, doc_groups, other_entries,
                 on_clash=on_clash, older_versions=older_versions,
                 batch_size=batch_size, streamed=streamed,
             )
@@ -6051,11 +6253,13 @@ class DirectRestoreEngine:
         if recount:
             await self._recount_file_references(namespace)
 
+        held = self._held_claims.pop(namespace, (0, 0))
+        claimed, taken_by_other = (
+            await self._claim_inserted_entries(namespace, other_entries)
+            if other_entries else (0, 0)
+        )
         if new_entries:
-            claimed, taken_by_other = await self._claim_inserted_entries(
-                namespace, new_entries
-            )
-            self._report_claims(namespace, claimed, taken_by_other)
+            self._report_claims(namespace, claimed + held[0], taken_by_other + held[1])
 
     async def _merge_documents(
         self,
@@ -6068,27 +6272,12 @@ class DirectRestoreEngine:
         older_versions: str,
         batch_size: int,
         streamed: _StreamedDocuments | None,
-        definitions_added: int = 0,
     ) -> None:
-        """A merge's documents: the reporting structure gate, the inserted
-        chains (streamed from the archive, or from ``doc_groups``), then the
-        clashes when the policy overwrites them. ``definitions_added`` is how
-        many definitions the merge wrote before them, for the gate's halt."""
-        # The structural gate a plain restore runs after templates: the
-        # reporting tables the namespace's templates imply must exist and be
-        # correctly shaped before any document moves. A merge plans templates
-        # separately (definitions), so it runs here, once, ahead of the
-        # documents.
+        """A merge's documents: the inserted chains (streamed from the
+        archive, or from ``doc_groups``), then the clashes when the policy
+        overwrites them. Their reporting gate has run already
+        (_merge_reporting_gate)."""
         overwrites = on_clash in ("overwrite", "newer")
-        written = {
-            str(row.get("template_id"))
-            for row in [*plan.to_insert, *(c.entity for c in plan.clashes if overwrites)]
-            if row.get("template_id")
-        }
-        await self._reporting_phase_structure(
-            namespace, merged_definitions=definitions_added, templates=written,
-        )
-
         if streamed is not None:
             await self._merge_insert_streamed(namespace, collection, streamed, batch_size)
             if overwrites:
@@ -6447,12 +6636,46 @@ class DirectRestoreEngine:
                 present.add((row.get("document_id"), row.get("version")))
         return [r for r in rows if (r["document_id"], r["version"]) in present]
 
+    async def _apply_merge_definitions(
+        self, namespace: str, plans: dict[str, EntityPlan], batch_size: int,
+    ) -> None:
+        """The plan's definition rows (terminologies, terms, term relations,
+        templates) and the definitions' Registry entries, ahead of every
+        namespace's reporting gate and documents: every service resolves a
+        template or terminology id through the Registry, so the entries go in
+        with the definitions."""
+        for entity_type in MERGE_ENTITY_ORDER:
+            plan = plans.get(entity_type)
+            if plan is None or entity_type not in _MERGE_DEFINITION_TYPES:
+                continue
+            db_name, coll_name = COLLECTION_MAP[entity_type]
+            await self._merge_insert_rows(
+                namespace, self._mongo[db_name][coll_name], entity_type,
+                plan.to_insert, batch_size,
+            )
+        entries_plan = plans.get("registry_entries")
+        definition_entries = [
+            e for e in (entries_plan.to_insert if entries_plan else [])
+            if _is_definition_entry(e)
+        ]
+        entries_db, entries_coll = COLLECTION_MAP["registry_entries"]
+        await self._merge_insert_rows(
+            namespace, self._mongo[entries_db][entries_coll],
+            "registry_entries", definition_entries, batch_size,
+        )
+        # Their keys are claimed as they are written, so a merge stopped at a
+        # later gate leaves no entry it wrote unclaimed; the claims are
+        # reported with the rest's, once per namespace (_apply_merge).
+        if definition_entries:
+            self._held_claims[namespace] = await self._claim_inserted_entries(
+                namespace, definition_entries
+            )
+
     async def _write_merge_types(
         self,
         namespace: str,
         plans: dict[str, EntityPlan],
         doc_groups: dict[str, list[dict[str, Any]]],
-        definition_entries: list[dict[str, Any]],
         other_entries: list[dict[str, Any]],
         *,
         on_clash: str,
@@ -6460,22 +6683,14 @@ class DirectRestoreEngine:
         batch_size: int,
         streamed: _StreamedDocuments | None,
     ) -> None:
-        """Each planned type's rows, in MERGE_ENTITY_ORDER; the definitions'
-        Registry entries go with the first of documents / registry_entries."""
-        entries_written = False
+        """Each planned type's rows but the definitions', in
+        MERGE_ENTITY_ORDER (the definitions are written already)."""
         for entity_type in MERGE_ENTITY_ORDER:
             plan = plans.get(entity_type)
-            if plan is None:
+            if plan is None or entity_type in _MERGE_DEFINITION_TYPES:
                 continue
             db_name, coll_name = COLLECTION_MAP[entity_type]
             collection = self._mongo[db_name][coll_name]
-            if entity_type in ("documents", "registry_entries") and not entries_written:
-                entries_db, entries_coll = COLLECTION_MAP["registry_entries"]
-                await self._merge_insert_rows(
-                    namespace, self._mongo[entries_db][entries_coll],
-                    "registry_entries", definition_entries, batch_size,
-                )
-                entries_written = True
             if entity_type == "registry_entries":
                 await self._merge_insert_rows(
                     namespace, collection, entity_type, other_entries, batch_size,
@@ -6489,7 +6704,6 @@ class DirectRestoreEngine:
             await self._merge_documents(
                 namespace, collection, plan, doc_groups, on_clash=on_clash,
                 older_versions=older_versions, batch_size=batch_size, streamed=streamed,
-                definitions_added=_definitions_added(plans),
             )
 
     async def _recount_file_references(self, namespace: str) -> None:

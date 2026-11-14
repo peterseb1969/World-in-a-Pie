@@ -59,8 +59,11 @@ templates as follows.
 3. **Documents follow their version.** Each archive document is written
    pinned to the target version its archived version mapped to. A document
    whose version mapped nowhere is listed in the plan
-   (`unpinnable_documents`, per template and version, with the reason) and
-   not written.
+   (`unplaceable_documents`, with its template and, per version, the
+   reason) and not written. Under `on_clash=skip`, a document the target
+   already holds (same `document_id`, or the same identity on the aligned
+   target template) is not written, so it neither decides whether a version
+   can be placed nor is listed (`held_by_target_count`).
 4. **History versions are not definitions to add.** An archive version that
    no arriving document pins (normally the source's retired history) is
    neither compared nor added. A version some arriving document pins is
@@ -74,8 +77,10 @@ map to which target versions, which are history, and which documents cannot
 be placed. It is on the job's result under
 `namespaces.<ns>.template_alignment` (`templates[].versions[]` with
 `archive_version`, `target_version`, `rows`, `history`, `reason`;
-`unplaceable_documents`, capped at 200, with `unplaceable_count` and
-`unplaceable_truncated`), and on the merge's restore provenance.
+`unplaceable_documents`, capped at 200, with `unplaceable_count`,
+`unplaceable_truncated` and `held_by_target_count`), and on the merge's
+restore provenance. A merge with `skip_documents` settles the versions
+against no documents, so it lists none.
 
 ## What this does not do
 
@@ -85,7 +90,7 @@ be placed. It is on the job's result under
   where the target adds a constraint the schema comparison cannot see (a
   narrowed enum, a new pattern). Those cases are refused at step 2 as
   incompatible, never discovered per document. Moving data across an
-  incompatible change stays the toolkit's job: `wip-archive migrate`, then
+  incompatible change stays the toolkit's job: `wip-toolkit migrate`, then
   re-export, then merge.
 - **Changing the target's templates.** The target's versions are never
   edited; `add_missing` keeps its current meaning for templates the target
@@ -95,7 +100,7 @@ be placed. It is on the job's result under
 
 1. **Schema-level check only.** Step 2 decides per version, from the two
    schemas; the merge does not validate each document's data. Data that has
-   to change to fit the target goes through `wip-archive migrate`, then
+   to change to fit the target goes through `wip-toolkit migrate`, then
    re-export, then merge.
 2. **Refused for a merge from the same install.** There the versions are
    already one entity's coordinates and line up by number, so the option has
@@ -111,8 +116,11 @@ These follow from the decisions above; the design did not spell them out.
   changes per pod). The signal is the template itself: an archive template
   whose `template_id` equals the target's template of the same value was
   minted by the same Registry, so its versions are coordinates on the same
-  entity. Such a template is refused under `align_templates` ("merge without
-  align_templates").
+  entity, and already line up. Such a template is matched by `(value,
+  version)` under `align_templates`, as without the option, so an archive
+  that mixes it with another install's templates is aligned template by
+  template. (It used to be refused, with advice such an archive could not
+  follow.)
 - **A document is placed whole or not at all.** A document's chain carries
   every version row, and each row pins its own template version. If any row
   pins a version that maps nowhere, the document is listed as unplaceable
@@ -121,7 +129,7 @@ These follow from the decisions above; the design did not spell them out.
 - **Renames are not followed.** A field the target renamed reads as one
   removed and one added field. The removed one is eligible only if empty in
   the arriving documents; moving data from the old name to the new one is a
-  data change, which is `wip-archive migrate`'s job.
+  data change, which is `wip-toolkit migrate`'s job.
 - **Version references inside templates follow the alignment.** A template's
   `extends_version` and a field's `template_ref_version` /
   `array_template_ref_version` name versions of another template; they are
