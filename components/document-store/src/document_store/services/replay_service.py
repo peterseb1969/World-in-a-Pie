@@ -26,6 +26,7 @@ class ReplayService:
         self._sessions: dict[str, Any] = {}  # session_id -> ReplaySession
         self._tasks: dict[str, asyncio.Task] = {}
         self._pause_flags: dict[str, asyncio.Event] = {}  # cleared = paused
+        self._stream_deletes: set[asyncio.Task] = set()
 
     @staticmethod
     def _latest_docs_pipeline(
@@ -203,7 +204,11 @@ class ReplayService:
         except RuntimeError:
             pending.close()
             return
-        loop.create_task(pending)
+        task = loop.create_task(pending)
+        # Held so the task is not garbage-collected mid-flight (RUF006); the
+        # done-callback keeps the set from growing with finished deletes.
+        self._stream_deletes.add(task)
+        task.add_done_callback(self._stream_deletes.discard)
 
     async def sweep_orphan_streams(self) -> int:
         """Delete replay streams left behind by an earlier run of this process.
