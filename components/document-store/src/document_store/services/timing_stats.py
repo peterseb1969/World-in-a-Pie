@@ -3,8 +3,13 @@
 The validation and creation timers recorded one float per stage per call
 and kept them for the life of the process: about 300 MB per million
 documents per worker. Each stage now keeps running aggregates (count, total,
-min, max) over every call, and the last PERCENTILE_WINDOW samples for the
-percentiles, so memory is fixed however long the pod runs.
+min, max) over the runs that reached it, and the last PERCENTILE_WINDOW
+samples for the percentiles, so memory is fixed however long the pod runs.
+
+A run records what it did: a validation that stops at an early refusal never
+reaches the later stages, and a request refused before the work starts records
+nothing at all. So a stage's count is the runs that reached that stage, not
+the requests the service saw, and ``runs`` counts the calls that recorded.
 """
 
 from collections import deque

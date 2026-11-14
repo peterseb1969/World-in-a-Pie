@@ -2110,7 +2110,9 @@ as open; it no longer offers a recipe.
   before the service served, contrary to its comment, and it counts every
   active document on the instance. Startup no longer waits on it.
 - **`/debug/timing` statistics are bounded:**
-  - counts, totals, min and max cover every run;
+  - counts, totals, min and max cover the runs that reached the stage (a run
+    refused before it, or a validation that stops at an early refusal, records
+    nothing);
   - the percentiles cover the last 1,000 samples per stage, given as
     `percentile_window`.
 

@@ -443,9 +443,9 @@ export interface DocumentTraverseNode {
   template_id: string
   template_value?: string | null
   namespace: string
-  /** Hops from the seed (0 = seed itself). */
+  /** Hops from the seed (1 = a direct neighbour). The seed itself is not a node. */
   depth: number
-  /** Document_id of the relationship doc traversed to reach this node; null for the seed. */
+  /** Document_id of the relationship doc traversed to reach this node; every node has one, since the seed is not listed. */
   via_relationship?: string | null
   /** Chain of document_ids from seed (exclusive) to this node (inclusive). */
   path: string[]

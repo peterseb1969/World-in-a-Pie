@@ -227,7 +227,7 @@ async def test_start_replay():
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
         result = await client.start_replay(
-            filter_config={"template_value": "PATIENT"},
+            filter_config={"namespace": "clinic", "template_value": "PATIENT"},
             throttle_ms=50,
             batch_size=200,
         )
@@ -237,24 +237,31 @@ async def test_start_replay():
     call_args = mock_http.post.call_args
     assert "/api/document-store/replay/start" in call_args.args[0]
     body = call_args.kwargs["json"]
-    assert body["filter"] == {"template_value": "PATIENT"}
+    assert body["filter"] == {"namespace": "clinic", "template_value": "PATIENT"}
     assert body["throttle_ms"] == 50
     assert body["batch_size"] == 200
 
 
 @pytest.mark.asyncio
-async def test_start_replay_defaults():
-    """start_replay uses empty filter and default throttle/batch when not provided."""
+async def test_a_replay_filter_always_names_its_namespace():
+    """The server refuses a filter without a namespace, so the client never
+    sends one: the default applies, and with no default either the caller is
+    refused here, naming what to pass."""
     mock_http = _mock_http(_mock_response({"session_id": "s1"}))
-
     client = _make_client()
+    client.default_namespace = "app-ns"
     with patch.object(client, "_get_client", return_value=mock_http):
-        await client.start_replay()
-
+        await client.start_replay(throttle_ms=10, batch_size=100)
     body = mock_http.post.call_args.kwargs["json"]
-    assert body["filter"] == {}
-    assert body["throttle_ms"] == 10
-    assert body["batch_size"] == 100
+    assert body["filter"] == {"namespace": "app-ns"}
+
+    strict = _make_client()
+    strict.default_namespace = None
+    strict_http = _mock_http(_mock_response({"session_id": "s2"}))
+    with pytest.raises(ValueError, match="namespace is required"), \
+            patch.object(strict, "_get_client", return_value=strict_http):
+        await strict.start_replay(filter_config={"template_value": "PATIENT"})
+    strict_http.post.assert_not_awaited()
 
 
 # =========================================================================

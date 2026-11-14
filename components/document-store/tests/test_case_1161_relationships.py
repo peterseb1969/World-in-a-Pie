@@ -60,9 +60,16 @@ def _templates(by_id: dict, *, failing: tuple = ()):
         if template_id in failing:
             raise RuntimeError("template store unreachable")
         return by_id.get(template_id)
-    client = SimpleNamespace(get_template=get_template)
+    client = SimpleNamespace(get_template=get_template, get_template_resolved=get_template)
     return patch("document_store.services.document_service.get_template_store_client",
                  return_value=client)
+
+
+def _edge_types():
+    """The store's answer for a walk with a type filter: EDGE carries edges. A
+    filter is cut against the edge types among the documents a query matches,
+    so the walk needs the template on record."""
+    return _templates({EDGE: {"usage": "relationship", "value": EDGE}})
 
 
 def _permissions(by_ns: dict):
@@ -175,7 +182,8 @@ def _nodes(resp):
 @pytest.mark.asyncio
 async def test_outgoing_walks_each_node_once_and_records_a_missing_one(clean):
     await _graph()
-    resp = await DocumentService().traverse_relationships("A", depth=3, type_ids=[EDGE])
+    with _edge_types():
+        resp = await DocumentService().traverse_relationships("A", depth=3, type_ids=[EDGE])
     assert _nodes(resp) == [
         ("B", 1, ("B",)), ("C", 1, ("C",)), ("GONE", 2, ("B", "GONE")),
     ]
@@ -187,14 +195,18 @@ async def test_outgoing_walks_each_node_once_and_records_a_missing_one(clean):
 @pytest.mark.asyncio
 async def test_both_directions_reach_incoming_and_outgoing(clean):
     await _graph()
-    resp = await DocumentService().traverse_relationships("A", direction="both", type_ids=[EDGE])
+    with _edge_types():
+        resp = await DocumentService().traverse_relationships(
+            "A", direction="both", type_ids=[EDGE],
+        )
     assert sorted(n.document_id for n in resp.nodes) == ["B", "C", "D"]
 
 
 @pytest.mark.asyncio
 async def test_the_node_cap_truncates_the_walk(clean):
     await _graph()
-    resp = await DocumentService().traverse_relationships(
-        "A", direction="both", depth=3, type_ids=[EDGE], max_nodes=2,
-    )
+    with _edge_types():
+        resp = await DocumentService().traverse_relationships(
+            "A", direction="both", depth=3, type_ids=[EDGE], max_nodes=2,
+        )
     assert len(resp.nodes) == 2 and resp.truncated is True
