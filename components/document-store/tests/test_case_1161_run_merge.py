@@ -45,7 +45,7 @@ async def test_a_dropped_document_is_left_out_streamed_or_held(mongo, sorted_by_
     await _seed_namespace(mongo)
     await _seed(mongo, "templates", [_template()])
     engine = DirectRestoreEngine(mongo, None, lambda e: None)
-    engine._report_unresolved_references = AsyncMock(return_value={"D2"})
+    engine._report_unresolved_references = AsyncMock(return_value={(NAMESPACE, "D2")})
     with patch("document_store.services.backup_engine.ArchiveReader",
                return_value=_archive({"documents": _docs(sorted_by_id)})):
         await engine.run_merge(MagicMock(), NAMESPACE)

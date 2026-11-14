@@ -291,6 +291,12 @@ def _merge_arriving(definitions: Any, built: dict[str, Any]) -> dict[str, set[st
     return arriving
 
 
+def _dropped_in(dropped: Any, src: str) -> set[str]:
+    """The document ids of the edges dropped from archived namespace ``src``
+    (``dropped`` holds (namespace, document_id) pairs)."""
+    return {doc_id for ns, doc_id in dropped or () if ns == src}
+
+
 def _dropped_row(entity_type: str, row: dict[str, Any], dropped: set[str]) -> bool:
     """Whether this archived row belongs to a dropped edge: one of its
     document versions, or its registry entry."""
@@ -348,24 +354,51 @@ def _scan_unresolved_references(
     share the identity its endpoints form, and half an edge history would be
     a fork nobody asked for. ``edge_templates`` is empty when edges are kept.
     References from a dropped edge are reported as the drop, not again as
-    unresolved references.
+    unresolved references. A dropped edge is keyed by (namespace,
+    document_id): ids are unique within a namespace, not across the
+    archive's namespaces (a prefixed id sequence is per namespace).
     """
     # (namespace, referent) -> {document_id: field paths}
     referrers: dict[tuple[str, str], dict[str, set[str]]] = {}
-    dropped: dict[str, dict[str, Any]] = {}
+    dropped: dict[tuple[str, str], dict[str, Any]] = {}
+    # (namespace, edge document_id) -> (version, its endpoints), earliest seen
+    earliest: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
     for src in sources:
         for row in reader.read_entities("documents", namespace=src):
+            doc_id = str(row.get("document_id") or "")
+            if row.get("template_id") in edge_templates:
+                _note_earliest_endpoints(earliest, (src, doc_id), row)
             hits = list(_unresolved_hits(row, unresolved))
             if not hits:
                 continue
-            doc_id = str(row.get("document_id") or "")
             endpoints = _unresolved_document_endpoints(hits, unresolved)
             if endpoints and row.get("template_id") in edge_templates:
                 _record_dropped_edge(dropped, src, doc_id, row, endpoints)
                 continue
             for field_path, target in hits:
                 referrers.setdefault((src, target), {}).setdefault(doc_id, set()).add(field_path)
+    for key, entry in dropped.items():
+        entry.update(earliest[key][1])
     return _unresolved_reference_report(referrers, dropped, unresolved), dropped
+
+
+def _note_earliest_endpoints(
+    earliest: dict[tuple[str, str], tuple[int, dict[str, Any]]],
+    key: tuple[str, str],
+    row: dict[str, Any],
+) -> None:
+    """Keep the endpoints of an edge document's earliest archived version
+    (the lowest version; the first row read when versions are not
+    recorded), which a dropped edge's record names."""
+    version = int(row.get("version") or 0)
+    if key in earliest and earliest[key][0] <= version:
+        return
+    endpoints: dict[str, Any] = {field: None for field in _EDGE_ENDPOINT_FIELDS}
+    for ref in row.get("references") or []:
+        field_path = ref.get("field_path")
+        if field_path in _EDGE_ENDPOINT_FIELDS and endpoints[field_path] is None:
+            endpoints[field_path] = (ref.get("resolved") or {}).get("document_id")
+    earliest[key] = (version, endpoints)
 
 
 def _unresolved_document_endpoints(
@@ -381,16 +414,17 @@ def _unresolved_document_endpoints(
 
 
 def _record_dropped_edge(
-    dropped: dict[str, dict[str, Any]],
+    dropped: dict[tuple[str, str], dict[str, Any]],
     src: str,
     doc_id: str,
     row: dict[str, Any],
     endpoints: list[str],
 ) -> None:
-    """Record one version of an edge to drop: the edge entry (created by its
-    first such version) takes each endpoint from the first version that
-    names it, and gathers every unresolved endpoint any version has."""
-    entry = dropped.setdefault(doc_id, {
+    """Record one version of an edge to drop: the edge entry gathers every
+    unresolved endpoint any version has. Its source_ref and target_ref are
+    the edge's earliest version's, filled in once the scan has read every
+    version (_note_earliest_endpoints)."""
+    entry = dropped.setdefault((src, doc_id), {
         "namespace": src,
         "document_id": doc_id,
         "template_id": row.get("template_id"),
@@ -398,23 +432,19 @@ def _record_dropped_edge(
         "target_ref": None,
         "unresolved_endpoints": [],
     })
-    for ref in row.get("references") or []:
-        field_path = ref.get("field_path")
-        if field_path in _EDGE_ENDPOINT_FIELDS and entry[field_path] is None:
-            entry[field_path] = (ref.get("resolved") or {}).get("document_id")
     entry["unresolved_endpoints"] = sorted(set(entry["unresolved_endpoints"]) | set(endpoints))
 
 
 def _unresolved_reference_report(
     referrers: dict[tuple[str, str], dict[str, set[str]]],
-    dropped: dict[str, dict[str, Any]],
+    dropped: dict[tuple[str, str], dict[str, Any]],
     unresolved: dict[str, _UnresolvedReferent],
 ) -> list[dict[str, Any]]:
     """One entry per (namespace, referent) still referenced once the dropped
     edges are left out: how many documents, and sorted, capped samples."""
     references: list[dict[str, Any]] = []
     for (src, target), by_document in sorted(referrers.items()):
-        by_document = {d: f for d, f in by_document.items() if d not in dropped}
+        by_document = {d: f for d, f in by_document.items() if (src, d) not in dropped}
         if not by_document:
             continue
         samples = [
@@ -1692,6 +1722,7 @@ def _would_restore(
     none of a skipped type, none of a dropped edge (its document rows and
     Registry entry), and only the Registry entries of the entities it does
     write. Counts come from the manifest entry when nothing is left out."""
+    dropped = _dropped_in(dropped, src)
     if entity_type in skipped:
         return 0
     if _rows_left_out(entity_type, skipped, dropped):
@@ -2800,6 +2831,7 @@ class DirectRestoreEngine:
         Registry entries of skipped types, and repointed. For registry
         entries, ``definition_entries`` True keeps only the definitions'
         entries, False only the others, None all of them."""
+        dropped = _dropped_in(dropped, src)
         for entity in reader.read_entities(entity_type, namespace=src):
             entity.pop("_id", None)  # Strip MongoDB internal ID
             if (dropped and _dropped_row(entity_type, entity, dropped)) or _entry_of_skipped(
@@ -3133,7 +3165,7 @@ class DirectRestoreEngine:
         )
         if dropped:
             for rs in remap_sources:
-                _drop_from_remap_source(rs, dropped)
+                _drop_from_remap_source(rs, _dropped_in(dropped, rs.source))
         provision_for = (
             self._dry_run_provisioner() if dry_run
             else self._registry_provisioner
@@ -3681,7 +3713,7 @@ class DirectRestoreEngine:
         document is not restored, with all its versions and its registry
         entry. Every dropped edge is listed in ``referents['dropped_edges']``,
         in full: a drop removes archived data, so it is recorded, not sampled.
-        Returns the dropped document ids.
+        Returns the dropped edges as (archived namespace, document_id) pairs.
         """
         unresolved = self._unresolved_referents
         if not unresolved:
@@ -4914,7 +4946,7 @@ class DirectRestoreEngine:
             drop_edges=drop_unresolved_edges,
         )
         if dropped:
-            doc_groups = _drop_merge_rows(archive_entities, doc_groups, dropped)
+            doc_groups = _drop_merge_rows(archive_entities, doc_groups, _dropped_in(dropped, src))
 
         # ---- Pass 2: everything else ---------------------------
         built, rewritten, chain_transform, doc_groups, rehash = await self._plan_merge_entities(

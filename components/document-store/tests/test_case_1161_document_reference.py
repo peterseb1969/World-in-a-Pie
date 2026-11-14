@@ -68,6 +68,16 @@ async def test_a_cache_hit_goes_straight_to_the_template_check(monkeypatch, veri
 
 
 @pytest.mark.asyncio
+async def test_the_gate_is_asked_again_on_every_cache_hit(monkeypatch, verify):
+    doc = SimpleNamespace(namespace="ns", document_id="d1")
+    asked = _gate(monkeypatch, refuses=False)
+    cache = {CACHE_KEY: doc}
+    await _resolve("X1", cache)
+    await _resolve("X1", cache)
+    assert asked == [("ns", "d1"), ("ns", "d1")]
+
+
+@pytest.mark.asyncio
 async def test_a_cache_hit_the_gate_refuses_is_not_found(monkeypatch, verify):
     _gate(monkeypatch, refuses=True)
     out, errors = await _resolve("X1", {CACHE_KEY: SimpleNamespace(namespace="other", document_id="d1")})

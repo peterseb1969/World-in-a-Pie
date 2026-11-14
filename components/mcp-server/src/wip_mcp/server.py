@@ -1727,10 +1727,12 @@ async def create_api_key(
         expires_at: ISO 8601 expiry datetime, UTC (a value without an offset
             is read as UTC; None = never expires). An expiry already past is
             refused (422).
-        grant_permission: 'read' | 'write' | 'admin' — also create a namespace
-            grant for the key on each scoped namespace (requires namespaces).
-            Without it a scoped key can READ its namespaces but not WRITE;
-            for app provisioning you almost always want 'write'.
+        grant_permission: 'read' | 'write' | 'admin' — the grant the key gets
+            on each scoped namespace (requires namespaces). A key's access is
+            its grants; the namespaces list only caps it. Creating the key
+            writes a grant on every listed namespace: this level, else read
+            (admin on a namespace it reserves). For app provisioning you
+            almost always want 'write'.
         reserve: namespaces the key reserves, each listed in namespaces:
             [{"prefix": "my-app", "settings": {"deletion_mode": "full"}}].
             The key gets admin on each and can create it (upsert_namespace)

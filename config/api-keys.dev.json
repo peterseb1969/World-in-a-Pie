@@ -20,7 +20,8 @@
       "owner": "dev@wip.local",
       "groups": [],
       "namespaces": ["wip"],
-      "description": "Example namespace-scoped app key — non-privileged keys MUST have namespaces"
+      "grants": {},
+      "description": "Example namespace-scoped app key — non-privileged keys MUST have namespaces; grants {} reads each listed namespace"
     }
   ]
 }

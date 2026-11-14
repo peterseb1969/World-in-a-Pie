@@ -116,6 +116,19 @@ async def test_a_caller_without_standing_does_not_learn_the_reserving_app(
 
 
 @pytest.mark.asyncio
+async def test_a_caller_without_standing_is_refused_before_its_body_is_read(
+    client: AsyncClient, app_key,
+):
+    """A body the caller may not send at all (an invalid id_config) answers
+    the same 403 as any other, not a 422 that would depend on what the
+    namespace stores."""
+    headers, _own = app_key
+    free = f"lkb-{uuid.uuid4().hex[:8]}"
+    r = await client.put(f"{BASE}/{free}", headers=headers, json=_INVALID_ID_CONFIG)
+    assert r.status_code == 403, r.text
+
+
+@pytest.mark.asyncio
 async def test_reserved_and_unreserved_prefixes_refuse_alike(
     client: AsyncClient, app_key, monkeypatch, tmp_path,
 ):
@@ -175,3 +188,19 @@ async def test_the_journal_names_the_authenticated_caller(client: AsyncClient, a
     body = (await client.get(f"{BASE}/{prefix}/deletion-status", headers=auth_headers)).json()
     assert body["requested_by"] and body["requested_by"] != "someone-else@example.com"
     assert body["requested_note"] == "someone-else@example.com"
+
+
+@pytest.mark.asyncio
+async def test_the_journal_names_exactly_the_key_that_asked(client: AsyncClient, auth_headers: dict):
+    """requested_by is the authenticated caller's identity string, pinned
+    exactly: a key's is "apikey:<its name>"."""
+    name = f"lkdel-admin-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/api/registry/api-keys", headers=auth_headers, json={
+        "name": name, "groups": ["wip-admins"],
+    })
+    assert r.status_code == 201, r.text
+    key_headers = {"X-API-Key": r.json()["plaintext_key"]}
+    prefix = await _deleted_namespace(client, key_headers, deleted_by="a note")
+    body = (await client.get(f"{BASE}/{prefix}/deletion-status", headers=auth_headers)).json()
+    assert body["requested_by"] == f"apikey:{name}"
+    assert body["requested_note"] == "a note"

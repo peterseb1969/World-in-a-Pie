@@ -6,7 +6,7 @@ Each namespace has configurable ID algorithms per entity type.
 
 import logging
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -185,6 +185,37 @@ async def _restore_owner_grant(prefix: str, owner: str) -> None:
         await grant.set({"orphaned": False, "orphaned_at": None, "namespace_id": None})
 
 
+def _upsert_refusal(prefix: str) -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail=(
+            f"Upserting namespace '{prefix}' requires a platform admin key, or "
+            "admin on a namespace the install reserves for the caller's app"
+        ),
+    )
+
+
+async def _upsert_standing(identity: UserIdentity, prefix: str) -> str | None:
+    """Decide whether a caller outside the platform admin groups may upsert
+    at all, before anything about the body or the reservation is read: it
+    must own a runtime reservation of the prefix or hold admin on it, else
+    403 — the same 403, whatever the prefix and whatever it sent. Returns
+    the reservation's owner (None when standing comes from admin).
+
+    The key and reservation import is brought current first, so standing is
+    decided on the grants and reservations the files hold now. A broken
+    reservations file is not this caller's business here: it is reported
+    once standing is settled, when the reservation is read."""
+    from ..services.key_import import ensure_current
+
+    with suppress(ReservationsUnavailable):
+        await ensure_current()
+    owner = await reservation_owner(identity, prefix)
+    if owner is None and await _resolve_permission(identity, prefix) != "admin":
+        raise _upsert_refusal(prefix)
+    return owner
+
+
 async def _check_reserved_upsert(
     identity: UserIdentity,
     prefix: str,
@@ -203,20 +234,11 @@ async def _check_reserved_upsert(
     namespace ignores it. A reservation changed after the namespace was
     created is never applied through this path.
 
-    Standing is decided before the reservation is read, and every refusal
-    before that point reads the same: a caller without standing learns
-    neither whether the prefix is reserved nor by which app, and a broken
-    reservations file is not its business.
+    Standing is decided before this (``_upsert_standing``), so a caller
+    without standing learns neither whether the prefix is reserved nor by
+    which app.
     """
-    refused = HTTPException(
-        status_code=403,
-        detail=(
-            f"Upserting namespace '{prefix}' requires a platform admin key, or "
-            "admin on a namespace the install reserves for the caller's app"
-        ),
-    )
-    if owner is None and await _resolve_permission(identity, prefix) != "admin":
-        raise refused
+    refused = _upsert_refusal(prefix)
     reserved = await _reserved_settings(prefix, ns.id_config if ns is not None else None)
     if reserved is None:
         raise refused
@@ -480,12 +502,13 @@ async def upsert_namespace(
     """
     ns = await Namespace.find_one({"prefix": prefix})
     is_admin = identity.has_any_group(get_auth_config().admin_groups)
+    owner: str | None = None
+    if not is_admin:
+        owner = await _upsert_standing(identity, prefix)
     update_data = _validated_upsert_data(request, ns, is_admin)
     archived_id = _archived_namespace_id(update_data, is_admin)
-    owner: str | None = None
     reserved: dict[str, Any] | None = None
     if not is_admin:
-        owner = await reservation_owner(identity, prefix)
         reserved = await _check_reserved_upsert(identity, prefix, ns, update_data, owner)
         if ns is not None:
             # A namespace mid-deletion answers 409 to every caller, this

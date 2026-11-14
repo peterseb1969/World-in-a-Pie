@@ -18,3 +18,11 @@ def test_a_text_cell_in_a_datetime_field_is_passed_on_stripped():
     assert convert_cell("  2026-11-08T10:00:00Z ", "datetime") == "2026-11-08T10:00:00Z"
     assert convert_cell(" soon ", "datetime") == "soon"
     assert convert_cell(datetime(2026, 11, 8, 10, 30), "datetime") == "2026-11-08T10:30:00"
+
+
+def test_a_field_type_that_is_not_a_name_falls_back_to_text():
+    # A template field whose type is not a string (a list, a dict) is not a
+    # converter's name: the cell is text, as for any unknown type, never a
+    # TypeError that fails the whole file.
+    assert convert_cell(" 42 ", ["integer"]) == convert_cell(" 42 ", "unknown")
+    assert convert_cell("x", {"type": "integer"}) == convert_cell("x", None)

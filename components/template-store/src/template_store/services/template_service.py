@@ -566,6 +566,17 @@ class TemplateService:
                     "entity type it references, otherwise its items are never "
                     "existence-checked (CASE-550)", "validation_failed", rule="reference_type_required"
                 )
+            # An array's items are validated by their own type's rules, and
+            # an array item carries no item configuration of its own: items
+            # declared as arrays would pass every stage unchecked.
+            if f.array_item_type == FieldType.ARRAY:
+                raise TemplateError(
+                    f"array_item_type 'array' is not supported for field '{f.name}': "
+                    "a nested array's items have no item type to be validated "
+                    "against. Use an array of objects (array_item_type='object' "
+                    "with array_template_ref) whose template holds the inner array",
+                    "validation_failed", rule="nested_array_unsupported",
+                )
 
     # =========================================================================
     # TEMPLATE CRUD OPERATIONS

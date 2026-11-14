@@ -195,7 +195,11 @@ async def _startup_maintenance() -> None:
     # Once per install: give runtime keys the read grants their namespace
     # lists used to stand in for (a key's list is a scope and gives nothing).
     from .services.key_scope_grants import backfill_scope_read_grants
-    await backfill_scope_read_grants()
+    try:
+        await backfill_scope_read_grants()
+    except Exception as e:
+        # Left without its marker, so the next start runs it again.
+        print(f"WARNING: Failed to backfill runtime keys' scope read grants: {e}")
 
     # Store each namespace's claimed `prefixed` ID prefixes and report the
     # ones it cannot claim (a prefix two namespaces already share) — configs

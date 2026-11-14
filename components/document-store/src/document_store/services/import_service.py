@@ -42,7 +42,7 @@ def convert_cell(value: Any, field_type: str | None) -> Any:
     without '.0'). A value that cannot be read as its field's type raises
     CellConversionError, which fails the row, never the file.
     """
-    converter = _CONVERTERS.get(field_type or "")
+    converter = _CONVERTERS.get(field_type) if isinstance(field_type, str) else None
     return converter(value) if converter is not None else _as_text(value)
 
 
@@ -102,8 +102,8 @@ def _to_boolean(value: Any) -> bool:
 
 
 def _to_date(value: Any) -> str:
-    """A sheet's date (or a midnight datetime) as ISO; text as written,
-    for validation to judge."""
+    """A sheet's date (or a midnight datetime) as ISO; text stripped of
+    surrounding whitespace, for validation to judge."""
     if isinstance(value, datetime):
         if value.time() != time(0, 0):
             raise CellConversionError(f"'{value}' has a time of day; the field is a date")
@@ -114,7 +114,8 @@ def _to_date(value: Any) -> str:
 
 
 def _to_datetime(value: Any) -> str:
-    """A sheet's datetime as ISO; text as written, for validation to judge."""
+    """A sheet's datetime as ISO; text stripped of surrounding whitespace,
+    for validation to judge."""
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value).strip()

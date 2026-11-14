@@ -18,6 +18,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from pymongo.errors import DuplicateKeyError
+
 from ..models.api_key import StoredAPIKey
 from ..models.grant import NamespaceGrant
 from ..models.namespace import Namespace
@@ -52,10 +54,13 @@ async def backfill_scope_read_grants() -> int:
             })
             if held is not None:  # any grant, orphaned included, is the decision
                 continue
-            await NamespaceGrant(
-                namespace=prefix, subject=key.name, subject_type="api_key",
-                permission="read", granted_by="system:key-scope-backfill",
-            ).create()
+            try:
+                await NamespaceGrant(
+                    namespace=prefix, subject=key.name, subject_type="api_key",
+                    permission="read", granted_by="system:key-scope-backfill",
+                ).create()
+            except DuplicateKeyError:
+                continue  # a grant written since the check is the decision
             written += 1
     await _markers().update_one(
         {"_id": _MARKER_ID},

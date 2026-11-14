@@ -421,22 +421,32 @@ def _document_id_mismatch(
     of that document: its identity decides which document it is, and the
     named id must be that one. Without the check the id was dropped — a new
     identity silently got a fresh id, and the caller's id was never used.
-    A restore (``document_id`` + ``version``) asks the Registry for the id
-    itself and never comes here. Returns None when there is nothing to refuse.
+
+    A pinned write (``document_id`` + ``version``, a restore's shape) asks
+    the Registry for that exact id. The Registry answers with another
+    document when the identity already belongs to one; writing the pinned
+    version under that document would put a second active row beside its
+    live head and release the head's file references. So it is refused the
+    same way. Returns None when there is nothing to refuse.
     """
-    if not request.document_id or request.version is not None:
-        return None
-    if resolved_id == request.document_id:
+    if not request.document_id or resolved_id == request.document_id:
         return None
     found = (
         "no document has this identity yet" if is_new
         else f"this identity is document '{resolved_id}'"
     )
+    advice = (
+        "A pinned write keeps its document_id, so it cannot land on another "
+        "document: restore into a namespace that does not hold this identity, "
+        "or omit document_id and version to write a new version of it."
+        if request.version is not None
+        else "Omit document_id to let the identity decide, or pass version as "
+        "well for a restore."
+    )
     return {
         "error": (
             f"document_id '{request.document_id}' is not the document this "
-            f"identity resolves to: {found}. Omit document_id to let the "
-            "identity decide, or pass version as well for a restore."
+            f"identity resolves to: {found}. {advice}"
         ),
         "error_code": "invalid_request",
         "details": {
@@ -2111,6 +2121,7 @@ class DocumentService:
         extra_warnings: list[str] | None = None,
         max_retries: int = 3,
         deferred_events: list[tuple[EventType, dict]] | None = None,
+        written: list[Document] | None = None,
     ) -> tuple[DocumentCreateResponse, dict[str, Any] | None]:
         """Phase-3 overwrite: update the existing document's data and
         references without creating a new version. Used when the
@@ -2176,6 +2187,10 @@ class DocumentService:
         await self._update_file_reference_counts(previous_file_refs, delta=-1)
         await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
+        if written is not None:
+            # The row as written: after a retry, a re-read object, not the
+            # one the caller passed in.
+            written.append(existing)
         return DocumentCreateResponse(
             document_id=existing.document_id,
             namespace=namespace,
@@ -4100,7 +4115,7 @@ class DocumentService:
         if existing and version_override is None:
             settled = await self._settle_without_new_version(
                 i, item, validation_result, existing, revival, synonym_warnings,
-                namespace, actor,
+                namespace, actor, existing_by_doc_id,
             )
             if settled is not None:
                 return settled
@@ -4152,6 +4167,7 @@ class DocumentService:
         synonym_warnings: list[str],
         namespace: str,
         actor: str,
+        existing_by_doc_id: dict,
     ) -> "_ItemOutcome | None":
         """An update of an existing document that writes no new version row:
         unchanged when nothing changed (and it is no revival), or overwritten
@@ -4192,15 +4208,20 @@ class DocumentService:
         if await self._is_template_versioned(item.template_id):
             return None
         deferred: list[tuple[EventType, dict]] = []
+        written: list[Document] = []
         response, _ = await self._overwrite_in_place(
             item, existing, validation_result, namespace,
             extra_warnings=synonym_warnings, deferred_events=deferred,
+            written=written,
         )
-        # existing_by_doc_id already holds this Document object, mutated in
-        # place — later same-identity items in the batch see the fresh data.
-        # Its event is the batch's pending one, published after the
-        # auto-synonym stage, which drops it if that stage rolls the
-        # document back.
+        # Later same-identity items in the batch must see the row as written.
+        # Without a retry that is the object existing_by_doc_id holds,
+        # mutated in place; after one it is a re-read object, so the map is
+        # pointed at it. Its event is the batch's pending one, published
+        # after the auto-synonym stage, which drops it if that stage rolls
+        # the document back.
+        if written:
+            existing_by_doc_id[written[0].document_id] = written[0]
         return _ItemOutcome(
             BulkResultItem(
                 index=i,

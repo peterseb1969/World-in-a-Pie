@@ -369,14 +369,17 @@ async def create_api_key(
     logger.info("Created runtime API key: name=%s owner=%s created_by=%s",
                 doc.name, doc.owner, doc.created_by)
 
-    # Optionally create namespace grants for the new key in the same call, so
-    # a scoped key is usable (not read-only) immediately. Same semantics as
-    # POST /namespaces/{prefix}/grants, with the canonical api_key subject
-    # (the bare key name). Namespace existence is intentionally not enforced:
-    # key namespace scoping isn't either, and app provisioning may create the
-    # namespace after the key. A reserved namespace always gets admin; a
-    # listed one with no grant_permission gets read — the list itself is a
-    # scope and gives nothing.
+    # Create the new key's namespace grants in the same call, so a scoped
+    # key is usable at once, with the canonical api_key subject (the bare
+    # key name). A reserved namespace always gets admin; a listed one with no
+    # grant_permission gets read — the list itself is a scope and gives
+    # nothing. Unlike POST /namespaces/{prefix}/grants, which answers 404 for
+    # a namespace that does not exist, a grant is written for a listed prefix
+    # that has no namespace yet: app provisioning may create the namespace
+    # after the key. Accepted with its cost: the grant attaches by name, so
+    # whoever later creates a namespace of that prefix gives this key access
+    # to it. The widen endpoint (PUT /{name}/namespaces/{prefix}) and PATCH
+    # behave the same way.
     granted_namespaces: list[str] | None = None
     if request.namespaces:
         granted_namespaces = []
@@ -569,6 +572,7 @@ async def update_api_key(
         doc.description = request.description
     if request.groups is not None:
         doc.groups = request.groups
+    added, dropped = _scope_change(doc.namespaces, request.namespaces)
     if request.namespaces is not None:
         doc.namespaces = request.namespaces
     if "expires_at" in request.model_fields_set:
@@ -581,11 +585,35 @@ async def update_api_key(
 
     await doc.save()
     await _refresh_provider(doc)
+    await _follow_scope_with_grants(name, added, dropped)
     await access_changed()
 
     logger.info("Updated runtime API key: name=%s by=%s", name, get_identity_string())
 
     return _stored_to_response(doc, reserved)
+
+
+def _scope_change(
+    before: list[str] | None, after: list[str] | None
+) -> tuple[list[str], list[str]]:
+    """(namespaces added, namespaces dropped) by a scope update; nothing
+    when the update leaves the scope as it is (None)."""
+    if after is None:
+        return [], []
+    held = before or []
+    return [p for p in after if p not in held], [p for p in held if p not in after]
+
+
+async def _follow_scope_with_grants(name: str, added: list[str], dropped: list[str]) -> None:
+    """A key's access is its grants; the scope only caps it. A namespace a
+    scope update adds gets a read grant, as widening one namespace at a time
+    does, and one it drops loses its grant, as narrowing does. Otherwise the
+    scope would name a namespace the key cannot read, and a grant left on a
+    dropped namespace would come back with a later widen."""
+    for prefix in added:
+        await _set_grant(name, prefix, "read")
+    for prefix in dropped:
+        await NamespaceGrant.find(_grant_query(name, prefix)).delete()
 
 
 def _refuse_past_expiry(expires_at: datetime | None) -> None:

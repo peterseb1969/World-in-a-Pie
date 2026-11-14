@@ -59,6 +59,18 @@ async def test_authoring_rule_is_validation_failed_with_its_rule(client: AsyncCl
 
 
 @pytest.mark.asyncio
+async def test_an_array_of_arrays_is_refused(client: AsyncClient, auth_headers: dict):
+    # A nested array's items have no item type to validate against, so its
+    # items would pass every validation stage unchecked.
+    [item] = await _create(client, auth_headers, _tpl(
+        "EC_ARRAY_ARRAYS", {"name": "grid", "label": "G", "type": "array", "array_item_type": "array"},
+    ))
+    assert item["status"] == "error"
+    assert item["error_code"] == "validation_failed"
+    assert item["details"] == {"rule": "nested_array_unsupported"}
+
+
+@pytest.mark.asyncio
 async def test_unresolvable_parent_is_reference_violation(client: AsyncClient, auth_headers: dict):
     [item] = await _create(client, auth_headers, _tpl(
         "EC_ORPHAN", extends="EC_NO_SUCH_PARENT", extends_version=1,

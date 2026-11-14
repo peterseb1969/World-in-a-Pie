@@ -37,11 +37,16 @@ def follow_ups(monkeypatch):
         seen["sync"].append(namespace)
 
     async def validate(job):
-        seen["validate"].append((job.job_id, job.status))
+        # The status as STORED when the validation is scheduled, read back:
+        # the ordering is that the terminal write lands first, which the
+        # object handed over cannot show (beanie refreshes it on set).
+        stored = await BackupJob.find_one(BackupJob.job_id == job.job_id)
+        seen["validate"].append((job.job_id, stored.status if stored else None))
 
     monkeypatch.setattr(backup_service, "_trigger_reporting_batch_sync", sync)
     monkeypatch.setattr(backup_service, "trigger_validation_for", validate)
-    monkeypatch.setattr(backup_service, "_track", lambda fut: fut)
+    _SCHEDULED.clear()
+    monkeypatch.setattr(backup_service, "_track", lambda fut: _SCHEDULED.append(fut) or fut)
     return seen
 
 
@@ -58,11 +63,16 @@ async def _reload(job: BackupJob) -> BackupJob:
     return found
 
 
+# The follow-ups the code under test scheduled (through _track).
+_SCHEDULED: list = []
+
+
 async def _drain():
-    # Let the scheduled follow-ups (ensure_future) run.
+    # Let the scheduled follow-ups run to the end; they may read the
+    # database, so yielding a few times is not enough.
     import asyncio
-    for _ in range(3):
-        await asyncio.sleep(0)
+    if _SCHEDULED:
+        await asyncio.wait(list(_SCHEDULED), timeout=5)
 
 
 @pytest.mark.asyncio

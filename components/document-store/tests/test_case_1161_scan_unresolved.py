@@ -83,14 +83,49 @@ def test_references_are_grouped_and_edges_with_a_missing_endpoint_are_dropped():
          "samples": [{"document_id": "d1", "field_path": "colour"},
                      {"document_id": "d1", "field_path": "shade"}]},
     ]
+    # Keyed by (namespace, document_id); the endpoints are the edge's
+    # earliest version's (e2's v1 targeted d1, e3's v1 started at d9), the
+    # unresolved endpoints every version's.
     assert dropped == {
-        "e1": {"namespace": "ns-a", "document_id": "e1", "template_id": "EDGE",
-               "source_ref": "d1", "target_ref": "doc-gone", "unresolved_endpoints": ["doc-gone"]},
-        "e2": {"namespace": "ns-a", "document_id": "e2", "template_id": "EDGE",
-               "source_ref": "d2", "target_ref": "doc-gone", "unresolved_endpoints": ["doc-gone"]},
-        "e3": {"namespace": "ns-b", "document_id": "e3", "template_id": "EDGE",
-               "source_ref": "doc-gone", "target_ref": "x", "unresolved_endpoints": ["doc-gone"]},
+        ("ns-a", "e1"): {"namespace": "ns-a", "document_id": "e1", "template_id": "EDGE",
+                         "source_ref": "d1", "target_ref": "doc-gone",
+                         "unresolved_endpoints": ["doc-gone"]},
+        ("ns-a", "e2"): {"namespace": "ns-a", "document_id": "e2", "template_id": "EDGE",
+                         "source_ref": "d2", "target_ref": "d1",
+                         "unresolved_endpoints": ["doc-gone"]},
+        ("ns-b", "e3"): {"namespace": "ns-b", "document_id": "e3", "template_id": "EDGE",
+                         "source_ref": "d9", "target_ref": "x",
+                         "unresolved_endpoints": ["doc-gone"]},
     }
+
+
+def test_the_same_id_in_another_namespace_is_not_dropped_with_the_edge():
+    # Prefixed id sequences are per namespace, so two archived namespaces can
+    # each hold a document DOC-1: only ns-b's is the edge that drops.
+    rows = {
+        "ns-a": [_row("DOC-1", "T", refs=[_doc_ref("owner", "doc-gone")])],
+        "ns-b": [_row("DOC-1", "EDGE", refs=[_doc_ref("source_ref", "doc-gone"),
+                                              _doc_ref("target_ref", "y")])],
+    }
+    references, dropped = _scan_unresolved_references(
+        _Reader(rows), ["ns-a", "ns-b"], UNRESOLVED, {"EDGE"},
+    )
+    assert set(dropped) == {("ns-b", "DOC-1")}
+    # ns-a's DOC-1 is not the edge: its reference is still reported.
+    assert [(r["namespace"], r["samples"]) for r in references] == [
+        ("ns-a", [{"document_id": "DOC-1", "field_path": "owner"}]),
+    ]
+
+
+def test_the_earliest_version_names_the_endpoints_whatever_the_read_order():
+    edge = [
+        {**_row("e1", "EDGE", refs=[_doc_ref("source_ref", "doc-gone"), _doc_ref("target_ref", "y")]),
+         "version": 2},
+        {**_row("e1", "EDGE", refs=[_doc_ref("source_ref", "s1"), _doc_ref("target_ref", "y")]),
+         "version": 1},
+    ]
+    _refs, dropped = _scan_unresolved_references(_Reader({"ns": edge}), ["ns"], UNRESOLVED, {"EDGE"})
+    assert dropped[("ns", "e1")]["source_ref"] == "s1"
 
 
 def test_without_edge_templates_every_hit_is_a_reference_and_samples_are_capped():

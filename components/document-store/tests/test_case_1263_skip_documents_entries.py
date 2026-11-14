@@ -82,6 +82,8 @@ def test_a_dry_run_counts_neither_dropped_edges_nor_their_entries():
     entry = MagicMock()
     entry.counts.documents, entry.counts.registry_entries = 3, 3
 
-    assert _would_restore(reader, entry, "ns", "documents", set(), {"E1"}) == 1
-    assert _would_restore(reader, entry, "ns", "registry_entries", set(), {"E1"}) == 2
+    assert _would_restore(reader, entry, "ns", "documents", set(), {("ns", "E1")}) == 1
+    assert _would_restore(reader, entry, "ns", "registry_entries", set(), {("ns", "E1")}) == 2
     assert _would_restore(reader, entry, "ns", "documents", set(), set()) == 3
+    # An edge dropped from another archived namespace leaves this one whole.
+    assert _would_restore(reader, entry, "ns", "documents", set(), {("other", "E1")}) == 3

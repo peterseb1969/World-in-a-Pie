@@ -166,3 +166,30 @@ async def test_a_registry_that_cannot_answer_the_lookup_fails_the_write(monkeypa
 def test_scratch_result_starts_valid():
     # The stages above rely on a fresh ValidationResult being valid.
     assert ValidationResult().valid is True
+
+
+@pytest.mark.asyncio
+async def test_a_retired_target_resolves_to_its_latest_version(monkeypatch, stages, session_mongo_client):
+    """A business key whose document has no active row (soft-deleted) still
+    resolves, so the reference check can warn that it is inactive; the row
+    is the latest version, the same on every read."""
+    from document_store.models.document import Document, DocumentStatus
+    from tests.conftest import _ensure_beanie
+
+    await _ensure_beanie(session_mongo_client)
+    ns, doc_id = "bk1270", "doc-retired-1270"
+    await Document.find({"document_id": doc_id}).delete()
+    for version in (2, 1, 3):  # inserted out of order on purpose
+        await Document(
+            namespace=ns, document_id=doc_id, template_id="T1", template_version=1,
+            identity_hash="h", version=version, data={"code": "X1"},
+            status=DocumentStatus.INACTIVE,
+        ).insert()
+    try:
+        _wire(monkeypatch, TEMPLATE, _Registry(doc_id))
+        doc, error = await _resolve()
+        assert error is None
+        assert doc is not None and doc.version == 3
+        assert doc.status == DocumentStatus.INACTIVE
+    finally:
+        await Document.find({"document_id": doc_id}).delete()

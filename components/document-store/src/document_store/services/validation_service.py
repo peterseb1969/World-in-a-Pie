@@ -210,8 +210,9 @@ def _reference_item_shape_error(item: Any, reference_type: str | None) -> str | 
     composite dict, the others a string. reference_type is guaranteed present
     on templates authored after the template-store guard; a grandfathered
     template may carry None, and then the per-item type constraint is skipped
-    (existing soft-link data keeps validating) — existence resolution still
-    runs when a real reference_type is present.
+    and nothing about the items is checked (existing soft-link data keeps
+    passing, unvalidated) — existence resolution runs only when a real
+    reference_type is present.
     """
     if reference_type == "document":
         if not isinstance(item, (str, dict)):
@@ -2232,8 +2233,9 @@ class ValidationService:
 
         A UUID7 is a document_id, read active first and then in any status
         (for pinned references). Anything else resolves through the Registry;
-        refused is True when several documents carry the value (the error is
-        on ``result``).
+        refused is True when several documents carry the value, or when the
+        Registry reports more matches than it listed, so narrowing cannot be
+        sure (the error is on ``result``).
         """
         from ..models.document import Document, DocumentStatus
 
@@ -2265,9 +2267,10 @@ class ValidationService:
         )
         if candidates:
             # Several documents carry the value and the field's
-            # target_templates do not narrow them to one: refused, never
-            # resolved to an arbitrary one. Not cached — the cache's None
-            # means "not found".
+            # target_templates do not narrow them to one, or the Registry
+            # reported more matches than it listed: refused, never resolved
+            # to an arbitrary one. Not cached — the cache's None means
+            # "not found".
             result.add_error(
                 code="ambiguous_reference",
                 message=(
@@ -2460,7 +2463,16 @@ class ValidationService:
         doc = await Document.find_one(
             {"document_id": document_id, "status": DocumentStatus.ACTIVE}
         )
-        return doc or await Document.find_one({"document_id": document_id}), None
+        if doc is not None:
+            return doc, None
+        # No active row: the target was retired (soft-deleted). It still
+        # resolves — a retired entity stays addressable, and the reference
+        # check after this warns that the document is inactive. Its latest
+        # version answers, so the row is the same on every read.
+        retired = await Document.find(
+            {"document_id": document_id}
+        ).sort([("version", -1)]).limit(1).to_list()
+        return (retired[0] if retired else None), None
 
     async def _match_business_key(
         self,

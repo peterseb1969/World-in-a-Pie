@@ -287,6 +287,32 @@ async def test_a_taken_pinned_version_is_refused(client, auth_headers, bulk):
     assert [r.status for r in rows][-1] == DocumentStatus.ACTIVE
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bulk", [False, True])
+async def test_a_pinned_write_whose_identity_is_a_live_document_is_refused(
+    client, auth_headers, bulk,
+):
+    """A restore-shaped item (a new document_id plus a version) whose
+    identity already belongs to a live document was written as a pinned
+    version of that document, beside its active head: two active rows, and
+    the head's file references released. It is refused instead."""
+    national_id = "11440010" + ("2" if bulk else "1")
+    live = (await _post(client, auth_headers, [_item(_person(national_id))]))[0]
+    stray_id = str(uuid.uuid4())
+    items = [_item(_person(national_id, "Dee"), document_id=stray_id, version=2)]
+    if bulk:
+        items.append(_item(_person("114400109")))
+    result = (await _post(client, auth_headers, items))[0]
+
+    assert result["status"] == "error", result
+    assert result["details"]["rule"] == "document_id_mismatch"
+    assert result["details"]["resolved_document_id"] == live["document_id"]
+    assert f"this identity is document '{live['document_id']}'" in result["error"]
+    rows = await _rows(live["document_id"])
+    assert [(r.version, r.status) for r in rows] == [(1, DocumentStatus.ACTIVE)]
+    assert await Document.find({"document_id": stray_id}).count() == 0
+
+
 # --- document_id without version --------------------------------------------
 
 

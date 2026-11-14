@@ -3903,9 +3903,7 @@ Now:
 
 **Orphaned grants.** A system restore no longer skips a grant whose namespace
 neither exists nor is reserved. It writes it with `orphaned: true`:
-- **An orphan counts as no grant** until it is activated. (A key whose own
-  `namespaces` list names the prefix still reads it, as any such key does
-  without a grant.)
+- **An orphan counts as no grant** until it is activated.
 - **A prefix another owner reserves here counts as absent:** the archive's
   grants on it are written orphaned, so that owner's own create does not
   activate them. A platform admin's create does (see below).

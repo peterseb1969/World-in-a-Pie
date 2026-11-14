@@ -196,7 +196,8 @@ class FieldDefinition(BaseModel):
     # For type=array: item configuration
     array_item_type: FieldType | None = Field(
         default=None,
-        description="Type of array items (for array type)"
+        description="Type of array items (for array type); any type but 'array' "
+        "(a nested array has no item type of its own to validate against)"
     )
     array_terminology_ref: str | None = Field(
         default=None,

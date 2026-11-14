@@ -35,34 +35,6 @@ def _scoped_headers(api_key: str, scope_namespace: str) -> dict:
     }
 
 
-def _mock_registry_permission(in_scope_ns: str, accessible: list[str]):
-    """Patch wip-auth's Registry HTTP calls so a scoped key resolves as
-    expected without needing a real Registry process.
-
-    Returns a context-manager-friendly tuple of two patchers (one per
-    function). Callers use the contextlib.ExitStack pattern.
-    """
-    async def fake_perm(identity, ns):
-        # Match CASE-351's fallback semantics: scoped key reads on its
-        # own namespaces, none on others.
-        key_ns = (identity.raw_claims or {}).get("namespaces") or []
-        if "wip-admins" in identity.groups:
-            return "admin"
-        if ns in key_ns:
-            return "read"
-        return "none"
-
-    async def fake_accessible(identity):
-        if "wip-admins" in identity.groups:
-            return None
-        return list(accessible)
-
-    return (
-        patch("wip_auth.permissions._fetch_permission_from_registry", side_effect=fake_perm),
-        patch("wip_auth.permissions._fetch_accessible_from_registry", side_effect=fake_accessible),
-    )
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Smoke — the new gates exist and fire correctly under admin headers
 # (regression protection that we didn't break the admin path).

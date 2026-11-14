@@ -273,6 +273,8 @@ class APIKeyUpdateRequest(BaseModel):
     namespaces: list[str] | None = Field(
         default=None,
         description="The key's new namespace scope; null or left out keeps it. "
+        "A namespace it adds gets a read grant and one it drops loses its "
+        "grant, as widening and narrowing one namespace at a time do. "
         "A key in wip-admins or wip-services cannot carry a list (422).",
     )
     expires_at: datetime | None = Field(
