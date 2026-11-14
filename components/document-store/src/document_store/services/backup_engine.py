@@ -1589,6 +1589,19 @@ def _archived_template_rows(reader: Any, sources: list[str]) -> dict[str, Templa
     return rows
 
 
+def _dry_run_blob_scope(
+    rows: set[str], blobs: set[str], *, only: set[str] | None, new_ids: bool,
+) -> tuple[set[str], set[str]]:
+    """The file rows and blobs a dry run reports, as each real run reads
+    them: a plain restore uploads every blob, a merge those of the files it
+    inserts (``only``), a fresh restore those of the files it writes."""
+    if only is not None:
+        rows, blobs = rows & only, blobs & only
+    if new_ids:
+        blobs &= rows
+    return rows, blobs
+
+
 def _sha256_digest(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
@@ -2830,6 +2843,7 @@ class DirectRestoreEngine:
             }
 
             if dry_run:
+                await self._dry_run_remap_blobs(reader, skip_files=skip_files)
                 self._emit(
                     "complete",
                     "Remap dry run complete — nothing provisioned, nothing "
@@ -5099,7 +5113,8 @@ class DirectRestoreEngine:
             return
         if dry_run:
             carried = sorted(inserting & set(reader.list_blobs()))
-            await self._blob_keys_holding_archive_bytes(reader, {f: f for f in carried})
+            present = await self._blob_keys_holding_archive_bytes(reader, {f: f for f in carried})
+            await self._dry_run_blob_report(reader, only=inserting, present=present)
             return
         await self._restore_blobs(reader, namespace, only=inserting)
 
@@ -7871,18 +7886,39 @@ class DirectRestoreEngine:
             reader, {file_id: file_id for file_id in sorted(reader.list_blobs())},
         )
 
-    async def _dry_run_blob_report(self, reader: ArchiveReader) -> None:
-        """What a plain restore's blob phase would upload: only the bytes
-        that match their file's checksum, so they are read and checked as the
-        real run checks them, under keys checked free as the real run checks
-        them (a taken key refuses the dry run as it refuses the restore). The
-        files it would restore without their bytes are named, as the real run
-        names them."""
+    async def _dry_run_remap_blobs(self, reader: ArchiveReader, *, skip_files: bool) -> None:
+        """A fresh restore's dry run reports its blobs as the real run would
+        copy them, when it restores files at all."""
+        if self._storage is not None and not skip_files:
+            await self._dry_run_blob_report(reader, new_ids=True)
+
+    async def _dry_run_blob_report(
+        self, reader: ArchiveReader, *, only: set[str] | None = None,
+        present: set[str] | None = None, new_ids: bool = False,
+    ) -> None:
+        """What a restore's blob phase would upload: only the bytes that
+        match their file's checksum, so they are read and checked as the real
+        run checks them, under keys checked free as the real run checks them
+        (a taken key refuses the dry run as it refuses the restore). The files
+        it would restore without their bytes are named, as the real run names
+        them.
+
+        A plain restore checks its own keys here. A merge passes ``only``
+        (the files it inserts) and the ``present`` keys it checked already. A
+        fresh restore passes ``new_ids``: its files get new ids under which
+        nothing is stored, so no object is asked about, and they are named by
+        their archive ids (the new ones are not minted in a dry run)."""
         assert self._storage is not None
-        present = await self._plain_restore_blob_keys(reader) or set()
+        if present is None:
+            present = set() if new_ids else (await self._plain_restore_blob_keys(reader) or set())
         checksums = await self._off_loop(self._archive_file_checksums, reader)
-        blobs = set(reader.list_blobs())
-        missing, unchecked = await self._without_objects(set(checksums) - blobs)
+        rows, blobs = _dry_run_blob_scope(
+            set(checksums), set(reader.list_blobs()), only=only, new_ids=new_ids,
+        )
+        if new_ids:
+            missing, unchecked = sorted(rows - blobs), []
+        else:
+            missing, unchecked = await self._without_objects(rows - blobs)
         without: dict[str, list[str]] = {
             "missing": missing, "mismatched": [], "unchecked": unchecked,
         }

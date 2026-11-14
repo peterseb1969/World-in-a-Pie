@@ -44,6 +44,9 @@ async def files():
     coll = client["wip_test_storage_keys"][f"files_{uuid.uuid4().hex[:8]}"]
     yield coll
     await coll.drop()
+    await coll.database["document_store_migrations"].delete_many(
+        {"_id": f"storage_keys_v1:{coll.name}"},
+    )
     client.close()
 
 
@@ -120,3 +123,24 @@ async def test_a_second_run_finds_nothing(files):
     await files.insert_one({"file_id": "NEW", "storage_key": "OLD"})
     await repair_storage_keys(files, _Storage({"OLD"}))
     assert await repair_storage_keys(files, _Storage({"OLD"})) == (0, 0, [])
+
+
+@pytest.mark.asyncio
+async def test_a_clean_pass_marks_the_install_and_later_starts_skip_the_scan(files):
+    """The repair's query uses no index; once a pass leaves nothing to
+    repair, later starts do not scan (CASE-1287 ff44d9ba R5, Peter)."""
+    await files.insert_one({"file_id": "NEW", "storage_key": "OLD"})
+    assert await repair_storage_keys(files, _Storage({"OLD"})) == (1, 1, [])
+    # A row that would need repair now (it cannot arise from a restore any
+    # more) is not looked at: the scan is skipped.
+    await files.insert_one({"file_id": "LATE", "storage_key": "OLD"})
+    assert await repair_storage_keys(files, _Storage({"OLD"})) == (0, 0, [])
+    assert (await files.find_one({"file_id": "LATE"}))["storage_key"] == "OLD"
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_leaves_failures_scans_again_next_time(files):
+    await files.insert_one({"file_id": "A-NEW", "storage_key": "A-OLD"})
+    down = _Storage({"A-OLD"}, down={"A-NEW"})
+    assert await repair_storage_keys(files, down) == (0, 0, ["A-NEW"])
+    assert await repair_storage_keys(files, _Storage({"A-OLD"})) == (1, 1, [])

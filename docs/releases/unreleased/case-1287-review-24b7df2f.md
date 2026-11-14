@@ -19,3 +19,8 @@ cases: [1287]
   re-pointed at its own id without them, and logged.
 - A restore reads and hashes the archive's bytes for a key it is about to
   write on a worker thread, as every other pass over them does.
+- **The startup storage-key repair stops scanning once it is done.** Its
+  query can use no index, so it read the whole `files` collection at every
+  start. A pass that leaves nothing to repair now records a marker in
+  `document_store_migrations` and later starts skip it; a pass that leaves
+  rows unrepaired records none and the next start retries.

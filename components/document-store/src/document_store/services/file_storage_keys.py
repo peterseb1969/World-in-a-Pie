@@ -20,7 +20,11 @@ store could not be asked about, or the copy failed for, is left as it is,
 counted and named in the log, and retried at the next start.
 
 Runs at startup, once the object store is reachable and its bucket exists.
-Idempotent: a repaired install has no such rows.
+Idempotent: a repaired install has no such rows. Its query can use no index
+(it compares two fields of each row), so a pass that leaves nothing to repair
+records a marker in `document_store_migrations` and later starts skip the
+scan: restores write `storage_key = file_id`, so no new such row appears. A
+pass that leaves rows unrepaired records none, and the next start retries.
 """
 
 from __future__ import annotations
@@ -51,11 +55,38 @@ class StorageKeyRepair(NamedTuple):
     failed: list[str]
 
 
+_MIGRATIONS_COLLECTION = "document_store_migrations"
+
+
+def _marker_id(collection: AsyncIOMotorCollection) -> str:
+    return f"storage_keys_v1:{collection.name}"
+
+
 async def repair_storage_keys(
     collection: AsyncIOMotorCollection, storage: _Store
 ) -> StorageKeyRepair:
     """Re-point file rows at the object under their own file id, copying the
-    object their old key names there when it has none yet."""
+    object their old key names there when it has none yet. Skipped once a
+    pass has left nothing to repair (see the module docstring)."""
+    markers = collection.database[_MIGRATIONS_COLLECTION]
+    if await markers.find_one({"_id": _marker_id(collection)}):
+        return StorageKeyRepair(0, 0, [])
+    result = await _repair_pass(collection, storage)
+    if not result.failed:
+        from datetime import UTC, datetime
+
+        await markers.update_one(
+            {"_id": _marker_id(collection)},
+            {"$set": {"completed_at": datetime.now(UTC), "repaired": result.repaired}},
+            upsert=True,
+        )
+    return result
+
+
+async def _repair_pass(
+    collection: AsyncIOMotorCollection, storage: _Store
+) -> StorageKeyRepair:
+    """One scan: every row whose storage_key is not its file_id."""
     repaired = copied = 0
     failed: list[str] = []
     query: dict[str, Any] = {

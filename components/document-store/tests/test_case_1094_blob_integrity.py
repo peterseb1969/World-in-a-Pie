@@ -383,3 +383,30 @@ async def test_a_backup_without_file_storage_does_not_claim_its_files(namespace,
         assert manifest.include_all_versions is True
         assert reader.list_blobs() == []
     assert any("File storage is not enabled" in w for w in _warnings(events))
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_restores_dry_run_reports_its_blobs():
+    """Merge and fresh dry runs reported no blobs (CASE-1287, 24b7df2f R7).
+    A fresh restore's files get new ids, so no object is asked about."""
+    storage, events = _Storage(), []
+    storage.exists = None  # a fresh dry run must not ask the store
+    engine = DirectRestoreEngine(MagicMock(), storage, events.append)
+    await engine._dry_run_blob_report(_reader(ROWS, BLOBS), new_ids=True)
+    messages = [e.message for e in events]
+    assert "dry run — would upload 1 file blob(s)" in messages
+    warnings = _warnings(events)
+    assert any("F-CORRUPT" in w and "do not match" in w for w in warnings)
+    assert any("F-MISSING" in w and "would be restored without content" in w for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_a_merges_dry_run_reports_the_blobs_of_the_files_it_inserts():
+    storage, events = _Storage(), []
+    engine = DirectRestoreEngine(MagicMock(), storage, events.append)
+    await engine._dry_run_blob_report(
+        _reader(ROWS, BLOBS), only={"F-GOOD", "F-MISSING"}, present=set(),
+    )
+    assert "dry run — would upload 1 file blob(s)" in [e.message for e in events]
+    [warning] = _warnings(events)
+    assert "F-MISSING" in warning and "F-CORRUPT" not in warning
