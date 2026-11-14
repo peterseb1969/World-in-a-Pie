@@ -14,6 +14,7 @@ A restore must never fail because the convenience layer is absent; it must
 only fail on POSITIVE verification failures.
 """
 
+import asyncio
 import logging
 import os
 from typing import Any, cast
@@ -130,36 +131,74 @@ class ReportingSyncClient:
             return False
         return True
 
-    async def failed_jobs(self, namespace: str) -> dict[str, str]:
-        """Why the last trigger's jobs for ``namespace`` failed, by template
-        value: those that did not start (their answer's message) and those
-        that started and then failed (the job record's error_message).
+    # The whole read-back of failed jobs, after the structure gate has
+    # already waited out its own timeout: a bounded addition to the halt.
+    _FAILED_JOBS_TIMEOUT_S = 10.0
 
-        Best effort like the rest of this client: a job that cannot be read
-        is left out, and an unreachable reporting-sync answers {}.
+    async def failed_jobs(
+        self, namespace: str, template_ids: set[str]
+    ) -> dict[str, str]:
+        """Why the last trigger's jobs for these templates failed, by
+        template_id: those that did not start (their answer's message) and
+        those that started and then failed (the job record's error_message).
+
+        Keyed by id, not value: the trigger's job list is instance-wide, and
+        two namespaces can share a template value. Only the jobs of
+        ``template_ids`` are read, concurrently, and the whole read is bounded
+        by _FAILED_JOBS_TIMEOUT_S; what it could not read in time is left
+        out. Best effort like the rest of this client: a job that cannot be
+        read is left out, and an unreachable reporting-sync answers {}.
         """
         reasons: dict[str, str] = {}
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                for job in self._started.get(namespace, []):
-                    value = str(job.get("template_value") or "?")
-                    if job.get("status") == "failed":
-                        reasons[value] = str(job.get("message") or "did not start")
-                        continue
-                    if not job.get("job_id"):
-                        continue
-                    resp = await client.get(
-                        f"{self._base}/api/reporting-sync/sync/batch/jobs/{job['job_id']}",
-                        headers=self._headers(),
-                    )
-                    if resp.status_code != 200:
-                        continue
-                    record = resp.json()
-                    if record.get("status") == "failed":
-                        reasons[value] = str(record.get("error_message") or "failed")
-        except (httpx.HTTPError, ValueError) as e:
-            logger.warning("reporting-sync job status for %s unreadable: %s", namespace, e)
+        pending: list[dict[str, Any]] = []
+        for job in self._started.get(namespace, []):
+            if str(job.get("template_id")) not in template_ids:
+                continue
+            if job.get("status") == "failed":
+                reasons[str(job["template_id"])] = str(job.get("message") or "did not start")
+            elif job.get("job_id"):
+                pending.append(job)
+        if pending:
+            reasons.update(await self._read_job_failures(namespace, pending))
         return reasons
+
+    async def _read_job_failures(
+        self, namespace: str, jobs: list[dict[str, Any]]
+    ) -> dict[str, str]:
+        """The failures among these started jobs' records, read
+        concurrently within _FAILED_JOBS_TIMEOUT_S, by template_id."""
+        async with httpx.AsyncClient(timeout=self._FAILED_JOBS_TIMEOUT_S) as client:
+            tasks = [asyncio.ensure_future(self._job_failure(client, job)) for job in jobs]
+            done, late = await asyncio.wait(tasks, timeout=self._FAILED_JOBS_TIMEOUT_S)
+            for task in late:
+                task.cancel()
+        if late:
+            logger.warning(
+                "reporting-sync job status for %s: %d job(s) not read in %ss",
+                namespace, len(late), self._FAILED_JOBS_TIMEOUT_S,
+            )
+        failures = [task.result() for task in done]
+        return {f[0]: f[1] for f in failures if f is not None}
+
+    async def _job_failure(
+        self, client: httpx.AsyncClient, job: dict[str, Any]
+    ) -> tuple[str, str] | None:
+        """(template_id, error) of a started job whose record says it
+        failed; None when it did not, or its record cannot be read."""
+        try:
+            resp = await client.get(
+                f"{self._base}/api/reporting-sync/sync/batch/jobs/{job['job_id']}",
+                headers=self._headers(),
+            )
+            if resp.status_code != 200:
+                return None
+            record = resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("reporting-sync job %s unreadable: %s", job.get("job_id"), e)
+            return None
+        if record.get("status") != "failed":
+            return None
+        return str(job["template_id"]), str(record.get("error_message") or "failed")
 
     async def drop_namespace_schema(self, namespace: str) -> bool:
         """Drop the namespace's reporting schema. True on success."""

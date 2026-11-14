@@ -17,7 +17,11 @@ with `add_missing` hit the same 404.
 The Registry entries of terminologies, terms and templates are now written
 with the definitions, before the reporting check, in both modes; documents'
 and files' entries still come last. When the check does halt, its message now
-names reporting-sync's own reason for each template whose sync failed.
+names reporting-sync's own reason for each template whose sync failed, matched
+to the template by its id (another namespace's template of the same value
+lends it none), read within 10 s. A merge that halts there no longer tells the
+operator to delete the namespace: it says the merge added definitions and no
+documents, and to run it again once reporting-sync is fixed.
 
 **Action:** a namespace a failed restore left partial is deleted and restored
 again.

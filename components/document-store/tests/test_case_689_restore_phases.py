@@ -29,6 +29,9 @@ def _engine(reporting, events):
     eng._REPORTING_COUNTS_STALL_S = 0.05
     eng._REPORTING_COUNTS_MAX_S = 5
     eng._REPORTING_POLL_INTERVAL_S = 0.01
+    # The halt looks the failing templates' ids up in MongoDB, which these
+    # engines do not have.
+    eng._template_ids_of = AsyncMock(return_value={})
     return eng
 
 

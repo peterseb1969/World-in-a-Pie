@@ -285,7 +285,7 @@ async def test_the_reporting_gate_runs_before_documents_move(mongo):
     await _seed(mongo, "templates", [_template()])
     seen: list[int] = []
 
-    async def gate(self, namespace):
+    async def gate(self, namespace, **kw):
         db_name, coll_name = COLLECTION_MAP["documents"]
         seen.append(await self._mongo[db_name][coll_name].count_documents({"namespace": namespace}))
 

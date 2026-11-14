@@ -38,7 +38,7 @@ def engine(monkeypatch):
     async def insert_batch(collection, batch, entity_type):
         calls.append(("insert", entity_type, [r["id"] for r in batch]))
 
-    async def structure(namespace):
+    async def structure(namespace, **kw):
         calls.append(("structure", namespace))
 
     async def overwrite(namespace, plan, doc_groups, *, on_clash, older_versions, sources=None, batch_size=None):
