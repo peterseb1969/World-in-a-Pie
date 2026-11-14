@@ -284,3 +284,144 @@ async def test_orphan_audit_leaves_a_young_pending_claim_alone(client):
     assert await _claim_doc(_h("inflight")) is not None
     assert await _claim_doc(_h("dead")) is None
     assert await _claim_doc(_h("dangling")) is None
+
+
+# ── An untokened release keeps a claim taken over after its write ───────
+
+
+@pytest.mark.asyncio
+async def test_a_release_dated_before_keeps_a_claim_taken_over_since(client):
+    await _genuine_owner("kept", "e1")
+    cutoff = datetime.now(UTC)
+    # Another request of the same entry takes the claim over after the
+    # releasing request's write: the takeover re-dates it.
+    await CompositeKeyClaim.claim(NS, ET, _h("kept"), "e1", "primary", state="pending")
+
+    await release_keys_bulk([_key("kept", "e1")], dated_before=cutoff)
+
+    assert (await _claim_doc(_h("kept")))["owner_entry_id"] == "e1"
+
+
+@pytest.mark.asyncio
+async def test_a_release_dated_before_still_deletes_an_older_claim(client):
+    await _genuine_owner("gone", "e1")
+
+    await release_keys_bulk([_key("gone", "e1")], dated_before=datetime.now(UTC) + timedelta(seconds=1))
+
+    assert await _claim_doc(_h("gone")) is None
+
+
+@pytest.mark.asyncio
+async def test_a_removal_keeps_the_claim_of_an_add_that_put_the_synonym_back(
+    client, auth_headers, monkeypatch,
+):
+    """A removal of a synonym and an add of the same synonym to the same
+    entry: the add loads the entry after the removal's write, takes the claim
+    over, writes the synonym back and confirms, all before the removal
+    releases. The synonym is active on the entry, so its claim must stay:
+    without it another entry could take the key."""
+    import registry.api.synonyms as synonyms_api
+    from tests.test_case_427 import _add_synonym, _register
+
+    ns, etype = "default", "templates"
+    target = await _register(client, auth_headers, ns, etype, {"value": "RACED"})
+    key = {"vendor": "RACED-1"}
+    assert (await _add_synonym(client, auth_headers, target, ns, etype, key))["status"] == "added"
+
+    real_release = synonyms_api.release_keys_bulk
+    fired = []
+
+    async def add_then_release(keys, token=None, **kw):
+        if token is None and not fired:
+            fired.append(True)
+            added = await _add_synonym(client, auth_headers, target, ns, etype, key)
+            assert added["status"] == "added", added
+        await real_release(keys, token, **kw)
+
+    monkeypatch.setattr(synonyms_api, "release_keys_bulk", add_then_release)
+    r = await client.post("/api/registry/synonyms/remove", headers=auth_headers, json=[{
+        "target_id": target, "synonym_composite_key": key,
+    }])
+    assert r.json()["results"][0]["status"] == "removed", r.text
+    assert fired
+
+    key_hash = HashService.compute_composite_key_hash(key)
+    entry = await RegistryEntry.find_one({"entry_id": target})
+    assert key_hash in {s.composite_key_hash for s in entry.active_synonyms()}
+    claim = await _claim_doc(key_hash, ns, etype)
+    assert claim is not None and claim["owner_entry_id"] == target
+    other = await _register(client, auth_headers, ns, etype, {"value": "INTRUDER"})
+    taken = await _add_synonym(client, auth_headers, other, ns, etype, key)
+    assert taken["status"] != "added", taken
+
+
+# ── A re-key or retirement answers by what its write did ────────────────
+
+
+def _delete_before_write(monkeypatch, module, entry_id: str) -> None:
+    """The entry is deleted between the route's read and its write."""
+    real = module.apply_to_entry
+
+    async def gone_first(target, *a, **kw):
+        await RegistryEntry.get_motor_collection().delete_one({"entry_id": entry_id})
+        return await real(target, *a, **kw)
+
+    monkeypatch.setattr(module, "apply_to_entry", gone_first)
+
+
+@pytest.mark.asyncio
+async def test_rekey_of_an_entry_deleted_meanwhile_is_not_found(client, auth_headers, monkeypatch):
+    import registry.api.entries as entries_api
+
+    entry_id, old_key = await _register_doc(client, auth_headers, "vanishing")
+    _delete_before_write(monkeypatch, entries_api, entry_id)
+
+    data = await _post(client, auth_headers, "/entries/rekey-identity", [
+        {"entry_id": entry_id, "identity_hash": "vanished-1127"},
+    ])
+
+    assert data["results"][0]["status"] == "not_found"
+    assert (data["succeeded"], data["failed"]) == (0, 1)
+    new_hash = HashService.compute_composite_key_hash({**old_key, "identity_hash": "vanished-1127"})
+    assert await _claim_doc(new_hash, "default", "documents") is None
+
+
+@pytest.mark.asyncio
+async def test_rekey_another_request_already_applied_is_unchanged(client, auth_headers, monkeypatch):
+    import registry.api.entries as entries_api
+
+    entry_id, old_key = await _register_doc(client, auth_headers, "raced")
+    new_key = {**old_key, "identity_hash": "raced-1127"}
+    real = entries_api.apply_to_entry
+
+    async def other_request_first(target, *a, **kw):
+        await RegistryEntry.get_motor_collection().update_one(
+            {"entry_id": entry_id},
+            {"$set": {"primary_composite_key": new_key,
+                      "primary_composite_key_hash": HashService.compute_composite_key_hash(new_key)},
+             "$inc": {"revision": 1}},
+        )
+        return await real(target, *a, **kw)
+
+    monkeypatch.setattr(entries_api, "apply_to_entry", other_request_first)
+    data = await _post(client, auth_headers, "/entries/rekey-identity", [
+        {"entry_id": entry_id, "identity_hash": "raced-1127"},
+    ])
+    assert data["results"][0]["status"] == "unchanged"
+
+
+@pytest.mark.asyncio
+async def test_deactivating_an_entry_deleted_meanwhile_is_not_found(client, auth_headers, monkeypatch):
+    import registry.services.claims as claims_service
+
+    entry_id, _ = await _register_doc(client, auth_headers, "retiring")
+    added = await _post(client, auth_headers, "/synonyms/add", [{
+        "target_id": entry_id, "synonym_namespace": "default",
+        "synonym_entity_type": "documents", "synonym_composite_key": {"vendor": "RETIRING-1127"},
+    }])
+    assert added["results"][0]["status"] == "added"
+    _delete_before_write(monkeypatch, claims_service, entry_id)
+
+    data = await _post(client, auth_headers, "/entries/deactivate", [{"entry_id": entry_id}])
+
+    assert data["results"][0]["status"] == "not_found"

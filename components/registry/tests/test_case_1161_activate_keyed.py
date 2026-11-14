@@ -188,8 +188,32 @@ async def test_an_entry_retired_between_read_and_write_is_a_conflict(client: Asy
     _break_collection(monkeypatch, bulk_write=bulk_write)
     body = await _activate(client, auth_headers, items)
     assert _summary(body) == [("activated", None), ("error", "concurrency_conflict")]
-    assert body["results"][1]["error"] == "Entry status changed concurrently; not activated"
+    assert body["results"][1]["error"] == "Entry changed concurrently; not activated"
     assert (body["activated"], body["errors"]) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_entry_written_between_read_and_write_is_a_conflict(client: AsyncClient, auth_headers, monkeypatch):
+    """The activation writes search_values (and synonyms) from the entry as
+    read: a write that landed meanwhile would be overwritten. It lands only
+    on the revision it read, so the other write survives and the item is a
+    conflict."""
+    [item] = await _reserved(client, auth_headers, 1, "written")
+    real = RegistryEntry.get_motor_collection()
+    meanwhile = ["kept-by-the-other-write"]
+
+    async def bulk_write(ops, ordered=False):
+        await real.update_one(
+            {"entry_id": item["entry_id"]},
+            {"$set": {"search_values": meanwhile}, "$inc": {"revision": 1}},
+        )
+        return await real.bulk_write(ops, ordered=ordered)
+
+    _break_collection(monkeypatch, bulk_write=bulk_write)
+    body = await _activate(client, auth_headers, [item])
+    assert _summary(body) == [("error", "concurrency_conflict")]
+    stored = await real.find_one({"entry_id": item["entry_id"]})
+    assert (stored["status"], stored["search_values"]) == ("reserved", meanwhile)
 
 
 @pytest.mark.asyncio

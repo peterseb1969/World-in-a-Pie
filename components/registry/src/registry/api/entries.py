@@ -76,6 +76,7 @@ from ..services.bare_identity import (
     identity_fields_or_unreadable,
 )
 from ..services.claims import (
+    ClaimKey,
     claim_entries_keys_pending,
     claim_keys_pending_bulk,
     confirm_entries_keys,
@@ -92,6 +93,7 @@ from ..services.entry_writes import (
     UNCHANGED,
     EntryWriteConflict,
     apply_to_entry,
+    revision_filter,
 )
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.event_bus import entries_changed
@@ -1116,7 +1118,7 @@ async def rekey_identity(
                 return None
 
             try:
-                await apply_to_entry(
+                written, outcome = await apply_to_entry(
                     entry.entry_id, rekey,
                     ("primary_composite_key", "primary_composite_key_hash", "search_values",
                      *STAMP_FIELDS),
@@ -1125,17 +1127,14 @@ async def rekey_identity(
             except Exception:
                 await release_keys_bulk([new_claim], token)
                 raise
-            await confirm_keys_bulk([new_claim])
-            if old_hash and not any(
-                s.composite_key_hash == old_hash for s in entry.active_synonyms()
-            ):
-                await release_keys_bulk(
-                    [(entry.namespace, entry.entity_type, old_hash, entry.entry_id, "primary")]
-                )
-            results.append(RekeyIdentityResponse(
-                index=i, entry_id=item.entry_id, status="rekeyed",
-            ))
-            rekeyed += 1
+            answer = await _settle_rekey(
+                i, entry, written is not None, outcome, new_claim, token, old_hash, now,
+            )
+            results.append(answer)
+            if answer.status == "not_found":
+                failed += 1
+            else:
+                rekeyed += 1
         except Exception as e:
             logger.error("Re-key failed for %s: %s", item.entry_id, e)
             results.append(RekeyIdentityResponse(
@@ -1145,6 +1144,49 @@ async def rekey_identity(
 
     return RekeyIdentityBulkResponse(
         results=results, total=len(items), succeeded=rekeyed, failed=failed,
+    )
+
+
+async def _settle_rekey(
+    i: int, entry: RegistryEntry, landed: bool, outcome: Any, new_claim: ClaimKey,
+    token: str, old_hash: str, now: datetime,
+) -> RekeyIdentityResponse:
+    """The claims and the answer of a re-key after its write: confirm the new
+    key and release the one it moved off, answered rekeyed (unchanged when
+    another request moved the entry to this key first). When the entry went
+    between the read and the write nothing was re-keyed: the new key's claim
+    is given back and the item is not_found. The old key is released dated
+    before the write, so a request that took its claim over since keeps it."""
+    if not landed:
+        await release_keys_bulk([new_claim], token)
+        return RekeyIdentityResponse(index=i, entry_id=entry.entry_id, status="not_found")
+    await confirm_keys_bulk([new_claim])
+    if old_hash and not any(
+        s.composite_key_hash == old_hash for s in entry.active_synonyms()
+    ):
+        await release_keys_bulk(
+            [(entry.namespace, entry.entity_type, old_hash, entry.entry_id, "primary")],
+            dated_before=now,
+        )
+    return RekeyIdentityResponse(
+        index=i, entry_id=entry.entry_id,
+        status="unchanged" if outcome is UNCHANGED else "rekeyed",
+    )
+
+
+def _retirement_answer(
+    i: int, entry_id: str, released: list[Synonym] | None,
+) -> EntryLifecycleResponse:
+    """A retirement's answer: deactivated with what it released, unchanged
+    when nothing was left to release, not_found when the entry went between
+    the read and the write (None)."""
+    if released is None:
+        return EntryLifecycleResponse(index=i, status="not_found", registry_id=entry_id)
+    return EntryLifecycleResponse(
+        index=i,
+        status="deactivated" if released else "unchanged",
+        registry_id=entry_id,
+        released=[s.composite_key for s in released],
     )
 
 
@@ -1525,8 +1567,9 @@ async def _activate_keyed(
     token = new_claim_token()
     to_write = await _claim_for_activation(candidates, results, token)
     if to_write:
+        written_from = datetime.now(UTC)
         await _write_activations(items, keyed, to_write, results, token, creator)
-        await _release_left_keys(to_write, previous_hash, results)
+        await _release_left_keys(to_write, previous_hash, results, written_from)
 
     _answer_activation_repeats(items, repeats, first_index, results)
 
@@ -1556,11 +1599,14 @@ async def _release_left_keys(
     written: list[tuple[int, RegistryEntry]],
     previous_hash: dict[str, str],
     results: list[ActivateItemResponse | None],
+    written_from: datetime,
 ) -> None:
     """Release the claim on the key an activated entry left: a reservation
     made with a key claimed it, and activation moved the entry to its final
     key. Owner-scoped and untokened, as /rekey-identity releases a key it
-    moves off; a key the entry still carries as a synonym stays claimed."""
+    moves off, and dated before the activation's write (``written_from``):
+    a claim another request of the entry took over since stays. A key the
+    entry still carries as a synonym stays claimed."""
     left = []
     for i, entry in written:
         old = previous_hash.get(entry.entry_id) or ""
@@ -1572,7 +1618,7 @@ async def _release_left_keys(
         ):
             left.append((entry.namespace, entry.entity_type, old, entry.entry_id, "primary"))
     if left:
-        await release_keys_bulk(left)
+        await release_keys_bulk(left, dated_before=written_from)
 
 
 def _first_and_repeats(
@@ -1717,9 +1763,12 @@ async def _bulk_activate(
 ) -> dict[int, dict]:
     """The guarded write that flips each entry from reserved to active with
     its key (and synonyms, when the item carried them), stamped with the
-    caller ``by`` as every entry change is (entry_actor). Returns the error
-    fields of each position in ``to_write`` the write failed or may have
-    failed."""
+    caller ``by`` as every entry change is (entry_actor). The fields are
+    written from the entry as read, so the write lands only while the entry
+    still has the revision read, as every read-modify-write does
+    (entry_writes): a synonym added meanwhile is never overwritten, the item
+    is answered concurrency_conflict instead. Returns the error fields of
+    each position in ``to_write`` the write failed or may have failed."""
     now = datetime.now(UTC)
     ops = []
     for _, entry in to_write:
@@ -1733,7 +1782,7 @@ async def _bulk_activate(
         if entry.entry_id in with_synonyms:
             fields["synonyms"] = Encoder().encode(entry)["synonyms"]
         ops.append(UpdateOne(
-            {"entry_id": entry.entry_id, "status": "reserved"},
+            {**revision_filter(entry.entry_id, entry.revision), "status": "reserved"},
             {"$set": fields, "$inc": dict(REVISION_INC)},
         ))
     failed: dict[int, dict] = {}  # position in to_write -> error fields
@@ -1772,7 +1821,7 @@ def _answer_written(
             continue
         released.append(entry)
         fields = failed.get(pos) or {
-            "error": "Entry status changed concurrently; not activated",
+            "error": "Entry changed concurrently; not activated",
             "error_code": "concurrency_conflict",
         }
         results[i] = ActivateItemResponse(index=i, status="error", entry_id=entry.entry_id, **fields)
@@ -2627,12 +2676,7 @@ async def deactivate_entries(
             released = await retire_entry_synonyms(
                 entry, entry_actor(identity, item.updated_by), dry_run=dry_run,
             )
-            results.append(EntryLifecycleResponse(
-                index=i,
-                status="deactivated" if released else "unchanged",
-                registry_id=entry.entry_id,
-                released=[s.composite_key for s in released],
-            ))
+            results.append(_retirement_answer(i, item.entry_id, released))
         except Exception as e:
             results.append(EntryLifecycleResponse(
                 index=i, status="error", registry_id=item.entry_id, **error_fields(e),

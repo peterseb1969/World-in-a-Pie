@@ -254,3 +254,27 @@ async def test_retiring_the_survivor_keeps_the_merged_id_resolving(client, auth_
     entry_p = await RegistryEntry.find_one({"entry_id": p})
     merged_syn = next(s for s in entry_p.synonyms if s.composite_key == {"entry_id": d})
     assert merged_syn.status != "inactive"
+
+
+@pytest.mark.asyncio
+async def test_a_merge_into_an_entry_deleted_meanwhile_changes_nothing(client, auth_headers, monkeypatch):
+    """The survivor's write found no entry: nothing absorbed D's keys, so the
+    merge is refused and D keeps them, claims included."""
+    p = await _register(client, auth_headers, {"value": "M-P9"})
+    d = await _register(client, auth_headers, {"value": "M-D9"})
+    vendor = {"vendor": "M-D9-SYN"}
+    assert (await _add_synonym(client, auth_headers, d, vendor))["status"] == "added"
+    real = merge_service.apply_to_entry
+
+    async def survivor_gone(entry_id, *args, **kwargs):
+        if entry_id == p:
+            await RegistryEntry.get_motor_collection().delete_one({"entry_id": p})
+        return await real(entry_id, *args, **kwargs)
+
+    monkeypatch.setattr(merge_service, "apply_to_entry", survivor_gone)
+    assert (await _merge(client, auth_headers, p, d))["status"] == "error"
+
+    entry_d = await RegistryEntry.find_one(RegistryEntry.entry_id == d)
+    assert entry_d.status == "active" and not entry_d.merged_into
+    claim = await CompositeKeyClaim.find_existing(NS, TYPE, _hash(vendor))
+    assert claim.owner_entry_id == d

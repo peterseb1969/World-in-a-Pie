@@ -182,10 +182,17 @@ async def merge_into(
     try:
         for syn in claimable:
             await move.take(syn)
-        await apply_to_entry(
+        absorbed, _ = await apply_to_entry(
             preferred.entry_id, _absorb(keys, now, actor),
             ("synonyms", "search_values", *STAMP_FIELDS), first=preferred,
         )
+        if absorbed is None:
+            # Deleted between the read and the write: nothing absorbed the
+            # keys, so the claims moved to it go back.
+            raise MergedEntryChanged(
+                f"Entry {preferred.entry_id} was deleted while {deprecated.entry_id} "
+                "was being merged into it"
+            )
     except BaseException:
         await move.undo()
         raise

@@ -417,8 +417,9 @@ async def _write_synonym_lists(
     which changes the entry in place and returns each synonym's outcome as
     decided against the entry as it now is — a synonym another request added
     first is already_exists, one it removed first is not_found. An entry no
-    longer active fails its items, as one that was not active at the start
-    would have.
+    longer active fails its items with status error, error_code not_found —
+    unlike one not active at the start, which an add answers
+    target_not_found and a removal not_found.
 
     Each written entry is stamped with ``actor``, carrying the caller's
     note for that entry from ``notes`` (none when absent).
@@ -514,16 +515,19 @@ async def remove_synonyms(
         except Exception as e:
             results[i] = RemoveSynonymResponse(index=i, status="error", **error_fields(e))
 
+    written_from = datetime.now(UTC)
     failed, redecided = await _write_synonym_lists(
         plan.changed,
         lambda entry_id, entry: _reapply_removals(plan, entry_id, entry),
         entry_actor(identity), plan.notes,
     )
     released = _settle_removals(plan, failed, redecided, results)
-    # Release the removed synonyms' claims (CASE-427), each scoped to its
-    # owner so a claim that belongs elsewhere is never deleted. A leftover
-    # claim is a benign orphan that reconciliation clears.
-    await release_keys_bulk(released)
+    # Release the removed synonyms' claims, each scoped to its owner so a
+    # claim that belongs elsewhere is never deleted, and dated before the
+    # writes: an add of the same synonym to the same entry that took the
+    # claim over after a removal landed keeps it for the synonym it puts
+    # back. A leftover claim is a benign orphan that healing clears.
+    await release_keys_bulk(released, dated_before=written_from)
     # The removed synonyms no longer resolve to their entries.
     await entries_changed(key[3] for key in released)
     return _remove_response(results, len(items))

@@ -347,15 +347,26 @@ async def confirm_keys_bulk(keys: Sequence[ClaimKey]) -> None:
         )
 
 
-async def release_keys_bulk(keys: Sequence[ClaimKey], token: str | None = None) -> None:
+async def release_keys_bulk(
+    keys: Sequence[ClaimKey], token: str | None = None,
+    *, dated_before: datetime | None = None,
+) -> None:
     """Delete claims, each only if its named owner holds it, in a few
     writes. With a ``token`` — a request rolling back its own claims — only
     the claims that request inserted are deleted: never one its entry held
     before, nor one another request has taken over since. Without one — a
-    synonym removed, an entity retired — the owner's claim goes, whoever
-    inserted it. Best-effort: anything left behind is pending and dies in the
-    reconcile pass."""
-    scope = {} if token is None else {"claim_token": token}
+    synonym removed, an entity retired, a key moved off — the owner's claim
+    goes, whoever inserted it; such a caller passes ``dated_before``, the time
+    just before its entry write, so a claim dated at or after it is kept.
+    That is a claim another request of the same entry took over once that
+    write had landed (a takeover re-dates the claim): an addition of the key
+    the write had just let go, whose own write puts it back. Deleting it would
+    leave the key active on the entry with no claim, free for another entry
+    to take. Best-effort: anything left behind is pending and dies in the
+    reconcile pass, or, confirmed and unbacked, heals at the next collision."""
+    scope: dict = {} if token is None else {"claim_token": token}
+    if dated_before is not None:
+        scope["created_at"] = {"$lt": dated_before}
     clauses = [
         {
             "namespace": ns,
@@ -417,11 +428,12 @@ def releasable_synonyms(entry: RegistryEntry) -> list[Synonym]:
 
 async def retire_entry_synonyms(
     entry: RegistryEntry, actor: EntryActor, *, dry_run: bool = False,
-) -> list[Synonym]:
+) -> list[Synonym] | None:
     """Retire an entry's synonyms: mark the releasable ones inactive and drop
     their claims, so they neither block another entity from taking the key nor
     resolve. They stay recorded on the entry for revival. Returns the synonyms
-    released (would be released, on a dry run). Idempotent.
+    released (would be released, on a dry run), or None when the entry was
+    gone by the time of the write. Idempotent.
 
     The entry is written before the claims go: a crash in between leaves a
     claim its owner no longer backs, which inline healing frees at the next
@@ -447,21 +459,19 @@ async def retire_entry_synonyms(
         entry.entry_id, retire, ("synonyms", "search_values", *STAMP_FIELDS),
         first=entry,
     )
-    if written is None or released is UNCHANGED:
+    if written is None:
+        return None
+    if released is UNCHANGED:
         return []
     retired = cast(list[Synonym], released)
-    for syn in retired:
-        try:
-            await CompositeKeyClaim.release(
-                syn.namespace, syn.entity_type, syn.composite_key_hash,
-                owner_entry_id=entry.entry_id,
-            )
-        except Exception:
-            logger.exception(
-                "Release failed for retired synonym %s (%s/%s) of entry %s — "
-                "the claim is unbacked and heals at the next collision.",
-                syn.composite_key_hash, syn.namespace, syn.entity_type, entry.entry_id,
-            )
+    # A claim a request reviving or re-adding one of these synonyms took over
+    # after the write above is dated after ``now`` and stays (release_keys_bulk).
+    # The release is best-effort: a claim it misses is unbacked and heals at
+    # the next collision.
+    await release_keys_bulk(
+        [(*_synonym_scope(syn), entry.entry_id, "synonym") for syn in retired],
+        dated_before=now,
+    )
     return retired
 
 

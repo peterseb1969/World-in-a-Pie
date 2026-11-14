@@ -28,9 +28,10 @@ from ..models.entry import RegistryEntry
 logger = logging.getLogger(__name__)
 
 #: Attempts a read-modify-write makes before it reports a conflict. Each lost
-#: attempt means another writer landed in between, so N writers on one entry
-#: can cost a writer up to N-1 attempts; running out takes sustained
-#: contention well beyond that.
+#: attempt means another writer landed in between, and a writer lands once,
+#: so a write always lands when at most this many writers contend for one
+#: entry (one more on the synonym paths, which write once before the loop);
+#: past that, an item can report concurrency_conflict.
 MAX_ATTEMPTS = 10
 
 #: Upper bound of the random pause before retry n is n times this (seconds).
