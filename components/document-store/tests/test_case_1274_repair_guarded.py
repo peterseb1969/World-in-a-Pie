@@ -88,7 +88,7 @@ async def test_a_bulk_write_that_raises_still_repairs(client: AsyncClient, auth_
 
 @pytest.mark.asyncio
 async def test_a_failing_repair_does_not_replace_the_write_error(client: AsyncClient, auth_headers):
-    [doc_id] = await _create(client, auth_headers, "127400021")
+    [_doc_id] = await _create(client, auth_headers, "127400021")
 
     async def fail_insert(*args, **kwargs):
         raise AutoReconnect("connection lost")
