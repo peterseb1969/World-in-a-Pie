@@ -623,12 +623,15 @@ async def get_document(
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
+    # A Registry entry with no document record behind it answers as an id that
+    # names nothing, as does one in a namespace the caller cannot see.
+    missing = await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id")
     document = await service.get_document(document_id, version=version)
 
     if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=missing)
 
-    await check_readable(identity, document.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, document.namespace, missing)
 
     return document
 
@@ -649,16 +652,18 @@ async def get_document_versions(
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
+    # A Registry entry with no document record behind it answers as an id that
+    # names nothing, as does one in a namespace the caller cannot see.
+    missing = await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id")
     versions = await service.get_document_versions(document_id)
 
     if not versions:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=missing)
 
     # Check namespace — fetch the document to get its namespace. A document
     # gone between the two reads (a hard delete) is not found: the versions
     # are never returned without the read check.
     doc = await service.get_document(document_id)
-    missing = await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id")
     if doc is None:
         raise HTTPException(status_code=404, detail=missing)
     await check_readable(identity, doc.namespace, missing)
@@ -683,12 +688,17 @@ async def get_document_version(
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
+    # A Registry entry with no document record behind it answers as an id that
+    # names nothing, as does one in a namespace the caller cannot see.
+    missing = await miss_detail(
+        raw_document_id, "document", namespace, "Document version not found", "document_id",
+    )
     document = await service.get_document_version(document_id, version)
 
     if not document:
-        raise HTTPException(status_code=404, detail="Document version not found")
+        raise HTTPException(status_code=404, detail=missing)
 
-    await check_readable(identity, document.namespace, await miss_detail(raw_document_id, "document", namespace, "Document version not found", "document_id"))
+    await check_readable(identity, document.namespace, missing)
 
     return document
 
@@ -714,12 +724,15 @@ async def get_latest_document(
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
+    # A Registry entry with no document record behind it answers as an id that
+    # names nothing, as does one in a namespace the caller cannot see.
+    missing = await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id")
     document = await service.get_latest_document(document_id)
 
     if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=missing)
 
-    await check_readable(identity, document.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, document.namespace, missing)
 
     return document
 
@@ -796,11 +809,14 @@ async def get_document_relationships(
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
+    # A Registry entry with no document record behind it answers as an id that
+    # names nothing, as does one in a namespace the caller cannot see.
+    missing = await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id")
     seed = await service.get_document(document_id)
     if not seed:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=missing)
 
-    await check_readable(identity, seed.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, seed.namespace, missing)
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 
@@ -862,11 +878,14 @@ async def traverse_document_relationships(
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
+    # A Registry entry with no document record behind it answers as an id that
+    # names nothing, as does one in a namespace the caller cannot see.
+    missing = await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id")
     seed = await service.get_document(document_id)
     if not seed:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=missing)
 
-    await check_readable(identity, seed.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, seed.namespace, missing)
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 
