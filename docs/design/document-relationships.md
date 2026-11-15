@@ -112,7 +112,7 @@ db.documents.createIndex({ template_id: 1, "data.source_ref": 1 })
 db.documents.createIndex({ template_id: 1, "data.target_ref": 1 })
 ```
 
-Both lead with `template_id`: `/relationships` and `/traverse` narrow every query to edge types (the given `template`/`types` filter, else the edge types among the matches), so the indexes serve the default form too. Indexes are conditional on the template's `usage: relationship`. Templates with `usage: entity` don't get them.
+Both lead with `template_id`, which is what every edge query is narrowed to: `/relationships` and each traverse hop constrain `template_id` to the edge types among the templates the query points at (cut further by the caller's `template`/`types` filter), so the indexes serve the query that fetches the edges. One step runs before the type set is known — asking which templates the ref match touches (`distinct("template_id", …)`) — and no index here leads with the ref fields, so that scan is not served by them: one pass per request, one per hop. Measured and accepted as it stands on CASE-1275; a ref-led index would be the way to change it. Indexes are conditional on the template's `usage: relationship`. Templates with `usage: entity` don't get them.
 
 ### Query APIs
 
@@ -188,7 +188,7 @@ The system-terminology data identifier `_ONTOLOGY_RELATIONSHIP_TYPES` was **not*
 
 ### Postgres reporting (optional, archetype-gated)
 
-When `reporting-sync` is deployed, an edge type's reporting table gets two indexed columns: `source_ref_id` (the canonical `document_id` of the `source_ref` endpoint, whatever its `version_strategy`) and `target_ref_id`. These are indexed btree columns that enable SQL JOINs against the source and target document tables.
+When `reporting-sync` is deployed, an edge type's reporting table gets two indexed columns: `source_ref_id` and `target_ref_id` — the canonical `document_id` of each endpoint, whatever its `version_strategy` (an id is stable across versions). Both sync paths fill them from the resolved referent: the event payload carries `data.source_ref_resolved` / `data.target_ref_resolved`, and a batch read takes the same fact from the document's own `references` array. A row whose endpoint resolved to neither — a legacy row with no references and no enrichment — keeps its stored string ref, so it joins only against a document whose `document_id` equals that spelling; an endpoint stored as something other than a string (a business-key dict) leaves the column empty rather than claiming a non-id as an id. These are indexed btree columns that enable SQL JOINs against the source and target document tables.
 
 Example queries then become tractable in SQL:
 
@@ -255,8 +255,8 @@ Relationships must be fully functional on MongoDB alone. **No code path in the r
 | Capability | Storage requirement |
 |---|---|
 | Create / update / delete / version relationship documents | MongoDB only |
-| `/documents/{id}/relationships?direction=...` | MongoDB indexes |
-| `/documents/{id}/traverse?depth=N` | MongoDB `$graphLookup` |
+| `/documents/{id}/relationships?direction=...` | MongoDB indexes (the edge-type discovery scan runs before them) |
+| `/documents/{id}/traverse?depth=N` | MongoDB — a Python BFS over per-hop indexed `find()` queries, not `$graphLookup` |
 | Edge-property filtering (`role = catalyst`) | MongoDB field indexes |
 | Heavy aggregations, cross-template analytics | Postgres (when present) OR external NATS subscriber |
 | Streaming export to Snowflake / BigQuery / etc. | NATS stream (optional) |

@@ -539,9 +539,10 @@ class SchemaManager:
 
         For templates with usage='relationship', adds source_ref_id and
         target_ref_id columns + indexes so SQL JOINs against the endpoint
-        document tables work cleanly. The columns are populated by the
-        transformer from the Phase-6 enriched event payload
-        (data.source_ref_resolved / data.target_ref_resolved).
+        document tables work cleanly. The columns hold the canonical
+        document_id of each endpoint, filled by the transformer from the
+        event's enrichment (data.source_ref_resolved) or, on a batch read,
+        the document's references array.
 
         identity_fields: the template's declared identity_fields list. An
         empty list (or None) is the platform's first-class append-only
