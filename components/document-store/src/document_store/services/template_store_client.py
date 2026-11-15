@@ -321,9 +321,12 @@ class TemplateStoreClient:
 
         # Cache the result
         if version is not None:
-            # Pinned version: namespace-stamp bounded (a miss is not kept:
-            # the read above treats a cached None as a miss)
-            self._template_cache[f"{template_id}:v{version}"] = template
+            # Pinned version: namespace-stamp bounded. A miss is not kept, as
+            # the comment has always said: a null entry can never serve a hit
+            # (the read above treats it as a miss), carries no namespace for the
+            # stamp check to evict it by, and counts in the reported size.
+            if template is not None:
+                self._template_cache[f"{template_id}:v{version}"] = template
         elif template is not None:
             # Latest: TTL cache. A miss is not cached, so a template created
             # a moment later is found at once, not up to the TTL later.
