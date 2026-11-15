@@ -24,7 +24,8 @@
       "count": 0
     },
     "radon-cc-c-plus": {
-      "count": 142
+      "count": 212,
+      "note": "re-measured 2026-11-15 over the eight audited src trees with radon 6.0.1 (--min C), the audit's own step 5; the other dimensions still date from the run stamped above"
     }
   }
 }

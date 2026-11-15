@@ -3,7 +3,8 @@ check_all_documents' refactor.
 
 Provenance: CASE-1161. The status and template filters, recent_first, the
 progress callback on full batches, the limit stopping the scan, and the
-warning-only verdict had no test. Documents are written to the test MongoDB
+warning-only verdict had no test, nor did the mapping from an issue type to
+the summary counter it lands on. Documents are written to the test MongoDB
 directly; the template store is a stand-in, and BATCH_SIZE is shrunk so a
 handful of documents spans several batches.
 """
@@ -94,3 +95,46 @@ async def test_recent_first_checks_the_newest_and_a_retired_template_only_warns(
     assert result.status == "warning"
     result, _ = await _scan(template_id_filter="T-ACTIVE")
     assert result.status == "healthy" and result.issues == []
+
+
+# Every issue type the scan can raise, one each: a type added to
+# _SUMMARY_COUNTERS without a line here leaves its counter at 0 and fails.
+ISSUE_TYPES = [
+    "orphaned_template_ref", "orphaned_term_ref", "inactive_template_ref",
+    "orphaned_document_ref", "misplaced_document_ref", "orphaned_file_ref",
+    "identity_hash_mismatch", "identity_field_missing",
+    "identity_resolution_missing", "template_version_not_found",
+    "mandatory_field_missing", "nested_template_not_found",
+]
+
+# What the summary counts besides the per-type counters.
+_NON_COUNTER_FIELDS = {
+    "total_documents", "documents_checked", "documents_with_issues", "checks_not_run",
+}
+
+
+def test_every_issue_type_lands_on_its_own_counter():
+    issues = [
+        integrity_service.IntegrityIssue(
+            type=issue_type, severity="error", document_id=f"D{i % 2 + 1}",
+            template_id="T", version=1, reference="r", message="m",
+        )
+        for i, issue_type in enumerate(ISSUE_TYPES)
+    ]
+    summary = integrity_service._summarize(issues, 9, 7, {"term_reference:def-store": 1})
+
+    # The mapping covers the issue types and the counters exactly: nothing the
+    # scan can raise falls through, and nothing the summary carries is unfed.
+    counters = set(integrity_service.IntegritySummary.model_fields) - _NON_COUNTER_FIELDS
+    assert set(integrity_service._SUMMARY_COUNTERS) == set(ISSUE_TYPES)
+    assert set(integrity_service._SUMMARY_COUNTERS.values()) == counters
+    # One issue of each type moves each counter by one, except the three
+    # identity types, which identity_unverified gathers.
+    assert {name: getattr(summary, name) for name in counters} == {
+        name: 3 if name == "identity_unverified" else 1 for name in counters
+    }
+    # The rest keep their own units: version rows counted, and the distinct
+    # documents among issues raised by any of a document's versions.
+    assert (summary.total_documents, summary.documents_checked) == (9, 7)
+    assert summary.documents_with_issues == 2
+    assert summary.checks_not_run == {"term_reference:def-store": 1}

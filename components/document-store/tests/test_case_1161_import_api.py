@@ -3,8 +3,9 @@
 The import tests cover every branch of POST /import except a file that fails
 to parse. Both outcomes are pinned here: a parser refusal (ValueError) is
 answered with its own message, and any other parse failure is answered as
-"Failed to parse file: ..." — in both cases a 422, before any template lookup
-or document write.
+"Failed to parse file: ..." — in both cases a 422, after the template id is
+resolved (the route's own order) and before its fields are fetched or any
+document is written.
 """
 
 import io

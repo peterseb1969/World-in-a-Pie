@@ -91,35 +91,73 @@ class IntegrityIssue(BaseModel):
 
 
 class IntegritySummary(BaseModel):
-    """Summary of integrity check results."""
+    """Summary of integrity check results.
 
-    total_documents: int = 0
-    documents_checked: int = 0
-    documents_with_issues: int = 0
-    orphaned_template_refs: int = 0
-    orphaned_term_refs: int = 0
+    The counts are not all in the same unit, so each description names its
+    own: the two totals count version rows, documents_with_issues counts
+    documents, and every counter below counts the issues the scan raised — one
+    document, or the several versions of one document, can raise several.
+    """
+
+    total_documents: int = Field(
+        default=0,
+        description="Document versions matching the scan's filters: a document "
+                    "with three versions counts three",
+    )
+    documents_checked: int = Field(
+        default=0,
+        description="Version rows the scan went through; below total_documents "
+                    "only when a limit stopped it",
+    )
+    documents_with_issues: int = Field(
+        default=0,
+        description="Distinct documents among the issues, whatever their version",
+    )
+    orphaned_template_refs: int = Field(
+        default=0,
+        description="References to a template that does not exist: one per "
+                    "version row",
+    )
+    orphaned_term_refs: int = Field(
+        default=0,
+        description="Term references whose term is not in its terminology: one "
+                    "per field path of a version row",
+    )
     inactive_template_refs: int = Field(
         default=0,
         description=(
             "Documents whose current version is pinned to a template version "
-            "that has since been retired: such a document cannot be updated as "
-            "it stands. A superseded version keeps its pin as history and is "
-            "not counted"
+            "that has since been retired: one per document, such a document "
+            "cannot be updated as it stands. A superseded version keeps its pin "
+            "as history and is not counted"
         ),
     )
-    orphaned_document_refs: int = 0
-    misplaced_document_refs: int = 0
-    orphaned_file_refs: int = 0
+    orphaned_document_refs: int = Field(
+        default=0,
+        description="Document references whose target document does not exist: "
+                    "one per reference",
+    )
+    misplaced_document_refs: int = Field(
+        default=0,
+        description="Document references whose target lives in another "
+                    "namespace than the reference claims: one per reference",
+    )
+    orphaned_file_refs: int = Field(
+        default=0,
+        description="File references whose file record does not exist: one per "
+                    "reference",
+    )
     identity_hash_mismatches: int = Field(
         default=0,
-        description="Documents whose stored identity hash differs from the one recomputed",
+        description="Version rows whose stored identity hash differs from the "
+                    "one recomputed: one per row",
     )
     identity_unverified: int = Field(
         default=0,
         description=(
-            "Documents whose identity could not be compared: an identity value "
-            "or resolution missing, or the template version they are pinned "
-            "to not found"
+            "Version rows whose identity could not be compared: an identity "
+            "value or resolution missing, or the template version they are "
+            "pinned to not found"
         ),
     )
     mandatory_fields_missing: int = Field(

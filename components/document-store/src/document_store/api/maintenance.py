@@ -34,9 +34,12 @@ class RehashItemResponse(BaseModel):
             "unchanged: the stored hash is already right, listed only on an apply "
             "whose Registry re-key for it did not answer unchanged (see "
             "registry_status); "
-            "unresolved: no stored resolution to recompute from, left as is; "
+            "unresolved: nothing to recompute the row's hash from — a referent "
+            "identity field with no stored resolution, or an identity field the "
+            "row does not carry; left as is; "
             "collision: another document converges on the same identity, "
-            "reported and never applied; error: the template version was unreadable."
+            "reported and never applied; error: the template version was "
+            "unreadable, or an identity path the template cannot classify."
         ),
     )
     old_hash: str | None = None
