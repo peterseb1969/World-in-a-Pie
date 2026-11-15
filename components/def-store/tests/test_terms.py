@@ -1,5 +1,8 @@
 """Tests for term API endpoints."""
 
+import uuid
+from unittest.mock import AsyncMock, patch
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
@@ -343,3 +346,31 @@ async def test_delete_term(client: AsyncClient, auth_headers: dict, test_termino
         headers=auth_headers
     )
     assert get_response.json()["status"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_terms_into_a_terminology_with_no_row_never_reach_the_service(
+    client: AsyncClient, auth_headers: dict
+):
+    """An id with no terminology row is refused by the door itself, on the
+    single-item path and the bulk one alike: the write is not handed to a
+    service that is merely expected to miss, so the gate above it stands on
+    every path that writes."""
+    missing = str(uuid.uuid4())
+    single, bulk = AsyncMock(return_value=[]), AsyncMock(return_value=[])
+    with patch("def_store.api.terms.TerminologyService.create_term", new=single), \
+            patch("def_store.api.terms.TerminologyService.create_terms_bulk", new=bulk):
+        one = await client.post(
+            f"/api/def-store/terminologies/{missing}/terms",
+            headers=auth_headers, json=[{"value": "a"}],
+        )
+        two = await client.post(
+            f"/api/def-store/terminologies/{missing}/terms",
+            headers=auth_headers, json=[{"value": "a"}, {"value": "b"}],
+        )
+
+    assert one.status_code == 404, one.text
+    assert two.status_code == 404, two.text
+    assert one.json()["detail"] == f"Terminology '{missing}' not found"
+    single.assert_not_awaited()
+    bulk.assert_not_awaited()

@@ -769,10 +769,13 @@ async def validate_template(
     existing = await Template.find_one({"template_id": template_id})
     # One the caller cannot see, and one with no template behind its Registry
     # entry, are treated alike.
-    hidden = existing is None or not await can_read(identity, existing.namespace)
-    if hidden:
-        # Answered as for an id that names nothing: the resolution 404 of
-        # this request when ids resolve, else the not_found validation.
+    # Both are answered as for an id that names nothing: the resolution 404
+    # of this request when ids resolve, else the not_found validation.
+    if existing is None:
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+            raise miss
+        return TemplateService.template_not_found_validation(template_id)
+    if not await can_read(identity, existing.namespace):
         if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
             raise miss
         return TemplateService.template_not_found_validation(template_id)
@@ -965,10 +968,18 @@ async def get_template_children(template_id: str, namespace: str | None = Query(
     # One the caller cannot see, and one with no template behind its Registry
     # entry, answers as an id that names nothing: the resolution 404 of this
     # request when ids resolve, else an empty list.
-    hidden = existing is None or not await can_read(identity, existing.namespace)
-    if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
-        raise miss
-    children = [] if hidden else await InheritanceService.get_children(template_id)
+    # One with no template behind its Registry entry, and one the caller
+    # cannot see, answer alike: the resolution 404 of this request when ids
+    # resolve, else an empty list.
+    if existing is None:
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+            raise miss
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
+    if not await can_read(identity, existing.namespace):
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+            raise miss
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
+    children = await InheritanceService.get_children(template_id)
     templates = [TemplateService._to_template_response(t) for t in children]
     return TemplateListResponse(
         items=templates,
@@ -991,10 +1002,18 @@ async def get_template_descendants(template_id: str, namespace: str | None = Que
     # One the caller cannot see, and one with no template behind its Registry
     # entry, answers as an id that names nothing: the resolution 404 of this
     # request when ids resolve, else an empty list.
-    hidden = existing is None or not await can_read(identity, existing.namespace)
-    if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
-        raise miss
-    descendants = [] if hidden else await InheritanceService.get_descendants(template_id)
+    # One with no template behind its Registry entry, and one the caller
+    # cannot see, answer alike: the resolution 404 of this request when ids
+    # resolve, else an empty list.
+    if existing is None:
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+            raise miss
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
+    if not await can_read(identity, existing.namespace):
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+            raise miss
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
+    descendants = await InheritanceService.get_descendants(template_id)
     templates = [TemplateService._to_template_response(t) for t in descendants]
     return TemplateListResponse(
         items=templates,

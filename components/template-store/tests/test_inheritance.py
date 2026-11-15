@@ -1,5 +1,8 @@
 """Tests for Template inheritance functionality."""
 
+import uuid
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -500,3 +503,27 @@ async def test_multi_level_inheritance(client: AsyncClient, auth_headers: dict):
     assert "field2" in field_names
     assert "field3" in field_names
     assert len(data["fields"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_parent_with_no_row_lists_nothing(client: AsyncClient, auth_headers: dict):
+    """Children and descendants of an id with no template row are the door's own
+    empty answer: the lineage search is not run for a parent that is not there,
+    so nothing is listed ahead of the gate."""
+    missing = str(uuid.uuid4())
+    children, descendants = AsyncMock(return_value=[]), AsyncMock(return_value=[])
+    with patch("template_store.api.templates.InheritanceService.get_children", new=children), \
+            patch("template_store.api.templates.InheritanceService.get_descendants", new=descendants):
+        child_page = await client.get(
+            f"/api/template-store/templates/{missing}/children", headers=auth_headers
+        )
+        descendant_page = await client.get(
+            f"/api/template-store/templates/{missing}/descendants", headers=auth_headers
+        )
+
+    assert child_page.status_code == 200, child_page.text
+    assert descendant_page.status_code == 200, descendant_page.text
+    assert child_page.json()["items"] == []
+    assert descendant_page.json()["items"] == []
+    children.assert_not_awaited()
+    descendants.assert_not_awaited()

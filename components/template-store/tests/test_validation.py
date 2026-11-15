@@ -1,5 +1,8 @@
 """Tests for Template validation functionality."""
 
+import uuid
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -270,6 +273,29 @@ async def test_validate_nonexistent_template(client: AsyncClient, auth_headers: 
     data = response.json()
     assert data["valid"] is False
     assert any("not found" in e["message"].lower() for e in data["errors"])
+
+
+@pytest.mark.asyncio
+async def test_validating_a_template_with_no_row_never_reaches_the_service(
+    client: AsyncClient, auth_headers: dict
+):
+    """An id with no template row is answered by the door, not by the service's
+    own miss: the read behind the gate is then the only path that can answer
+    with a template."""
+    missing = str(uuid.uuid4())
+    service = AsyncMock()
+    with patch("template_store.api.templates.TemplateService.validate_template", new=service):
+        response = await client.post(
+            f"/api/template-store/templates/{missing}/validate",
+            headers=auth_headers,
+            json={},
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["valid"] is False
+    assert [e["code"] for e in data["errors"]] == ["not_found"]
+    service.assert_not_awaited()
 
 
 @pytest.mark.asyncio
