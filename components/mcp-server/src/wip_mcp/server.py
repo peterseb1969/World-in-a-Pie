@@ -5158,10 +5158,12 @@ async def start_restore(
 
     Three modes. 'restore' and 'merge' are ID-preserving; 'fresh' re-mints
     every id. 'restore' writes each namespace in the archive back to ITSELF.
-    'merge' does too, except that a single-namespace archive may be merged
-    into another namespace (target_namespace). Writing under a different name
-    otherwise is mode='fresh'. Admin permission is required on every
-    namespace the archive carries.
+    'merge' does too, except where it is redirected: a single-namespace
+    archive into another namespace (target_namespace), or each namespace of a
+    multi-namespace archive into its own target (namespace_map). Writing under
+    a different name otherwise is mode='fresh'. Admin permission is required
+    on every namespace the archive carries, and on every destination a
+    redirect names.
 
     mode='restore' (default) requires every target namespace to be EMPTY and
     inserts the archive wholesale, preserving every id.
@@ -5248,12 +5250,18 @@ async def start_restore(
             ignored. 'restore' writes the archive's namespace to itself and
             refuses a different value; 'merge' of a single-namespace archive
             writes into this namespace; 'fresh' on a single-namespace archive
-            requires it. A multi-namespace archive takes no target in
-            'restore' or 'merge' mode. The `namespace` argument is not the
-            destination.
-        namespace_map: Fresh only — {source: target} for EVERY namespace in
-            a multi-namespace archive. Mutually completing with
-            target_namespace: pass exactly one of the two for 'fresh'.
+            requires it. A multi-namespace archive takes no target here —
+            redirect its namespaces with namespace_map. The `namespace`
+            argument is not the destination.
+        namespace_map: Merge and fresh only — {source: target} for EVERY
+            namespace the archive carries, e.g. {"kb": "kb2", "library":
+            "library2"}. A merge keeps every id and writes each namespace into
+            its own target, rewriting the arriving rows and the references
+            between them to carry the new names; each target must exist, the
+            archive's ids must be free on this install, and one destination per
+            source. 'fresh' needs it for a multi-namespace archive, and there
+            several sources may map to one target. Mutually exclusive with
+            target_namespace.
         on_clash: Merge only — 'skip', 'overwrite' or 'newer' for clashing
             documents.
         older_versions: Merge only — 'retire' (default) or 'keep': whether
