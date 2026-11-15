@@ -15,8 +15,13 @@ Universal contract (BulkResultItemBase):
     index, status, id, error, error_code, details
 
 error_code is the machine-readable surface callers branch on. The codes
-the services emit are listed in the error_code field's description below
-(it is what every service's OpenAPI spec publishes).
+the services emit are listed in the error_code field's description below.
+The four services that return bulk write results — def-store,
+document-store, registry, template-store — publish that description for it;
+reporting-sync returns none. A service gives its own wording to error_code
+on the items it defines outside this contract: registry's activate and
+synonym items, def-store's term-validation answer, template-store's
+cascade result.
 """
 
 from typing import Any, Generic, TypeVar
@@ -28,31 +33,43 @@ class BulkResultItemBase(BaseModel):
     """Universal per-item result for bulk write operations."""
 
     index: int
-    status: str  # created, updated, unchanged, deleted, skipped, error
+    status: str  # created, updated, unchanged, deleted, skipped, error;
+    # some endpoints add their own (reactivated, merged, removed, deprecated)
     id: str | None = None
     error: str | None = None
     error_code: str | None = Field(
         default=None,
         description=(
             "Machine-readable error code. Documented codes: not_found, "
-            "forbidden, archived, identity_field_change, "
+            "forbidden, identity_field_change, "
             "concurrency_conflict, validation_failed, reference_violation, "
             "internal_error, already_exists, "
             "incompatible_config, force_unsupported, invalid_names, "
             "name_collision, identity_fields_immutable, immutable_property, "
             "cross_namespace_reference, invalid_state, invalid_request, "
             "registry_error, synonym_conflict, registry_entry_not_removed, "
-            "cross_namespace_relationship, archived_relationship_endpoint, "
+            "cross_namespace_relationship, "
             "ambiguous_reference (an identifier the item names is borne by "
-            "several entities; details.field, details.candidates)."
+            "several entities; details.field, details.candidates), "
+            "ambiguous_terminology (several terminologies bear the value), "
+            "dependency_unavailable (a service or store the item needed could "
+            "not answer; details.dependency), identity_hash_stale (a migrate "
+            "dry run found the stored hash is not the one the target version "
+            "computes), exists_inactive (a reconcile snapshot repeats a value "
+            "the terminology has already retired), duplicate_in_snapshot (the "
+            "same value twice in one snapshot), unknown_successor (a "
+            "successor the snapshot names does not exist)."
         ),
     )
     details: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Structured details, e.g. the compatibility diff for "
-            "on_conflict=validate or, on an error, the rule that failed "
-            "(details.rule)."
+            "Structured details: the compatibility diff for a create — "
+            "template create reports it on the 'updated' item it writes, "
+            "whatever on_conflict says (the parameter no longer selects the "
+            "behaviour), while a terminology or term re-create reports it as "
+            "an 'incompatible_config' error only under on_conflict=validate — "
+            "or, on any other error, the rule that failed (details.rule)."
         ),
     )
 
