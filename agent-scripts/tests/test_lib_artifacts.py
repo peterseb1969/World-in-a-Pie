@@ -3,7 +3,8 @@
 Every case runs against a throwaway repository with a bare "upstream", so the
 git paths the scaffold depends on (the anchor commit, the commit count, the
 dirty and unpushed checks) run for real. Building is exercised by the golden
-suite, which runs the whole scaffold.
+suite, which runs the whole scaffold; the build cache is tested here with
+stand-in builders.
 """
 
 from __future__ import annotations
@@ -286,3 +287,78 @@ def test_cli_platform(tmp_path, capsys):
 def test_the_repository_platform_components_agree():
     """The CI gate: the committed tree carries one platform version."""
     assert la.main(["platform"]) == 0
+
+
+# --- the build cache a test session may name ------------------------------------
+
+
+@pytest.fixture
+def fake_builds(monkeypatch):
+    """Stand-in builders: each call writes one artifact named by package and
+    version and is counted, so a test sees which packages were really built."""
+    calls: list[tuple[str, str]] = []
+
+    def fake(root, pkg, version, out):
+        calls.append((pkg.name, version))
+        path = Path(out) / f"{pkg.name}-{version}.artifact"
+        path.write_text(f"{pkg.name} {version} build {len(calls)}\n")
+        return path
+
+    monkeypatch.setattr(la, "build_npm", fake)
+    monkeypatch.setattr(la, "build_wheel", fake)
+    monkeypatch.setattr(la.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(la, "PACKAGES", {"wip-client": CLIENT, "wip-archive": ARCHIVE})
+    return calls
+
+
+def test_without_a_cache_every_run_builds_every_package(repo, tmp_path, fake_builds, monkeypatch):
+    monkeypatch.delenv(la.BUILD_CACHE_ENV, raising=False)
+    la.build_all(repo, tmp_path / "out1")
+    la.build_all(repo, tmp_path / "out2")
+    assert [name for name, _ in fake_builds] == ["wip-client", "wip-archive"] * 2
+
+
+def test_a_cache_builds_each_version_once_and_hands_out_the_same_file(repo, tmp_path, fake_builds, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv(la.BUILD_CACHE_ENV, str(cache))
+    first = la.build_all(repo, tmp_path / "out1")
+    second = la.build_all(repo, tmp_path / "out2")
+    assert [name for name, _ in fake_builds] == ["wip-client", "wip-archive"]
+    for name in first:
+        assert second[name].parent == tmp_path / "out2"
+        assert second[name].read_bytes() == first[name].read_bytes()
+
+
+def test_a_source_change_rebuilds_only_that_package(repo, tmp_path, fake_builds, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv(la.BUILD_CACHE_ENV, str(cache))
+    la.build_all(repo, tmp_path / "out1")
+    (repo / "libs/wip-client/src/index.ts").write_text("export const a = 2;\n")
+    rebuilt = la.build_all(repo, tmp_path / "out2")
+    assert [name for name, _ in fake_builds] == ["wip-client", "wip-archive", "wip-client"]
+    assert "+dirty." in fake_builds[-1][1]
+    assert "+dirty." in rebuilt["wip-client"].name
+
+
+def test_a_failed_build_leaves_nothing_in_the_cache(repo, tmp_path, fake_builds, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv(la.BUILD_CACHE_ENV, str(cache))
+
+    def broken(root, pkg, version, out):
+        (Path(out) / "half-written").write_text("x")
+        raise la.LibError("npm run build failed")
+
+    monkeypatch.setattr(la, "build_npm", broken)
+    with pytest.raises(la.LibError):
+        la.build_all(repo, tmp_path / "out")
+    assert list(cache.rglob("*")) == []
+
+
+def test_a_cache_that_is_not_a_directory_is_refused(repo, tmp_path, fake_builds, monkeypatch):
+    monkeypatch.setenv(la.BUILD_CACHE_ENV, str(tmp_path / "missing"))
+    with pytest.raises(la.LibError, match="not an existing directory"):
+        la.build_all(repo, tmp_path / "out")
+    assert fake_builds == []

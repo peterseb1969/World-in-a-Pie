@@ -77,6 +77,10 @@ HOST_ISOLATION_ENV = {
     "WIP_SKIP_VENV_INSTALL": "1",
 }
 
+# scripts/lib_artifacts.py reuses the libraries it built earlier in the
+# session from the directory this variable names (conftest.lib_build_cache).
+BUILD_CACHE_ENV = "WIP_LIB_BUILD_CACHE"
+
 # The modules setup-backend-agent.sh installs when missing; the real venv
 # must already have them, since a golden run installs nothing.
 VENV_MODULES = ("pytest", "ruff", "mypy", "build", "wip_mcp", "wip_toolkit", "wip_archive")

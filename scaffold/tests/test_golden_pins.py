@@ -82,3 +82,18 @@ def test_other_files_keep_their_names():
     for name in ("libs/wip-client-README.md", "src/wip-client-1.0.0.tgz", "libs/other-1.0.0.tgz"):
         assert normalize_lib_artifact(name) == name
     assert not re.search(r"\d", LIB_VERSION)
+
+
+def test_the_build_cache_variable_is_the_one_lib_artifacts_reads():
+    """The golden session hands lib_artifacts.py its build cache through an
+    environment variable; a harness that set another name would rebuild every
+    library on every run again, silently."""
+    import importlib.util
+
+    from golden_lib import BUILD_CACHE_ENV, REPO_ROOT
+
+    spec = importlib.util.spec_from_file_location("lib_artifacts", REPO_ROOT / "scripts/lib_artifacts.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["lib_artifacts"] = module
+    spec.loader.exec_module(module)
+    assert module.BUILD_CACHE_ENV == BUILD_CACHE_ENV

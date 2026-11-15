@@ -48,6 +48,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -256,16 +257,53 @@ def _build_lock(root: Path):
         yield
 
 
+# A test session that runs the scaffold many times may name a directory here
+# to build each package once and reuse it. Unset, which is every real scaffold
+# run, every package is built fresh. The cache is keyed on the computed
+# version, which moves with any change to a package's source; it does not
+# cover the toolchain (node, tsc, the wheel backend), so it is only for a
+# directory that lives as long as one test session, never a lasting one.
+BUILD_CACHE_ENV = "WIP_LIB_BUILD_CACHE"
+
+
+def _build_cache() -> Path | None:
+    value = os.environ.get(BUILD_CACHE_ENV)
+    if not value:
+        return None
+    cache = Path(value)
+    if not cache.is_dir():
+        raise LibError(f"{BUILD_CACHE_ENV}={value}: not an existing directory")
+    return cache
+
+
+def _build_or_reuse(root: Path, pkg: Package, version: str, out: Path, cache: Path | None) -> Path:
+    build = build_npm if pkg.kind == "npm" else build_wheel
+    if cache is None:
+        return build(root, pkg, version, out)
+    slot = cache / pkg.name / version
+    if not slot.is_dir():
+        # Built aside and moved in whole, so a build that fails leaves no slot.
+        staging = Path(tempfile.mkdtemp(dir=cache))
+        try:
+            build(root, pkg, version, staging)
+            slot.parent.mkdir(parents=True, exist_ok=True)
+            staging.rename(slot)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+    (artifact,) = slot.iterdir()
+    return Path(shutil.copy2(artifact, out / artifact.name))
+
+
 def build_all(root: Path, out: Path) -> dict[str, Path]:
     if not shutil.which("npm"):
         raise LibError("npm is not on PATH; it builds @wip/client, @wip/react and @wip/proxy")
     out.mkdir(parents=True, exist_ok=True)
+    cache = _build_cache()
     built: dict[str, Path] = {}
     with _build_lock(root):
         for pkg in PACKAGES.values():
-            version = compute_version(root, pkg)
-            build = build_npm if pkg.kind == "npm" else build_wheel
-            built[pkg.name] = build(root, pkg, version, out)
+            built[pkg.name] = _build_or_reuse(root, pkg, compute_version(root, pkg), out, cache)
     return built
 
 

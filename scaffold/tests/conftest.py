@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 
 import pytest
 
@@ -38,6 +39,33 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "golden" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def lib_build_cache():
+    """Build the five vendored libraries once per golden session.
+
+    Every app scaffold run builds them, and their inputs cannot change while
+    the session runs, so the scripts the golden tests run reuse one build
+    through lib_artifacts.py's cache (keyed on each package's computed
+    version). The directory lives only as long as the session: the cache
+    does not cover the toolchain, so it must never outlast one run."""
+    if os.environ.get("WIP_GOLDEN") != "1":
+        yield
+        return
+    from golden_lib import BUILD_CACHE_ENV
+
+    cache = tempfile.mkdtemp(prefix="wip-golden-libs-")
+    previous = os.environ.get(BUILD_CACHE_ENV)
+    os.environ[BUILD_CACHE_ENV] = cache
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(BUILD_CACHE_ENV, None)
+        else:
+            os.environ[BUILD_CACHE_ENV] = previous
+        shutil.rmtree(cache, ignore_errors=True)
 
 
 def _check_prereqs() -> None:
