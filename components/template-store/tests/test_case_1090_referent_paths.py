@@ -203,7 +203,7 @@ async def test_an_unpinned_nested_path_refuses_the_write_as_a_reference_violatio
     """The stamp stage refuses with ``reference_violation``, the code an
     unpinned parent already gets — not ``invalid_state``."""
     address = await _address(client, auth_headers, "ADDR_1289_C")
-    person = await _create(client, auth_headers, _person(
+    await _create(client, auth_headers, _person(
         "PERSON_1289_C", address, ["name", "address.country"],
     ))
 
