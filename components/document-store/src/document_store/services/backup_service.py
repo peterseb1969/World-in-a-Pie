@@ -978,6 +978,7 @@ def make_direct_restore_runner(
                 dry_run=opts.get("dry_run", False),
                 drop_unresolved_edges=opts.get("drop_unresolved_edges", False),
                 allow_failed_verify=opts.get("allow_failed_verify", False),
+                namespace_map=opts.get("namespace_map"),
             )
             return
         await engine.run_restore(
