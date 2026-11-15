@@ -2,10 +2,11 @@
 
 `wip-archive` checks archives without a running platform and depends on
 pydantic alone, so it cannot import `wip_auth`: that package's `__init__`
-pulls in FastAPI and httpx. The functions below, and the ``UnclassifiableIdentityPath`` exception the feed
-raises, are therefore COPIED from `wip_auth.document_identity` (the identity
-feed and value hash) and `wip_auth.composite_key` (the hash the Registry stores
-as a document's `identity_hash`), with their bodies unchanged.
+pulls in FastAPI and httpx. The functions below, and the
+``UnclassifiableIdentityPath`` exception the feed raises, are therefore COPIED
+from `wip_auth.document_identity` (the identity feed and value hash) and
+`wip_auth.composite_key` (the hash the Registry stores as a document's
+`identity_hash`), with their bodies unchanged.
 
 A copy is how this algorithm has drifted before, so the copy is guarded:
 `components/document-store/tests/test_archive_identity_parity.py` fails if
