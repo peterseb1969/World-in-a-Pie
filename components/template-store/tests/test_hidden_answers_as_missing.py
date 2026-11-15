@@ -10,6 +10,11 @@ the same request: with an app's single-namespace key, resolve_or_404's 404
 ("Could not resolve ..."), since ids resolve in that namespace; with the
 admin key and no namespace, the door's own miss, since ids pass through.
 The app key runs unpatched; the admin key has its permission patched.
+
+The same comparison runs on a third kind of id: a Registry entry whose rows are
+gone (a ghost). It resolves and has nothing behind it, so the door used to
+answer its own miss ("Template not found", an empty list, a not_found
+validation) while an id nobody ever issued answered the resolving one.
 """
 
 import contextlib
@@ -19,9 +24,12 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
+from template_store.models.template import Template
+
 API = "/api/template-store/templates"
 APP_KEY = {"X-API-Key": "test_xns_writer_key"}  # 'wip' only; 'xns-closed' is invisible
 MODES = {"app-key": ("xns-closed", False), "admin-unresolved": ("test-ns", True)}
+GHOST_NS = "wip"  # writable by APP_KEY: only the rows are missing
 
 
 async def _template(client: AsyncClient, auth_headers: dict, namespace: str) -> str:
@@ -68,8 +76,8 @@ def _fill(value, tid: str):
     return value
 
 
-async def _call(client, headers, door: str, tid: str):
-    method, path, body = DOORS[door]
+async def _call(client, headers, door: str, tid: str, doors: dict | None = None):
+    method, path, body = (doors or DOORS)[door]
     kwargs = {} if body is None else {"json": _fill(body, tid)}
     return await client.request(method, API + path.format(tid=tid), headers=headers, **kwargs)
 
@@ -106,3 +114,43 @@ async def test_a_hidden_item_does_not_abort_the_rest_of_the_batch(client: AsyncC
     hidden_row, visible_row = r.json()["results"]
     assert (hidden_row["error_code"], hidden_row["error"]) == ("not_found", "Template not found")
     assert visible_row["status"] == "updated", visible_row
+
+
+# The ghost doors name their namespace; these three need it as a query parameter.
+GHOST_DOORS = {
+    **DOORS,
+    "activate": ("POST", "/{tid}/activate?namespace=wip", None),
+    "reactivate": ("POST", "/{tid}/reactivate?namespace=wip&version=1", None),
+    "endpoints": ("POST", "/{tid}/endpoints?namespace=wip", {}),
+}
+# Doors whose id goes through resolve_or_404, so an unknown one gets the
+# resolving 404. The bulk doors report a per-item not_found and /versions
+# resolves nothing at all.
+RESOLVING_GHOST_DOORS = [d for d in GHOST_DOORS if d not in ("versions", "update", "delete")]
+
+
+async def _ghost_template(client: AsyncClient, auth_headers: dict) -> str:
+    """A template whose Registry entry outlives every row of it."""
+    template_id = await _template(client, auth_headers, GHOST_NS)
+    await Template.find({"template_id": template_id}).delete()
+    return template_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", list(MODES))
+@pytest.mark.parametrize("door", list(GHOST_DOORS))
+async def test_an_id_whose_rows_are_gone_answers_as_a_missing_one(
+    client: AsyncClient, auth_headers: dict, door: str, mode: str,
+):
+    headers = auth_headers if mode == "admin-unresolved" else APP_KEY
+    ghost_id = await _ghost_template(client, auth_headers)
+    missing_id = str(uuid.uuid4())
+
+    ghost = await _call(client, headers, door, ghost_id, GHOST_DOORS)
+    missing = await _call(client, headers, door, missing_id, GHOST_DOORS)
+
+    assert missing.status_code not in (401, 403), missing.text  # the key is in effect
+    if mode == "app-key" and door in RESOLVING_GHOST_DOORS:
+        assert "Could not resolve" in missing.text, missing.text  # the resolving path
+    assert ghost.status_code == missing.status_code, (ghost.text, missing.text)
+    assert ghost.text.replace(ghost_id, "<id>") == missing.text.replace(missing_id, "<id>")
