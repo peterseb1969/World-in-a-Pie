@@ -48,6 +48,29 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "groups": [],
     "namespaces": ["wip"],
     "grants": {"wip": "write"},
+}, {
+    # The authorization matrix's refused callers (test_case_845_authz): no
+    # grant anywhere; a reader of 'xns-closed' only, nothing on 'wip'; and
+    # an admin on 'wip' that is no privileged group.
+    "name": "test-scoped",
+    "key": "test_scoped_key",
+    "owner": "test-scoped",
+    "groups": [],
+    "namespaces": ["scoped-test-ns"],
+}, {
+    "name": "test-xns-only",
+    "key": "test_xns_only_key",
+    "owner": "test-xns-only",
+    "groups": [],
+    "namespaces": ["xns-closed"],
+    "grants": {"xns-closed": "read"},
+}, {
+    "name": "test-wip-admin",
+    "key": "test_wip_admin_key",
+    "owner": "test-wip-admin",
+    "groups": [],
+    "namespaces": ["wip"],
+    "grants": {"wip": "admin"},
 }]))
 
 # Def-store models and app (must be after env var setup)
