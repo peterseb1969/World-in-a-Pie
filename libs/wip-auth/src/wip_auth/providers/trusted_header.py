@@ -64,8 +64,9 @@ class TrustedHeaderProvider:
         service for N x ~170 ms.
 
         Raises KeysUnverifiable when the key cannot be verified now (the
-        Registry has not confirmed the runtime keys): that is an outage, not
-        a key that may not assert identities."""
+        Registry has not confirmed the runtime keys, or the checks already
+        under way fill the bounded queue): the service declined to answer, which
+        is not the same as a key that may not assert identities."""
         record = await self._key_provider.lookup_async(api_key, raise_unverifiable=True)
         if record is None or not PROXY_KEY_GROUPS.intersection(record.groups):
             return None
@@ -88,11 +89,11 @@ class TrustedHeaderProvider:
             proxy_key = await self._proxy_key(api_key) if api_key else None
         except KeysUnverifiable:
             # The API-key provider answers the request 503; this only keeps
-            # an outage from reading as an attack in the log.
+            # an outage, or a queue of key checks, from reading as an attack in
+            # the log.
             logger.warning(
                 "X-WIP-User header present, but API keys cannot be verified "
-                "right now (the Registry has not confirmed them) — ignoring "
-                "identity headers"
+                "right now — ignoring identity headers"
             )
             return None
         if proxy_key is None:

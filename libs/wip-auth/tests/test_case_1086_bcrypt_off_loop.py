@@ -4,8 +4,8 @@ A value the provider has not seen is checked with bcrypt against every
 stored key (about 170 ms each at cost 12). authenticate ran that on the event
 loop, so a client sending a fresh random X-API-Key on every request stalled
 the whole service for N x 170 ms per request. The slow path now runs in a
-worker thread, at most two threads at a time per event loop; values the
-caches already know are still answered inline.
+worker thread, at most two threads at a time per event loop with a bounded line
+behind them; values the caches already know are still answered inline.
 
 bcrypt's check is replaced by a 50 ms sleep: the cost is what matters here,
 and real hashes at cost 12 would make the test slow.
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import bcrypt
 import pytest
@@ -23,7 +24,12 @@ from starlette.requests import Request
 
 from wip_auth import APIKeyRecord
 from wip_auth.providers import api_key as api_key_module
-from wip_auth.providers.api_key import APIKeyProvider, hash_api_key
+from wip_auth.providers.api_key import (
+    _SLOW_PATH_CONCURRENCY,
+    _SLOW_PATH_WAITERS,
+    APIKeyProvider,
+    hash_api_key,
+)
 
 CHECK_SECONDS = 0.05
 
@@ -70,6 +76,26 @@ async def _max_loop_stall(stop: asyncio.Event) -> float:
         worst = max(worst, now - last - 0.005)
         last = now
     return worst
+
+
+async def _loop_ticks(stop: asyncio.Event) -> int:
+    """How many times the loop got to run until `stop`."""
+    ticks = 0
+    while not stop.is_set():
+        await asyncio.sleep(0.005)
+        ticks += 1
+    return ticks
+
+
+async def _loop_ticks_for(duration: float) -> int:
+    """How many times an idle loop runs in `duration` — what a responsive loop
+    looks like on this machine, measured while the machine is as it is."""
+    ticks = 0
+    deadline = time.monotonic() + duration
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
+        ticks += 1
+    return ticks
 
 
 async def _attempt(provider: APIKeyProvider, value: str) -> str:
@@ -205,24 +231,30 @@ async def test_identify_key_async_leaves_the_loop_responsive(slow_checks):
 async def test_real_bcrypt_leaves_the_loop(monkeypatch):
     """The tests above stand in time.sleep, which releases the GIL whatever
     happens; this one runs bcrypt's own check, which must release it too, or
-    the worker thread would hold the loop anyway."""
+    the worker thread would hold the loop anyway.
+
+    A stall is compared with the same runner, not with a fixed number of
+    milliseconds: a loaded machine stalls the loop on its own, for reasons this
+    test is not about. The control is a window of the same length with nothing
+    else running; a check that held the GIL would tick the loop about never."""
     monkeypatch.undo()  # real hashes, at a cost that takes measurable time
     original = bcrypt.gensalt
     monkeypatch.setattr(bcrypt, "gensalt", lambda rounds=11, prefix=b"2b": original(11, prefix))
     provider = APIKeyProvider([_key(f"k{i}") for i in range(2)])
 
-    started = time.monotonic()
-    assert api_key_module.verify_api_key("x", provider._keys[0].key_hash) is False
-    one_check = time.monotonic() - started
-
     stop = asyncio.Event()
-    watcher = asyncio.create_task(_max_loop_stall(stop))
+    watcher = asyncio.create_task(_loop_ticks(stop))
     await asyncio.sleep(0.02)
+    started = time.monotonic()
     assert await _attempt(provider, "random") == "401"
+    scan = time.monotonic() - started
     stop.set()
-    stall = await watcher
-    assert stall < one_check / 2, (
-        f"the loop stalled {stall * 1000:.0f} ms against a {one_check * 1000:.0f} ms check"
+    ticks = await watcher
+
+    assert scan >= 0.1, f"a cost-11 scan took only {scan * 1000:.0f} ms: nothing to measure"
+    control = await _loop_ticks_for(scan)
+    assert ticks >= control / 2, (
+        f"the loop ticked {ticks} times in a {scan * 1000:.0f} ms scan, {control} when idle"
     )
 
 
@@ -253,3 +285,80 @@ async def test_a_cancelled_check_keeps_its_permit_until_its_thread_ends(monkeypa
     # Their threads still run; two more requests must wait for the permits.
     assert await asyncio.gather(*(_attempt(provider, f"next-{i}") for i in range(2))) == ["401"] * 2
     assert peak <= 2, f"{peak} bcrypt threads ran at once"
+
+
+# --- The queue is bounded too (the review of c8990623) -------------------
+#
+# Two threads at a time bounds how many checks run, not how many requests wait
+# for one. This case's own attack — a fresh random key on every request —
+# misses the caches every time, so with an unbounded queue each of them joined
+# the line: the backlog grew for as long as arrivals beat the scan rate, and a
+# real key's first check waited behind the flood without limit. A request past
+# the bound, or waiting longer than the bound, is refused now instead.
+
+
+@pytest.mark.asyncio
+async def test_a_flood_past_the_queue_is_refused_and_costs_no_bcrypt(slow_checks):
+    provider = APIKeyProvider([_key(f"k{i}") for i in range(4)])
+    started = time.monotonic()
+    results = await asyncio.gather(*(_attempt(provider, f"random-{i}") for i in range(20)))
+    took = time.monotonic() - started
+
+    room = _SLOW_PATH_CONCURRENCY + _SLOW_PATH_WAITERS
+    assert results == ["401"] * room + ["503"] * (20 - room)
+    # The refused checks ran no bcrypt: only the ones with room scanned.
+    assert len(slow_checks) == room * 4
+    # The refused ones answered at once, not after the backlog ahead of them.
+    assert took < room * CHECK_SECONDS * 4
+
+
+@pytest.mark.asyncio
+async def test_a_queued_check_that_runs_out_of_time_is_refused(slow_checks, monkeypatch):
+    """A waiter is held for the bound and no longer, whatever the scan ahead of
+    it costs."""
+    monkeypatch.setattr(api_key_module, "_SLOW_PATH_WAIT_SECONDS", 0.05)
+    provider = APIKeyProvider([_key(f"k{i}") for i in range(4)])  # a scan is 200 ms
+    blockers = [asyncio.create_task(_attempt(provider, f"gone-{i}")) for i in range(2)]
+    await asyncio.sleep(0.01)  # both permits are taken
+
+    started = time.monotonic()
+    assert await _attempt(provider, "random-late") == "503"
+    waited = time.monotonic() - started
+    assert waited < 0.15, f"the waiter was held {waited * 1000:.0f} ms against a 50 ms bound"
+    assert await asyncio.gather(*blockers) == ["401", "401"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_check_caches_nothing(slow_checks, monkeypatch):
+    """A refused check ran no bcrypt, so it must not be recorded as a wrong
+    key: the same value still has to authenticate once there is room again."""
+    provider = APIKeyProvider([_key("a")])
+    monkeypatch.setattr(api_key_module, "_SLOW_PATH_WAITERS", 0)
+    blockers = [asyncio.create_task(_attempt(provider, f"gone-{i}")) for i in range(2)]
+    await asyncio.sleep(0.01)
+
+    assert await _attempt(provider, "secret-a") == "503"
+    assert await asyncio.gather(*blockers) == ["401", "401"]
+
+    monkeypatch.setattr(api_key_module, "_SLOW_PATH_WAITERS", 8)
+    assert await _attempt(provider, "secret-a") == "a"
+    assert "secret-a" not in provider._rejected
+
+
+# --- Its own threads (the review of c8990623) ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_slow_check_does_not_wait_behind_other_blocking_work(slow_checks):
+    """The checks get their own threads. On the loop's shared executor, bcrypt
+    waits behind unrelated blocking work while holding a place in line."""
+    hog = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hog")
+    asyncio.get_running_loop().set_default_executor(hog)
+    hog.submit(time.sleep, 0.2)  # the shared pool: one running, one queued
+    hog.submit(time.sleep, 0.2)
+
+    provider = APIKeyProvider([_key("k0")])  # one key: one 50 ms check
+    started = time.monotonic()
+    assert await _attempt(provider, "random-0") == "401"
+    took = time.monotonic() - started
+    assert took < 0.15, f"the check waited {took * 1000:.0f} ms behind the shared pool"
