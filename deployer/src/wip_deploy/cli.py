@@ -85,6 +85,7 @@ from wip_deploy.spec.deployment import (
     AddedNamespace,
     AppRef,
     AuthSpec,
+    DevPlatform,
     DexConnector,
     DexUser,
     GroupMapping,
@@ -1341,8 +1342,10 @@ def install(
 
     _record_cluster_for_install(deployment, previous)
     _select_cluster_or_exit(deployment, mutating=True)
+    # Resolved in memory; written once the render below has succeeded, so an
+    # install that was refused never extends the secret store.
     secrets = _ensure_secrets_via_spec(
-        deployment, components, apps_list, install_dir=target_dir,
+        deployment, components, apps_list, install_dir=target_dir, persist=False,
     )
     _refuse_runtime_reservation_collisions(deployment, apps_list, secrets)
     _refuse_attachment_collisions(deployment, apps_list, secrets)
@@ -1375,6 +1378,7 @@ def install(
             err=True,
         )
         raise typer.Exit(2) from e
+    _persist_generated_secrets(deployment, secrets)
 
     typer.echo(f"Install dir: {target_dir}")
     typer.echo(
@@ -2638,7 +2642,9 @@ def _apply_and_persist_mutation(
 
     `regenerate` names secrets the verb deliberately replaces (rotate-key);
     every other secret must match what the install runs (see
-    `_ensure_secrets_via_spec`).
+    `_ensure_secrets_via_spec`). Values generated on this run are written once
+    the render has succeeded: a render refusal leaves no secrets behind that no
+    install runs.
 
     `after_persist` runs whenever the mutated spec is saved: after a
     successful apply, and also when the apply failed after it had already
@@ -2652,15 +2658,18 @@ def _apply_and_persist_mutation(
     _validate_or_exit(deployment, components, apps_list)
 
     _select_cluster_or_exit(deployment, mutating=True)
+    # Values are resolved in memory here and written only once the render below
+    # has succeeded: a refusal must not leave the store holding secrets no
+    # install runs.
     secrets = _ensure_secrets_via_spec(
         deployment, components, apps_list,
-        install_dir=target_dir, regenerate=regenerate,
+        install_dir=target_dir, regenerate=regenerate, persist=False,
     )
     _refuse_runtime_reservation_collisions(deployment, apps_list, secrets)
     _refuse_attachment_collisions(deployment, apps_list, secrets)
     # CASE-355: surface render-time errors cleanly through the additive
-    # verbs too — `add-app NAME` without --app-source on a dev install
-    # hits the same gate.
+    # verbs too — an app whose image the target cannot produce still fails
+    # the render of `add-module`, `redeploy` and friends.
     try:
         tree = _render_tree(
             deployment, components, apps_list, secrets, repo_root=repo_root,
@@ -2672,6 +2681,7 @@ def _apply_and_persist_mutation(
             err=True,
         )
         raise typer.Exit(2) from e
+    _persist_generated_secrets(deployment, secrets)
 
     whole_tree_announced = False
     if services_scope is not None and _k8s_render_predates_front_door(
@@ -2793,6 +2803,94 @@ def _echo_apply_outcome(result: ApplyResult, done: str, what: str) -> None:
         )
 
 
+def _refuse_unworkable_dev_app(
+    app_name: str,
+    install_name: str,
+    *,
+    source: Path | None,
+    from_registry: bool,
+    tag: str | None,
+    dev_plat: DevPlatform | None,
+) -> None:
+    """Stop an `add-app` whose result the dev renderer cannot honour.
+
+    A dev app is built from its `app_sources` checkout, or pulls its registry
+    image only when named in `apps_from_registry`; with neither the render
+    refuses the install. (`build_context` is no third path for apps:
+    `_resolve_build_context` returns None for them.) A `--tag` reaches a
+    container only through the registry image — a locally built app renders as
+    `<image>:dev-<install>` — so recording one against a source-bound app
+    persists an intent that never takes effect and reports it as done.
+
+    Named in `add-app` syntax: what the renderer advises (`--app-source
+    NAME=PATH`, `--app-from-registry NAME`) is `install`'s, and this verb takes
+    neither a name nor that form. Runs before any mutation, so a refusal leaves
+    the spec describing what the install still runs.
+    """
+    checkout = dev_plat.app_sources.get(app_name) if dev_plat is not None else None
+    if source is not None:
+        checkout = source
+    opted_in = from_registry or bool(
+        dev_plat and app_name in dev_plat.apps_from_registry
+    )
+
+    if from_registry and checkout is not None:
+        typer.echo(
+            f"error: --app-from-registry cannot take effect for {app_name!r}: "
+            + (
+                f"--app-source points it at {checkout}, and dev builds the app "
+                "from the checkout."
+                if source is not None
+                else f"this install builds it from {checkout}."
+            ),
+            err=True,
+        )
+        typer.echo(
+            "  Pass one or the other."
+            if source is not None
+            else (
+                f"  To follow published images instead: `wip-deploy remove-app "
+                f"{app_name} --name {install_name}`, then `wip-deploy add-app "
+                f"{app_name} --app-from-registry --name {install_name}`."
+            ),
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if checkout is None and not opted_in:
+        typer.echo(
+            f"error: app {app_name!r} is enabled but has no source for "
+            f"--target dev. Either: (a) pass --app-source <path-to-checkout> to "
+            f"bind-mount the app's source, (b) pass --app-from-registry to "
+            f"explicitly opt into the registry image, or (c) take the app out "
+            f"of the install with `wip-deploy remove-app {app_name} --name "
+            f"{install_name}`.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if tag is not None and checkout is not None:
+        # An app both opted into the registry and pointed at a checkout is
+        # built from the checkout: the renderer tests source first.
+        typer.echo(
+            f"error: app {app_name!r} is built from source in this dev install "
+            f"(--app-source points it at {checkout}) — --target dev renders its "
+            f"image as <image>:dev-{install_name}, so --tag {tag!r} would be "
+            "remembered and reported without ever reaching a container.",
+            err=True,
+        )
+        typer.echo(
+            f"  To have this install follow published images for {app_name}, "
+            f"drop the source and re-add it with the opt-in: `wip-deploy "
+            f"remove-app {app_name} --name {install_name}` then `wip-deploy "
+            f"add-app {app_name} --app-from-registry --tag {tag} --name "
+            f"{install_name}`. Tag rolls are for compose and k8s installs, "
+            "where the image comes from the registry.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+
 @app.command("add-app")
 def add_app(
     app_name: Annotated[
@@ -2814,6 +2912,21 @@ def add_app(
             ),
         ),
     ] = None,
+    from_registry: Annotated[
+        bool,
+        typer.Option(
+            "--app-from-registry",
+            help=(
+                "Run the app from its registry image instead of building it "
+                "locally (dev target only). Dev refuses an app that has "
+                "neither a local source nor this opt-in, so it is how a "
+                "stable app you are not iterating on joins a dev install. "
+                "On/off: the app is the command's argument, so no name "
+                "follows it (install takes `--app-from-registry NAME`). "
+                "Mutually exclusive with `--app-source`."
+            ),
+        ),
+    ] = False,
     tag: Annotated[
         str | None,
         typer.Option(
@@ -2825,7 +2938,10 @@ def add_app(
                 "enables it. Name it when the app's image is not published "
                 "at the install's base tag — without it the app renders at "
                 "`spec.images.tag`, and a missing image rides the whole "
-                "health wait in ImagePullBackOff."
+                "health wait in ImagePullBackOff. Needs "
+                "`--app-from-registry` on a dev target: an app built from "
+                "source renders as `<image>:dev-<install>`, so a tag would "
+                "reach no container."
             ),
         ),
     ] = None,
@@ -2864,10 +2980,16 @@ def add_app(
     An app the install does not already run gets a new key of its own
     (`app-<name>`), never the one an earlier enablement had.
 
+    On a dev target the app must have a source: a local checkout
+    (`--app-source`) or, deliberately, its published registry image
+    (`--app-from-registry`). An app with neither is refused before anything
+    is written, because the dev renderer refuses it too.
+
     Examples:
 
       wip-deploy add-app react-console --name wip-dev-local
       wip-deploy add-app wip-kb --app-source /Users/peter/Development/WIP-KB
+      wip-deploy add-app wip-kb --app-from-registry --tag 20261113d --name tc01
       wip-deploy add-app wip-aa --tag 20261018a --name prod-test
     """
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
@@ -2909,18 +3031,39 @@ def add_app(
     if source is not None and not source.is_dir():
         typer.echo(f"error: --app-source path is not a directory: {source}", err=True)
         raise typer.Exit(2)
+    # The registry opt-in is the dev target's escape hatch: compose and k8s
+    # take the registry image anyway, so there it would name nothing.
+    if from_registry and deployment.spec.target != "dev":
+        typer.echo(
+            f"error: --app-from-registry is only valid for target=dev "
+            f"(this install's target is {deployment.spec.target!r})",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     # Already-enabled is a friendly no-op; flipping disabled → enabled
-    # is a real mutation — and so is a --tag or --app-source on an app
-    # that is already enabled (the tag path then behaves like app-deploy).
+    # is a real mutation — and so is a --tag, --app-source or
+    # --app-from-registry on an app that is already enabled (the tag path
+    # then behaves like app-deploy).
     existing = next((a for a in deployment.spec.apps if a.name == app_name), None)
     grants = privileged and not (existing is not None and existing.privileged)
     if (existing is not None and existing.enabled and source is None and tag is None
-            and not grants):
+            and not from_registry and not grants):
         typer.echo(
             f"⊙ app {app_name!r} is already enabled in this install — no change."
         )
         return
+
+    if deployment.spec.target == "dev":
+        _refuse_unworkable_dev_app(
+            app_name,
+            resolved_name,
+            source=source,
+            from_registry=from_registry,
+            tag=tag,
+            dev_plat=deployment.spec.platform.dev,
+        )
+
     # An app the install does not run yet gets a key of its own made for it
     # now, never one an earlier enablement left in the store.
     fresh_key = (
@@ -2946,6 +3089,17 @@ def add_app(
             )
             raise typer.Exit(2)
         deployment.spec.platform.dev.app_sources[app_name] = source
+
+    if from_registry:
+        if deployment.spec.platform.dev is None:
+            typer.echo(
+                "error: install has no dev platform block; cannot set "
+                "--app-from-registry",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if app_name not in deployment.spec.platform.dev.apps_from_registry:
+            deployment.spec.platform.dev.apps_from_registry.append(app_name)
 
     if fresh_key is not None:
         # Safe before the apply: the saved spec does not enable the app, so
@@ -2988,8 +3142,8 @@ def remove_app(
     """Remove an app from an existing install without dropping the rest.
 
     Mutation is the inverse of `add-app`: drops the AppRef from
-    `spec.apps`, drops any `app_sources` entry on the dev platform and
-    any `images.tag_overrides` entry for the app, re-renders,
+    `spec.apps`, drops any `app_sources` and `apps_from_registry` entry for the
+    app on the dev platform and any `images.tag_overrides` entry, re-renders,
     re-applies, persists. On compose and dev the removed app's container
     is force-removed (`podman rm -f <install>_wip-<name>`) once the spec
     that drops it is saved, so it doesn't linger as an orphan after the
@@ -3034,8 +3188,16 @@ def remove_app(
             )
         return
 
-    if deployment.spec.platform.dev is not None:
-        deployment.spec.platform.dev.app_sources.pop(app_name, None)
+    dev_plat = deployment.spec.platform.dev
+    if dev_plat is not None:
+        dev_plat.app_sources.pop(app_name, None)
+        # The registry opt-in goes with it: it is this install's permission for
+        # this app to run from the registry, and a removed app keeping it is
+        # dead state that would silently decide where the app's image comes
+        # from the next time it is added.
+        dev_plat.apps_from_registry = [
+            n for n in dev_plat.apps_from_registry if n != app_name
+        ]
 
     # Drop the app's image-tag override with it — a removed app's
     # override is dead state that warns on every later render and, if
@@ -7918,6 +8080,37 @@ def _refuse_attachment_collisions(
         raise typer.Exit(2)
 
 
+def _persist_generated_secrets(
+    deployment: Deployment, secrets: ResolvedSecrets
+) -> None:
+    """Write this run's new secret values to the store `spec.secrets` names.
+
+    A resolution made with `persist=False` holds what it generated in memory
+    only. The apply paths resolve that way and call this once their render has
+    succeeded, so a refused run leaves the store as the install found it:
+    values minted by an attempt that applied nothing are not the install's, and
+    a store quietly extended by one looks like a store that is. Staging the
+    resolved values, instead of generating again, is what makes the bytes on
+    disk the ones the render put into the configuration being applied.
+    """
+    generated = tuple(secrets.generated)
+    if not generated:
+        return
+    spec = deployment.spec.secrets
+    if spec.backend != "file" or spec.location is None:
+        return
+    backend = FileSecretBackend(Path(spec.location))
+    for secret_name in generated:
+        # Clear first, so a value that appeared while the render ran cannot win
+        # over the one that was just rendered into the configuration.
+        backend.remove(secret_name)
+        backend.get_or_generate(
+            secret_name, functools.partial(str, secrets.values[secret_name])
+        )
+    backend.persist()
+    typer.echo("Generated new secrets: " + ", ".join(generated))
+
+
 def _ensure_secrets_via_spec(
     deployment: Deployment,
     components: list[Component],
@@ -7929,6 +8122,9 @@ def _ensure_secrets_via_spec(
 ) -> ResolvedSecrets:
     """Construct the secret backend from `spec.secrets` and run
     `ensure_secrets` (`persist=False`: read-only, for dry runs).
+
+    The apply paths pass `persist=False` and write afterwards, once their
+    render has succeeded — see `_persist_generated_secrets`.
 
     With `install_dir` (every apply), the store is first checked against
     what the install is known to run — see `_known_secret_digests` — so a
@@ -8031,9 +8227,7 @@ def _ensure_secrets_via_spec(
         )
         raise typer.Exit(2)
     if persist:
-        backend.persist()
-        if secrets.generated:
-            typer.echo("Generated new secrets: " + ", ".join(secrets.generated))
+        _persist_generated_secrets(deployment, secrets)
     # An operator-supplied secret the store lacks leaves its vars unset; say
     # so, or a misplaced or misnamed file looks like "no key configured".
     readers = operator_secret_readers(deployment, components, apps_list)

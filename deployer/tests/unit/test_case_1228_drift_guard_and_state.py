@@ -53,6 +53,7 @@ from wip_deploy.cli import (
 )
 from wip_deploy.config_gen.env import InactiveComponentRef
 from wip_deploy.renderers.upstreams import UpstreamNotRendered
+from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec.deployment import (
     ApplySpec,
     AppRef,
@@ -959,7 +960,11 @@ class TestRemoveAppContainerFollowsTheSavedSpec:
             "_refuse_attachment_collisions",
         ):
             monkeypatch.setattr(cli, fn, lambda *a, **k: None)
-        monkeypatch.setattr(cli, "_ensure_secrets_via_spec", lambda *a, **k: object())
+        monkeypatch.setattr(
+            cli,
+            "_ensure_secrets_via_spec",
+            lambda *a, **k: ResolvedSecrets(values={}, generated=()),
+        )
         monkeypatch.setattr(cli, "_render_tree", lambda *a, **k: cli.FileTree())
         monkeypatch.setattr(cli, "changed_outside_scope", lambda *a, **k: [])
         monkeypatch.setattr(
