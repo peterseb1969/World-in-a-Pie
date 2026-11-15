@@ -3184,9 +3184,8 @@ A key value a service has not seen is checked with bcrypt against every key
 it holds (about 170 ms each, and every service holds every runtime key).
 That ran on the event loop, so one request with a random `X-API-Key` stalled
 the whole service for N × 170 ms, and a stream of them stalled it outright.
-The check now runs in a worker thread, at most two such threads at a time
-per service (a check whose request was cancelled keeps its place until its
-thread ends, since bcrypt cannot be stopped midway); values the caches already know (verified before, or recently rejected) are
+The check now runs in a worker thread, at most two at a time per service;
+values the caches already know (verified before, or recently rejected) are
 answered inline as before. A flood of unknown keys now only delays other
 first-time key checks. The same holds for a request that also carries
 `X-WIP-User` (checked first on the Registry, which trusts identity headers

@@ -11,11 +11,11 @@ accepting it would let its holder claim any group, wip-admins included.
 
 import logging
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from ..groups import PRIVILEGED_GROUPS
 from ..models import APIKeyRecord, UserIdentity
-from .api_key import APIKeyProvider, KeysUnverifiable
+from .api_key import APIKeyProvider, KeyCheckOverloaded, KeysUnverifiable
 
 logger = logging.getLogger("wip_auth.trusted_header")
 
@@ -43,6 +43,12 @@ class TrustedHeaderProvider:
     its caches, and its bounded off-loop bcrypt. There is no second key list
     here: one would be frozen at construction, miss every runtime key and
     every key sync, and check bcrypt with neither caches nor a cap.
+
+    A key the bounded checks had no room for is refused with 503 rather than
+    passed on: the next provider holds the same key, and where it can answer it
+    the request is served as the key with the asserted identity dropped. A key
+    that answers and is merely not privileged does fall through, and
+    authenticates as itself.
     """
 
     def __init__(
@@ -64,18 +70,35 @@ class TrustedHeaderProvider:
         service for N x ~170 ms.
 
         Raises KeysUnverifiable when the key cannot be verified now (the
-        Registry has not confirmed the runtime keys): that is an outage, not
-        a key that may not assert identities."""
+        Registry has not confirmed the runtime keys, or the checks already
+        under way fill the bounded queue): the service declined to answer, which
+        is not the same as a key that may not assert identities."""
         record = await self._key_provider.lookup_async(api_key, raise_unverifiable=True)
         if record is None or not PROXY_KEY_GROUPS.intersection(record.groups):
             return None
         return record
 
+    def _identity_from_headers(self, user: str, groups_header: str) -> UserIdentity:
+        """The asserted identity: the user, and the groups the request claims for
+        them — this provider's defaults when the header names none."""
+        groups = [g.strip() for g in groups_header.split(",") if g.strip()]
+        return UserIdentity(
+            user_id=user,
+            username=user.split("@")[0] if "@" in user else user,
+            email=user if "@" in user else None,
+            groups=groups or self.default_groups,
+            auth_method="gateway_oidc",
+            provider="trusted_header",
+        )
+
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate via trusted proxy headers + API key.
 
         Returns UserIdentity if X-WIP-User and valid X-API-Key are both present.
-        Returns None otherwise (falls through to next provider).
+        Returns None otherwise (falls through to next provider), except when the
+        key checks are saturated: that request is refused with 503, because the
+        next provider holds the same key and, where it can answer it, the request
+        would go forward as the key with the asserted identity dropped.
         """
         user = request.headers.get("x-wip-user")
         if not user:
@@ -86,13 +109,25 @@ class TrustedHeaderProvider:
         api_key = request.headers.get(self.header_name.lower())
         try:
             proxy_key = await self._proxy_key(api_key) if api_key else None
+        except KeyCheckOverloaded as exc:
+            # Refuse here; do not fall through. The next provider holds the same
+            # X-API-Key and judges the queue on its own call, so a value declined
+            # a moment ago can verify there — serving the request as the privileged
+            # key itself, with the asserted identity silently dropped. Being full
+            # is no verdict on the key, so this is the retryable 503 for it.
+            logger.warning(
+                "X-WIP-User header present, but the key checks are saturated — "
+                "refusing the request rather than answering it as the key"
+            )
+            raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "1"}) from exc
         except KeysUnverifiable:
-            # The API-key provider answers the request 503; this only keeps
-            # an outage from reading as an attack in the log.
+            # The runtime keys are unconfirmed for every key at once, so the
+            # API-key provider refuses this request too, and nothing here can
+            # vouch for or against the asserted identity. Outages of that kind
+            # are not an attack, and are not logged as one.
             logger.warning(
                 "X-WIP-User header present, but API keys cannot be verified "
-                "right now (the Registry has not confirmed them) — ignoring "
-                "identity headers"
+                "right now — ignoring identity headers"
             )
             return None
         if proxy_key is None:
@@ -102,18 +137,7 @@ class TrustedHeaderProvider:
             )
             return None
 
-        # Parse groups
-        groups_header = request.headers.get("x-wip-groups", "")
-        groups = [g.strip() for g in groups_header.split(",") if g.strip()]
-
-        identity = UserIdentity(
-            user_id=user,
-            username=user.split("@")[0] if "@" in user else user,
-            email=user if "@" in user else None,
-            groups=groups or self.default_groups,
-            auth_method="gateway_oidc",
-            provider="trusted_header",
-        )
+        identity = self._identity_from_headers(user, request.headers.get("x-wip-groups", ""))
 
         logger.info(
             "Trusted header auth: user=%s groups=%s",

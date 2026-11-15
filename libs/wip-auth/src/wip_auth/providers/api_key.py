@@ -4,6 +4,9 @@ Uses bcrypt for key hashing (GPU-resistant). Verification is deliberately
 slow — about 170 ms per check at bcrypt's default cost (12), measured on a dev
 machine — so a key is matched against the stored hashes once and the result is
 cached, and recently rejected keys are cached too.
+What no cache answers is checked off the event loop, a few checks at a time on
+their own threads with a bounded line behind them (_SlowPath); a value that
+finds no room there is refused with 503 rather than held.
 Legacy SHA-256 hashes are still verified; each key carrying one is logged
 with a deprecation warning once, when the provider first holds it (at
 construction, a key-file reload, a key sync or an added key).
@@ -19,13 +22,17 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 
 import bcrypt
 from fastapi import HTTPException, Request
 
 from ..models import APIKeyRecord, UserIdentity
+
+T = TypeVar("T")
 
 logger = logging.getLogger("wip_auth.api_key")
 
@@ -36,10 +43,21 @@ logger = logging.getLogger("wip_auth.api_key")
 _REJECTED_MAX = 1024
 _REJECTED_TTL_SECONDS = 60.0
 # Slow-path checks (bcrypt against every stored key) running at once, per
-# event loop. Each holds a worker thread for N x ~170 ms; two keep a first-time
-# key's check moving without letting a flood of unknown values take every
-# thread the loop's executor has.
+# event loop. Each costs N x ~170 ms, so they run on their own threads, two at
+# a time: enough that a first-time key's check keeps moving, few enough that a
+# flood of unknown values costs the service two threads and no more.
 _SLOW_PATH_CONCURRENCY = 2
+# How many more requests may wait behind those two, and for how long. Without
+# a bound, a client sending a fresh random key on every request puts every
+# request in the line: the backlog grows for as long as arrivals beat the scan
+# rate, and a real key's first check waits behind it without limit. Past either
+# bound a request is refused at once, and runs no bcrypt — which also keeps
+# the refusal from becoming the thing that grows.
+_SLOW_PATH_WAITERS = 8
+# A scan costs N x ~170 ms (a Registry holds every runtime key, so N is in the
+# dozens), so this is about one scan: a caller either gets a thread soon or is
+# told to come back.
+_SLOW_PATH_WAIT_SECONDS = 5.0
 
 
 def _release_after(semaphore: asyncio.Semaphore, done: "asyncio.Future[Any]") -> None:
@@ -57,9 +75,27 @@ def _monotonic() -> float:
 
 
 class KeysUnverifiable(Exception):
-    """The presented key can only be a runtime key, and the runtime keys are
-    past their deadline: the Registry has not confirmed them recently enough
-    to answer for them. Authentication reports it as 503, not 401."""
+    """The service cannot say whether the presented key is valid right now, so
+    authentication answers 503, not 401: telling a caller with a good key that
+    its key is wrong would be the wrong answer, and the caller may well succeed
+    on a retry.
+
+    The two ways that happens are the runtime keys being past their deadline
+    (this class) and the slow-path checks being saturated
+    (`KeyCheckOverloaded`)."""
+
+
+class KeyCheckOverloaded(KeysUnverifiable):
+    """Too many key checks are already running or queued to answer this one
+    within the bound. No bcrypt ran and nothing was cached, so a retry is
+    judged from scratch."""
+
+
+def _overloaded() -> KeyCheckOverloaded:
+    return KeyCheckOverloaded(
+        "API keys cannot be verified: too many key checks are already under way "
+        "to answer this one; try again shortly"
+    )
 
 
 def _is_bcrypt_hash(h: str) -> bool:
@@ -137,6 +173,57 @@ def verify_api_key(key: str, key_hash: str, salt: str = "wip_auth_salt") -> bool
     return prehash_matches(api_key_prehash(key, salt), key_hash)
 
 
+class _SlowPath:
+    """One event loop's share of the bcrypt slow path.
+
+    At most ``_SLOW_PATH_CONCURRENCY`` checks run, at most
+    ``_SLOW_PATH_WAITERS`` wait for a place, and a waiter held longer than
+    ``_SLOW_PATH_WAIT_SECONDS`` is refused; see the constants.
+
+    It brings its own threads: on the loop's shared default executor a check
+    would wait behind unrelated blocking work while holding its place in line.
+    This pool has exactly as many workers as there are permits, so a check that
+    gets one starts at once.
+
+    A permit belongs to the thread, not to the caller that asked for it: a
+    cancelled request's bcrypt cannot be stopped, so its permit stays taken
+    until that thread ends."""
+
+    def __init__(self) -> None:
+        self._semaphore = asyncio.Semaphore(_SLOW_PATH_CONCURRENCY)
+        self._waiting = 0
+        self.executor = ThreadPoolExecutor(
+            max_workers=_SLOW_PATH_CONCURRENCY, thread_name_prefix="wip-keycheck"
+        )
+
+    async def run(self, check: Callable[[], T]) -> T:
+        """Run ``check`` on one of these threads, or refuse it at once."""
+        if self._semaphore.locked():
+            if self._waiting >= _SLOW_PATH_WAITERS:
+                raise _overloaded()
+            self._waiting += 1
+            try:
+                await asyncio.wait_for(self._semaphore.acquire(), _SLOW_PATH_WAIT_SECONDS)
+            except TimeoutError:
+                raise _overloaded() from None
+            finally:
+                self._waiting -= 1
+        else:
+            await self._semaphore.acquire()
+
+        loop = asyncio.get_running_loop()
+        try:
+            work = loop.run_in_executor(
+                self.executor, functools.partial(contextvars.copy_context().run, check)
+            )
+        except BaseException:
+            self._semaphore.release()
+            raise
+        work.add_done_callback(lambda done: _release_after(self._semaphore, done))
+        # A cancelled caller stops waiting; the thread, and its permit, run on.
+        return await asyncio.shield(work)
+
+
 class APIKeyProvider:
     """Authentication provider for API key authentication.
 
@@ -190,16 +277,13 @@ class APIKeyProvider:
         self._verified_cache: dict[str, APIKeyRecord] = {}
         # SHA-256(plaintext_key) → monotonic expiry, for keys matching nothing.
         self._rejected: OrderedDict[str, float] = OrderedDict()
-        # The slow path (bcrypt against every stored key) runs in a worker
-        # thread, at most _SLOW_PATH_CONCURRENCY threads at a time per event
-        # loop, so a flood of unknown values never blocks the loop. A permit
-        # is held until its thread finishes, not until its caller stops
-        # waiting: a cancelled request's bcrypt cannot be stopped, so it
-        # keeps its permit. One semaphore per loop: an asyncio.Semaphore
-        # binds to the loop it first waits on.
-        self._slow_path: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = (
-            weakref.WeakKeyDictionary()
-        )
+        # The slow path (bcrypt against every stored key) runs on its own
+        # worker threads, bounded per event loop: two checks at a time, a
+        # bounded line behind them and a limit on how long a waiter is held, so
+        # a flood of unknown values neither blocks the loop nor builds a backlog
+        # that never clears. See _SlowPath. One gate per loop: an
+        # asyncio.Semaphore binds to the loop it first waits on.
+        self._slow_path: weakref.WeakKeyDictionary[Any, _SlowPath] = weakref.WeakKeyDictionary()
 
         # Runtime keys are the Registry's keys, copied here by key sync; the
         # copy is a cache and answers only until this monotonic deadline.
@@ -499,33 +583,33 @@ class APIKeyProvider:
         with self._lock:
             return fingerprint in self._verified_cache or self._recently_rejected(fingerprint)
 
+    def _slow_path_gate(self, loop: asyncio.AbstractEventLoop) -> _SlowPath:
+        """This loop's slow-path gate, made on first use. Its threads go with
+        the loop, so a process that runs several loops in its lifetime does not
+        collect an idle pool per loop."""
+        gate = self._slow_path.get(loop)
+        if gate is None:
+            gate = self._slow_path[loop] = _SlowPath()
+            weakref.finalize(loop, gate.executor.shutdown, False)
+        return gate
+
     async def _validate_key_async(
         self, api_key: str
     ) -> tuple[APIKeyRecord | None, str | None]:
         """_validate_key without blocking the event loop: a value the caches
-        know is answered inline; any other runs bcrypt in a worker thread,
-        behind the per-loop semaphore.
+        know is answered inline; any other runs bcrypt on one of the slow
+        path's threads, or is refused at once when the checks already under way
+        fill them and their bounded line (KeyCheckOverloaded). A refusal runs no
+        bcrypt and caches nothing, so the same value is judged from scratch on a
+        retry.
 
         The cache check and the inline answer take the lock separately: a key
         sync clearing the caches between them makes that one answer a full
         scan on the loop. It is bounded by syncs, not by callers."""
         if self._known_to_caches(api_key):
             return self._validate_key(api_key)
-        loop = asyncio.get_running_loop()
-        semaphore = self._slow_path.get(loop)
-        if semaphore is None:
-            semaphore = self._slow_path[loop] = asyncio.Semaphore(_SLOW_PATH_CONCURRENCY)
-        await semaphore.acquire()
-        try:
-            work = loop.run_in_executor(
-                None, functools.partial(contextvars.copy_context().run, self._validate_key, api_key),
-            )
-        except BaseException:
-            semaphore.release()
-            raise
-        work.add_done_callback(lambda done: _release_after(semaphore, done))
-        # A cancelled caller stops waiting; the thread, and its permit, run on.
-        return await asyncio.shield(work)
+        gate = self._slow_path_gate(asyncio.get_running_loop())
+        return await gate.run(functools.partial(self._validate_key, api_key))
 
     def lookup(
         self, api_key: str, *, raise_unverifiable: bool = False
@@ -551,8 +635,11 @@ class APIKeyProvider:
         self, api_key: str, *, raise_unverifiable: bool = False
     ) -> APIKeyRecord | None:
         """lookup for a caller on the event loop: an unknown value's bcrypt
-        checks run in a worker thread, behind the same per-loop semaphore as
-        authentication, instead of holding the loop for N x ~170 ms."""
+        checks run on the same bounded threads as authentication, instead of
+        holding the loop for N x ~170 ms. A value the threads had no room for
+        reads as no key here, as any unverifiable one does; with
+        raise_unverifiable=True it is KeyCheckOverloaded, and retrying it can
+        succeed."""
         try:
             record, error = await self._validate_key_async(api_key)
         except KeysUnverifiable:
@@ -566,8 +653,9 @@ class APIKeyProvider:
 
         Returns UserIdentity if authenticated, None if no API key header.
         Raises HTTPException if API key is present but invalid (401), or
-        cannot be verified because the runtime keys are past their deadline
-        (503 — the Registry is unreachable, not the key wrong).
+        cannot be verified because the runtime keys are past their deadline or
+        because the slow-path checks are saturated (503 — the key was not
+        refused, the service declined to answer it now).
         """
         api_key = self._get_key_from_header(request)
 
@@ -576,6 +664,14 @@ class APIKeyProvider:
 
         try:
             key_record, error = await self._validate_key_async(api_key)
+        except KeyCheckOverloaded as exc:
+            # The refusal is about the queue, so name a window to retry in: a
+            # client that backs off stops feeding the queue it was refused for.
+            # Where the per-address rate limit is active it reports its own,
+            # longer window in this header instead.
+            raise HTTPException(
+                status_code=503, detail=str(exc), headers={"Retry-After": "1"}
+            ) from exc
         except KeysUnverifiable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

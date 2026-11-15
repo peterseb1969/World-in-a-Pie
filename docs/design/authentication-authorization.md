@@ -91,21 +91,37 @@ The proxy never copies `X-WIP-User` / `X-WIP-Groups` from the incoming request t
 class TrustedHeaderProvider:
     """Accept user identity from trusted gateway/proxy headers.
 
-    Requires BOTH X-WIP-User AND a valid X-API-Key.
-    The API key proves the request came through a trusted proxy.
+    Requires BOTH X-WIP-User AND a privileged X-API-Key. The key proves the
+    request came through a trusted proxy, and only a key in a privileged group
+    may assert an identity: the groups it asserts are taken as given.
     """
+
+    def __init__(self, key_provider: APIKeyProvider, header_name: str = "X-API-Key",
+                 default_groups: list[str] | None = None):
+        # Keys are matched through the service's own API-key provider — its
+        # config and synced runtime keys, each under its own salt, its caches,
+        # and its bounded off-loop bcrypt. There is no second key list here.
+        ...
+
+    async def _proxy_key(self, api_key: str) -> APIKeyRecord | None:
+        """The matching, unexpired key, when it may assert identities."""
+        record = await self._key_provider.lookup_async(api_key, raise_unverifiable=True)
+        if record is None or not PROXY_KEY_GROUPS.intersection(record.groups):
+            return None
+        return record
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         user = request.headers.get("x-wip-user")
         if not user:
             return None  # Fall through to next provider
 
-        # Validate API key — prevents header spoofing
+        # Validate the API key — prevents header spoofing
         api_key = request.headers.get(self.header_name.lower())
-        if not api_key or not self._validate_api_key(api_key):
-            return None  # X-WIP-User without valid API key = untrusted
+        proxy_key = await self._proxy_key(api_key) if api_key else None
+        if proxy_key is None:
+            return None  # X-WIP-User without a privileged API key = untrusted
 
-        groups = parse_groups(request.headers.get("x-wip-groups", ""))
+        groups = [g.strip() for g in request.headers.get("x-wip-groups", "").split(",") if g.strip()]
 
         return UserIdentity(
             user_id=user,
@@ -148,6 +164,10 @@ The trusted header provider requires **both** `X-WIP-User` and a valid **privile
 | Normal app request (no OIDC) | absent | Valid | Falls through to `APIKeyProvider` |
 | Spoofing attempt | `admin@wip.local` | absent | `None` (ignored, warning logged) |
 | Spoofing attempt | `admin@wip.local` | invalid | `None` (ignored, warning logged) |
+| Key checks saturated | `admin@wip.local` | Valid, privileged, but the bounded bcrypt checks had no room | `503` + `Retry-After: 1` — refused here, never passed on |
+| Runtime keys unconfirmed | `admin@wip.local` | Any | `None` (identity ignored, warning logged); `APIKeyProvider` answers the same outage with `503` |
+
+The last two rows differ because one is transient per call and the other is a state covering every key. The bound on the bcrypt checks is judged on each call, so a value declined a moment ago can verify on the next: passing such a request to `APIKeyProvider` would answer it as the privileged key, with the asserted identity dropped. Unconfirmed runtime keys cover every key at once, so that provider refuses the request anyway and there is nothing to vouch for the assertion either way.
 
 `@wip/proxy` no longer forwards these headers (see component 2), so none of these rows is reached through it. The provider still serves callers that hold a privileged key themselves.
 
@@ -155,7 +175,7 @@ The trusted header provider requires **both** `X-WIP-User` and a valid **privile
 
 On K8s, the same app-side pattern works unchanged. The front door is the same too: one catch-all Ingress hands every request to wip-caddy, the Caddy that compose runs, with the same Caddyfile. Its `forward_auth` to the auth gateway sets the same headers on every target. The ingress controller (ingress-nginx or Traefik) only terminates TLS for the hostname, and carries no auth annotations.
 
-`TrustedHeaderProvider` doesn't care who set the headers, only that a valid API key accompanies them.
+`TrustedHeaderProvider` doesn't care who set the headers, only that a valid API key in a privileged group accompanies them.
 
 ### What This Gives Us
 
