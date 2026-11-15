@@ -1903,7 +1903,7 @@ that keeps its tree but lost one entity file is not caught here.
 ### `WIP_RATE_LIMIT` is enforced, per client, on requests through the proxy
 
 `WIP_RATE_LIMIT` (default `40000/minute`) was read by registry, def-store, template-store, document-store and reporting-sync, but none of them installed the middleware that applies it, so no request was ever rate-limited. Now every HTTP service applies it — those five, ingest-gateway, auth-gateway and the MCP server's network transports:
-- **Who is limited.** Each request that reached a service through Caddy is limited per client address, the first `X-Forwarded-For` entry, which Caddy writes itself. The limit runs before authentication.
+- **Who is limited.** Each request that reached a service through Caddy is limited per client address: the rightmost `X-Forwarded-For` entry outside the ranges wip-caddy trusts (`WIP_TRUSTED_PROXIES`; the pod ranges on k8s, none elsewhere, where the header holds the one entry its proxy wrote). The limit runs before authentication.
 - **One budget per service.** A client's requests to every path of a service draw on one budget. (The first cut scoped it per URL path, so every document id started a fresh budget and the limit bound nobody.)
 - **auth-gateway:** `/auth/verify` answers once per protected request on every service and app, so its budget is a client's platform-wide cap on protected routes. Behind Caddy a refused verify reaches the client as the 429; behind a hand-built nginx `auth_request` it becomes a 500.
 - **MCP server (`/mcp`):** the limit runs before the key check, so a flood of made-up keys no longer turns into one Registry key check each. stdio is unaffected.

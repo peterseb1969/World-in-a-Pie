@@ -36,6 +36,10 @@ spec:
       # Value matches the container hostname produced by the renderer
       # (always `wip-<component-name>` per the compose/k8s naming contract).
       - {name: MCP_ALLOWED_HOST, source: {literal: "wip-mcp-server"}}
+      # The proxies whose X-Forwarded-For entries the rate limit skips to
+      # find the client: the ranges wip-caddy trusts (k8s pod ranges; empty
+      # off k8s).
+      - {name: WIP_TRUSTED_PROXIES, source: {from_spec: network.trusted_proxies}}
     optional:
       # The 8 reporting-sync MCP tools (search, run_report_query,
       # get_table_view, list_report_tables, query_by_template,

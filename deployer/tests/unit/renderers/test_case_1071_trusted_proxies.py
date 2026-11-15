@@ -65,3 +65,60 @@ def test_compose_trusts_no_one(discovery, tmp_path):
     d = _minimal_compose(apps=["wip-kb"])
     tree = render_compose(d, discovery.components, discovery.apps, _compose_secrets(tmp_path, d, discovery))
     assert "trusted_proxies" not in tree.files[Path("config/caddy/Caddyfile")].content
+
+
+# The services' rate limit skips the X-Forwarded-For entries of the proxies
+# wip-caddy trusts, to find the client: the rightmost entry outside those
+# ranges. Left of them sits whatever a client sent, so keying on the first
+# entry let every client pick its own bucket behind the ingress. Each
+# service limiting requests must therefore be handed the same ranges
+# wip-caddy trusts (CASE-1271, finding 4a21011f R3).
+
+
+def _rate_limited_components() -> set[str]:
+    """The components whose service installs wip-auth's rate limit, read from
+    their source, so a service that adopts the limit without the ranges
+    fails here."""
+    found = set()
+    for main in (REPO_ROOT / "components").glob("*/src/**/*.py"):
+        if "setup_rate_limiting(" in main.read_text(encoding="utf-8"):
+            found.add(main.relative_to(REPO_ROOT / "components").parts[0])
+    return found
+
+
+def test_the_rate_limited_services_are_found():
+    assert {"registry", "document-store", "auth-gateway", "mcp-server"} <= _rate_limited_components()
+
+
+def test_every_rate_limited_service_trusts_the_ranges_caddy_trusts_on_k8s(discovery, tmp_path):
+    d = _k8s_deployment(apps=["wip-kb"])
+    assert d.spec.platform.k8s is not None
+    d.spec.platform.k8s.cluster_ranges = K8sClusterRanges(
+        pods=["10.42.0.0/16", "fd42::/56"], services=["10.43.0.0/16"],
+    )
+    tree = render_k8s(d, discovery.components, discovery.apps, _k8s_secrets(tmp_path, d, discovery))
+    checked = []
+    for name in sorted(_rate_limited_components()):
+        path = Path(f"services/{name}.yaml")
+        if path not in tree.files:
+            continue
+        docs = yaml.safe_load_all(tree.files[path].content)
+        deployment = next(x for x in docs if x and x["kind"] == "Deployment")
+        env = {e["name"]: e for e in deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+        assert env.get("WIP_TRUSTED_PROXIES", {}).get("value") == "10.42.0.0/16,fd42::/56", name
+        checked.append(name)
+    assert "registry" in checked and "auth-gateway" in checked, checked
+
+
+def test_off_k8s_the_services_trust_no_one(discovery, tmp_path):
+    d = _minimal_compose(apps=["wip-kb"])
+    tree = render_compose(d, discovery.components, discovery.apps, _compose_secrets(tmp_path, d, discovery))
+    compose = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+    checked = []
+    for name in sorted(_rate_limited_components()):
+        svc = compose["services"].get(name)
+        if svc is None:
+            continue
+        assert not svc.get("environment", {}).get("WIP_TRUSTED_PROXIES"), name
+        checked.append(name)
+    assert "registry" in checked, checked

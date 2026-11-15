@@ -24,7 +24,7 @@ from wip_auth import (
     set_auth_config,
     setup_auth,
 )
-from wip_auth.ratelimit import setup_rate_limiting
+from wip_auth.ratelimit import client_address, setup_rate_limiting, trusted_proxies
 
 KEY = {"X-API-Key": "test_key_1160"}
 
@@ -35,6 +35,19 @@ def _client(xff: str | None) -> dict:
 
 @pytest.fixture
 def client(monkeypatch):
+    monkeypatch.delenv("WIP_TRUSTED_PROXIES", raising=False)
+    yield from _limited_app(monkeypatch)
+
+
+@pytest.fixture
+def client_behind_ingress(monkeypatch):
+    """The service as the k8s target renders it: wip-caddy trusts the pod
+    ranges, and so does the limit."""
+    monkeypatch.setenv("WIP_TRUSTED_PROXIES", "10.42.0.0/16")
+    yield from _limited_app(monkeypatch)
+
+
+def _limited_app(monkeypatch):
     monkeypatch.setenv("WIP_RATE_LIMIT", "3/minute")
     config = AuthConfig(mode="api_key_only", legacy_api_key="test_key_1160")
     set_auth_config(config)
@@ -100,12 +113,67 @@ def test_each_client_address_has_its_own_bucket(client):
     assert client.get("/api/svc/thing", headers={**KEY, **_client("203.0.113.9")}).status_code == 200
 
 
-def test_the_first_forwarded_address_is_the_client(client):
-    # On k8s Caddy keeps the ingress controller's header and appends its peer.
+def test_behind_trusted_proxies_the_client_is_the_rightmost_untrusted_address(
+    client_behind_ingress,
+):
+    # On k8s Caddy keeps the ingress controller's header and appends its peer,
+    # a pod address: which controller pod forwarded does not change the client.
     for _ in range(3):
-        client.get("/api/svc/thing", headers={**KEY, **_client("203.0.113.10, 10.42.0.5")})
+        client_behind_ingress.get(
+            "/api/svc/thing", headers={**KEY, **_client("203.0.113.10, 10.42.0.5")},
+        )
     other_proxy = _client("203.0.113.10, 10.42.0.6")
-    assert client.get("/api/svc/thing", headers={**KEY, **other_proxy}).status_code == 429
+    assert client_behind_ingress.get(
+        "/api/svc/thing", headers={**KEY, **other_proxy},
+    ).status_code == 429
+
+
+def test_an_address_the_client_sends_does_not_buy_it_a_new_bucket(client_behind_ingress):
+    # The controller appends the address it saw; whatever the client put in
+    # the header sits left of it. Keyed on the leftmost entry, every request
+    # with a fresh made-up address started a fresh budget.
+    for n in range(3):
+        client_behind_ingress.get("/api/svc/thing", headers={
+            **KEY, **_client(f"198.51.100.{n}, 203.0.113.20, 10.42.0.5"),
+        })
+    spoofed = _client("198.51.100.99, 203.0.113.20, 10.42.0.5")
+    assert client_behind_ingress.get(
+        "/api/svc/thing", headers={**KEY, **spoofed},
+    ).status_code == 429
+
+
+def test_a_header_of_trusted_addresses_only_is_keyed_on_its_leftmost(client_behind_ingress):
+    # An app pod calling through wip-router: the router writes the app's own
+    # (pod) address, and the app is one client.
+    for _ in range(3):
+        client_behind_ingress.get("/api/svc/thing", headers={**KEY, **_client("10.42.1.7")})
+    assert client_behind_ingress.get(
+        "/api/svc/thing", headers={**KEY, **_client("10.42.1.8")},
+    ).status_code == 200
+    assert client_behind_ingress.get(
+        "/api/svc/thing", headers={**KEY, **_client("10.42.1.7")},
+    ).status_code == 429
+
+
+@pytest.mark.parametrize(("forwarded", "trusted", "expected"), [
+    ("203.0.113.1", "", "203.0.113.1"),
+    ("198.51.100.1, 203.0.113.1", "", "203.0.113.1"),
+    ("198.51.100.1, 203.0.113.1, 10.42.0.5", "10.42.0.0/16", "203.0.113.1"),
+    ("10.42.0.9, 10.42.0.5", "10.42.0.0/16", "10.42.0.9"),
+    ("2001:db8::1, fd00::5", "fd00::/56", "2001:db8::1"),
+    ("not-an-address, 10.42.0.5", "10.42.0.0/16", "not-an-address"),
+    (" 203.0.113.1 ,, 10.42.0.5 ", "10.42.0.0/16", "203.0.113.1"),
+])
+def test_client_address(monkeypatch, forwarded, trusted, expected):
+    monkeypatch.setenv("WIP_TRUSTED_PROXIES", trusted)
+    assert client_address(forwarded, trusted_proxies()) == expected
+
+
+def test_a_trusted_range_that_is_not_one_fails_the_start(monkeypatch):
+    monkeypatch.setenv("WIP_RATE_LIMIT", "3/minute")
+    monkeypatch.setenv("WIP_TRUSTED_PROXIES", "10.42.0.0/16,pods")
+    with pytest.raises(ValueError, match="'pods'"):
+        setup_rate_limiting(FastAPI())
 
 
 def test_internal_calls_are_not_limited(client):

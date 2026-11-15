@@ -5,9 +5,16 @@ limits library) on every request that reached the service through the
 platform's reverse proxy:
 
 - **Who is limited.** A request that came through Caddy carries the
-  ``X-Forwarded-For`` header Caddy writes itself (a client's own copy is
-  replaced, except from the trusted k8s ingress), and is limited per client
-  address, its first entry.
+  ``X-Forwarded-For`` header, and is limited per client address. Each proxy
+  either replaces the header with its peer's address (wip-caddy on compose
+  and dev, wip-router) or, trusting its peer, appends that peer (wip-caddy
+  behind the k8s ingress, which trusts the cluster's pod ranges). Entries
+  left of the first proxy's are whatever the client sent, so the client
+  address is the rightmost entry outside the trusted ranges
+  (WIP_TRUSTED_PROXIES, the ranges wip-caddy trusts), and the leftmost one
+  when every entry is trusted. Where nothing is trusted the header has one
+  entry, which the proxy wrote. Behind wip-router an app is one client: the
+  router writes the app's own address.
 - **Who is not.** A request without the header did not come through Caddy:
   it is a call from inside the platform (another service, a health probe,
   ingest's deliveries, a restore), and is not limited, so the platform never
@@ -23,6 +30,9 @@ replicas allow N times the limit, and a restart resets them.
 Configuration via environment:
     WIP_RATE_LIMIT=40000/minute   # Default: 40K req/min per client address
     WIP_RATE_LIMIT=                # Empty string disables rate limiting
+    WIP_TRUSTED_PROXIES=10.42.0.0/16,fd00::/56  # Ranges of proxies whose
+                                   # X-Forwarded-For entries are skipped; the
+                                   # deployer renders it (empty off k8s)
 
 Usage in a service's main.py, after setup_auth and before CORS (so the
 limit runs before authentication, and preflights are answered by CORS
@@ -33,6 +43,7 @@ without spending budget):
     setup_rate_limiting(app)
 """
 
+import ipaddress
 import os
 from typing import Any
 
@@ -48,25 +59,72 @@ from starlette.responses import JSONResponse, Response
 _PROBE_SEGMENTS = frozenset({"health", "ready", "livez"})
 
 
-def _get_client_ip(request: Request) -> str:
-    """Get client IP, respecting X-Forwarded-For from reverse proxy."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return get_remote_address(request)
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def trusted_proxies() -> tuple[Network, ...]:
+    """The ranges in WIP_TRUSTED_PROXIES (comma-separated CIDRs or single
+    addresses). Raises ValueError on an entry that is not one, so a service
+    with a broken setting fails at start instead of limiting by the wrong
+    address."""
+    out: list[Network] = []
+    for raw in os.getenv("WIP_TRUSTED_PROXIES", "").split(","):
+        entry = raw.strip()
+        if not entry:
+            continue
+        try:
+            out.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError as e:
+            raise ValueError(
+                f"WIP_TRUSTED_PROXIES entry {entry!r} is not an address or a CIDR range"
+            ) from e
+    return tuple(out)
+
+
+def _is_trusted(entry: str, trusted: tuple[Network, ...]) -> bool:
+    try:
+        address = ipaddress.ip_address(entry)
+    except ValueError:
+        # Not an address no proxy writes: a client's own text.
+        return False
+    return any(address in network for network in trusted)
+
+
+def client_address(forwarded: str, trusted: tuple[Network, ...]) -> str:
+    """The client's address from an X-Forwarded-For value: the rightmost
+    entry outside ``trusted``, or the leftmost when every entry is trusted.
+    Entries are walked from the right, the end the proxies write, so no
+    entry a client supplied is reached while a proxy-written one remains."""
+    entries = [e.strip() for e in forwarded.split(",") if e.strip()]
+    for entry in reversed(entries):
+        if not _is_trusted(entry, trusted):
+            return entry
+    return entries[0] if entries else ""
+
+
+def _client_ip_key(trusted: tuple[Network, ...]):
+    def key(request: Request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            address = client_address(forwarded, trusted)
+            if address:
+                return address
+        return get_remote_address(request)
+    return key
 
 
 def create_limiter() -> Limiter:
     """Create a rate limiter with WIP default configuration.
 
     Uses WIP_RATE_LIMIT env var (default: "40000/minute").
-    Set to empty string to disable rate limiting.
+    Set to empty string to disable rate limiting. Keys each client by
+    client_address, with the ranges in WIP_TRUSTED_PROXIES.
     """
     default_limit = os.getenv("WIP_RATE_LIMIT", "40000/minute")
     default_limits: Any = [default_limit] if default_limit else []
 
     return Limiter(
-        key_func=_get_client_ip,
+        key_func=_client_ip_key(trusted_proxies()),
         default_limits=default_limits,
         enabled=bool(default_limit),
         headers_enabled=True,

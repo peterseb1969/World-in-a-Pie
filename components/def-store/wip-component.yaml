@@ -34,6 +34,10 @@ spec:
       # Security posture — arms the WIP_VARIANT=prod startup guard (refuse
       # to start on known-default secrets). From the deployment's --variant.
       - {name: WIP_VARIANT, source: {from_spec: security.variant}}
+      # The proxies whose X-Forwarded-For entries the rate limit skips to
+      # find the client: the ranges wip-caddy trusts (k8s pod ranges; empty
+      # off k8s).
+      - {name: WIP_TRUSTED_PROXIES, source: {from_spec: network.trusted_proxies}}
       # Outbound call used by the terminology-delete guard: it lists
       # templates to refuse deleting a terminology that templates still
       # reference. Unset, the check cannot run and every delete is

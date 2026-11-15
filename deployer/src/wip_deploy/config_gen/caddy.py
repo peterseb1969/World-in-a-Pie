@@ -26,6 +26,7 @@ from wip_deploy.config_gen.routing import (
     resolve_root_redirect,
     resolve_routes,
 )
+from wip_deploy.config_gen.spec_context import trusted_proxy_ranges
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
@@ -92,10 +93,9 @@ class CaddyConfig:
     # k8s: the address ranges whose X-Forwarded-For wip-caddy keeps, so the
     # ingress controller's view of the client reaches the backends. Without
     # them Caddy replaces the header with its peer's address, the
-    # controller pod, and every user shares one rate-limit bucket. The
-    # controller runs in the cluster's pod ranges (--cluster-cidr pods=).
-    # Empty on compose and dev, where wip-caddy faces the client itself and
-    # must not take a client's word for its address.
+    # controller pod, and every user shares one rate-limit bucket. See
+    # spec_context.trusted_proxy_ranges, which the services' rate limit
+    # reads too.
     trusted_proxies: tuple[str, ...] = ()
     # Every app is served on its own origin, so app routes are not in
     # `routes`: each deployer app is an `app_sites` entry, and attached apps
@@ -165,9 +165,7 @@ def generate_caddy_config(
         forwarded_host=net.hostname if behind_ingress else None,
         target=deployment.spec.target,
         namespace=namespace,
-        trusted_proxies=(
-            tuple(k8s.cluster_ranges.pods) if behind_ingress and k8s is not None else ()
-        ),
+        trusted_proxies=trusted_proxy_ranges(deployment),
         app_sites=app_sites,
         edge_backend=edge_backend,
     )

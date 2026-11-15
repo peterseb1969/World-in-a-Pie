@@ -25,6 +25,10 @@ class SpecContextNetwork:
     external_base_url: str
     # The same URL, as the app edge reads it to set X-Forwarded-Proto/Host.
     public_base_url: str = ""
+    # The ranges whose X-Forwarded-For wip-caddy keeps (trusted_proxy_ranges),
+    # comma-separated, so the services' rate limit (WIP_TRUSTED_PROXIES)
+    # skips the same proxies' entries. Empty off k8s.
+    trusted_proxies: str = ""
 
 
 @dataclass(frozen=True)
@@ -189,6 +193,21 @@ def _public_base(deployment: Deployment) -> str:
     return _format_url(net.hostname, net.https_port)
 
 
+def trusted_proxy_ranges(deployment: Deployment) -> tuple[str, ...]:
+    """The address ranges whose X-Forwarded-For wip-caddy keeps, appending
+    its peer, instead of replacing the header with the peer's address: on
+    k8s the cluster's pod ranges (--cluster-cidr pods=), where the ingress
+    controller runs, so its view of the client reaches the backends. Empty
+    on compose and dev, where wip-caddy faces the client itself and must not
+    take a client's word for its address. One answer for wip-caddy and for
+    the services' rate limit, which must skip exactly the entries these
+    proxies append."""
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target != "k8s" or k8s is None:
+        return ()
+    return tuple(k8s.cluster_ranges.pods)
+
+
 def _compute_network(deployment: Deployment) -> SpecContextNetwork:
     net = deployment.spec.network
 
@@ -207,6 +226,7 @@ def _compute_network(deployment: Deployment) -> SpecContextNetwork:
         hostname=net.hostname,
         cors_origins=cors,
         external_base_url=external,
+        trusted_proxies=",".join(trusted_proxy_ranges(deployment)),
     )
 
 
