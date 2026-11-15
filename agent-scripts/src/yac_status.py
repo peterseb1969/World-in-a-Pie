@@ -33,9 +33,10 @@ An activity is stamped with the YAC session id and hidden once that id
 changes, so /wip-wake and /wip-setup start every session with a clean line.
 
 Both files are local state, never content: the script adds each to the
-clone's .git/info/exclude before writing it, so no repo needs a .gitignore
-entry for them (app repos scaffolded without one would otherwise show them
-as untracked on every refresh).
+repository's info/exclude before writing it — the one git reads for every
+worktree of the repository, so a linked worktree is covered too — and no
+repo needs a .gitignore entry for them (app repos scaffolded without one
+would otherwise show them as untracked on every refresh).
 
 Vendored into each YAC clone as .claude/scripts/yac-status.py by the
 scaffold. A hook must never break the session, so every failure is
@@ -126,14 +127,29 @@ def wip_activity(text: str) -> str | None:
     return name
 
 
-def ensure_git_excluded(project: Path, rel: str) -> None:
-    """Add `rel` to the clone's .git/info/exclude unless already listed.
+def common_git_dir(project: Path) -> Path | None:
+    """The git directory whose info/exclude applies to `project`'s worktree.
 
-    Only a plain .git directory is handled; a worktree or submodule (.git is
-    a file) is left alone — best effort, like everything here.
-    """
-    git_dir = project / ".git"
-    if not git_dir.is_dir():
+    A plain clone's is .git. In a linked worktree or a submodule, .git is a
+    file naming the worktree's own git dir ("gitdir: <path>"); a linked
+    worktree's names the shared one in its `commondir` file, and that shared
+    dir's info/exclude is the one git reads. Read from files, not by running
+    git: this runs on every status-line render."""
+    dot_git = project / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    line = read_text(dot_git)
+    if not line.startswith("gitdir:"):
+        return None
+    git_dir = (project / line[len("gitdir:"):].strip()).resolve()
+    common = read_text(git_dir / "commondir")
+    return (git_dir / common).resolve() if common else git_dir
+
+
+def ensure_git_excluded(project: Path, rel: str) -> None:
+    """Add `rel` to the repository's info/exclude unless already listed."""
+    git_dir = common_git_dir(project)
+    if git_dir is None or not git_dir.is_dir():
         return
     exclude = git_dir / "info" / "exclude"
     text = read_text(exclude)
@@ -304,27 +320,46 @@ def write_context_file(payload: dict, cdir: Path) -> None:
     tmp.replace(path)
 
 
-def status_line(payload: dict) -> str:
-    cdir = claude_dir(payload)
-    parts = []
+def activity_parts(cdir: Path) -> list[str]:
+    """The activity's role, text and age, or nothing.
+
+    A record this script cannot read — not JSON, not an object, without a
+    text, with a `since` that is not a number — shows nothing instead of
+    stopping the line."""
     try:
         record = json.loads((cdir / ACTIVITY_FILE).read_text())
     except (OSError, ValueError):
-        record = None
+        return []
     # An activity recorded under an earlier session id belongs to that
     # session; a fresh session starts with nothing to show.
-    if record and record.get("session_id") == read_text(cdir / ".session-id"):
-        parts.append(read_text(cdir / ".session-role") or "YAC")
-        # Records written before "text" existed carry label + case.
-        text = record.get("text") or f"{record['label']} {record['case']}"
-        parts.append(f"last: {text}" if record.get("last") else text)
-        parts.append(age(int(time.time()) - int(record.get("since", 0))))
-    ctx = context_part(payload, cdir)
-    if ctx:
-        parts.append(ctx)
+    if not isinstance(record, dict) or record.get("session_id") != read_text(cdir / ".session-id"):
+        return []
+    # Records written before "text" existed carry label + case.
+    text = record.get("text")
+    if not text and record.get("label") and record.get("case"):
+        text = f"{record['label']} {record['case']}"
+    if not isinstance(text, str) or not text:
+        return []
+    try:
+        since = int(record.get("since", 0))
+    except (TypeError, ValueError):
+        return []
+    role = read_text(cdir / ".session-role") or "YAC"
+    return [role, f"last: {text}" if record.get("last") else text,
+            age(int(time.time()) - since)]
+
+
+def status_line(payload: dict) -> str:
+    cdir = claude_dir(payload)
+    # The context file is written first, on its own: the stop rule reads it,
+    # and a failure in anything else on the line must not leave it stale.
     # The line must still print when the project dir is read-only.
     with contextlib.suppress(OSError):
         write_context_file(payload, cdir)
+    parts = activity_parts(cdir)
+    ctx = context_part(payload, cdir)
+    if ctx:
+        parts.append(ctx)
     return " · ".join(parts)
 
 

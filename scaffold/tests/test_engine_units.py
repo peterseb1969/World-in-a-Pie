@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json as _json
 import os
+import shutil
 import stat
 from pathlib import Path
 
@@ -177,6 +178,35 @@ def test_executable_bit(tmp_path):
     run_surfaces([s], _ctx(tmp_path))
     mode = os.stat(tmp_path / "hook.sh").st_mode
     assert mode & stat.S_IXUSR
+
+
+def _umask() -> int:
+    umask = os.umask(0)
+    os.umask(umask)
+    return umask
+
+
+def test_new_files_get_the_umask_mode_a_shell_write_would(tmp_path):
+    # mkstemp creates 0600 whatever the umask; the bash scripts the engine
+    # replaced left 0644 files and 0755 hooks under the usual umask.
+    s = _surface(files={"a.txt": b"a", "hook.sh": b"#!/bin/sh\n"})
+    x = _surface(name="x", files={"run.sh": b"#!/bin/sh\n"}, executable=True)
+    old = os.umask(0o022)
+    try:
+        run_surfaces([s, x], _ctx(tmp_path))
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(os.stat(tmp_path / "a.txt").st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(tmp_path / "hook.sh").st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(tmp_path / "run.sh").st_mode) == 0o755
+
+
+def test_an_overwritten_file_keeps_its_mode(tmp_path):
+    (tmp_path / "out.txt").write_bytes(b"old")
+    os.chmod(tmp_path / "out.txt", 0o640)
+    run_surfaces([_surface()], _ctx(tmp_path))
+    assert (tmp_path / "out.txt").read_bytes() == b"data"
+    assert stat.S_IMODE(os.stat(tmp_path / "out.txt").st_mode) == 0o640
 
 
 def test_render_refresh_create_writes_target(tmp_path):
@@ -426,15 +456,14 @@ def test_mcp_json_key_file_variant(tmp_path):
     assert parsed["mcpServers"]["wip"]["command"] == "/venv/bin/python"
 
 
-def test_mcp_json_literal_key_variant(tmp_path):
+def test_mcp_json_without_a_key_file_is_refused(tmp_path):
+    # Written with no key, the MCP config would fail every call; the layer
+    # that writes the file refuses it, not only the wrappers.
     from wip_scaffold.surfaces import mcp_json_surface
 
-    s = mcp_json_surface("/venv/bin/python", "https://localhost:8443",
-                         key_literal="dev_master_key_for_testing")
-    run_surfaces([s], _ctx(tmp_path))
-    text = (tmp_path / ".mcp.json").read_text()
-    assert '"WIP_API_KEY": "dev_master_key_for_testing",' in text
-    assert "WIP_API_KEY_FILE" not in text
+    with pytest.raises(ValueError, match="key file"):
+        mcp_json_surface("/venv/bin/python", "https://localhost:8443", "")
+    assert not (tmp_path / ".mcp.json").exists()
 
 
 # --- bootstrap + env surfaces ------------------------------------------------
@@ -491,6 +520,23 @@ def test_query_scaffold_substitutions_and_curation(tmp_path):
     # Entrypoint executable.
     mode = os.stat(tmp_path / "docker-entrypoint-dev.sh").st_mode
     assert mode & stat.S_IXUSR
+
+
+@pytest.mark.parametrize("missing", ["server", "src"])
+def test_query_scaffold_without_a_code_dir_is_refused(tmp_path, missing):
+    # rglob over a missing directory yields nothing: the app would have
+    # shipped without its server or client code, exit 0.
+    from wip_scaffold.surfaces import query_scaffold_surfaces
+
+    wip = tmp_path / "wip"
+    shutil.copytree(REPO_ROOT / "scripts/scaffold-query", wip / "scripts/scaffold-query")
+    shutil.rmtree(wip / "scripts/scaffold-query" / missing)
+    target = tmp_path / "app"
+    target.mkdir()
+    ctx = Context(wip_root=wip, target_root=target)
+    with pytest.raises(FileNotFoundError, match=missing):
+        run_surfaces(query_scaffold_surfaces("A", "a", "a"), ctx)
+    assert list(target.iterdir()) == []
 
 
 def test_query_scaffold_images_share_one_node_major():
@@ -1106,3 +1152,18 @@ def test_slim_hook_falls_back_to_the_invariant_when_no_card_text_is_left(tmp_pat
         (tmp_path / "docs/cards/core.md").write_text(card)
     out = _run_slim_hook(tmp_path)
     assert "missing or empty" in out and "metadata.* is never identity" in out
+
+
+@pytest.mark.parametrize("profile", ["full", "slim"])
+def test_generated_hook_and_app_meta_carry_no_case_token(tmp_path, profile):
+    # Generated surfaces are read where there may be no KB: a case number
+    # there is a dead link. Provenance belongs in commit messages.
+    import re
+
+    meta = {"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}
+    app = [s for s in app_surfaces(meta, profile=profile) if s.name in ("hook", "app-meta")]
+    backend = [s for s in backend_surfaces() if s.name == "hook"]
+    assert len(app) == 2 and len(backend) == 1
+    for s in app + backend:
+        for rel, data in s.produce(_ctx(tmp_path, role_prefix="APP-XY")).items():
+            assert not re.search(rb"CASE-\d", data), f"{s.name}: {rel}"

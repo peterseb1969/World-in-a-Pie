@@ -9,7 +9,7 @@
 > `scaffold/src/wip_scaffold/` and `scaffold/templates/claude-md/app.md`.
 
 **Status:** Analysis complete; target architecture proposed; reviewed by FRanC (CASE-610) and amended per the agreed resolutions. **Implemented** — the engine (`scaffold/src/wip_scaffold/engine.py`), the surface/policy matrix and dry-run all shipped, and the setup scripts delegate to `python -m wip_scaffold`.
-**Last updated:** 2026-07-05
+**Last updated:** 2026-11-15
 **Author:** Peter + BE-YAC (BE-YAC-20260704-112016)
 **See also:**
 - `scripts/setup-backend-agent.sh` — current backend scaffold (1,151 lines)
@@ -74,7 +74,7 @@ Nine docs copied from a hardcoded name list (:660-674) — adding a canonical do
 ~170 lines (:843-1013): version-named tarball selection from the lib's `package.json` (CASE-442 immutability doctrine — same filename must mean same bytes), `dist/*.js` content validation, auto-rebuild via `npm install && npm pack`, same-name-different-content hard error, stale-tarball cleanup, README extraction, and on refresh a lockfile sync (`npm install ./libs/*.tgz`) plus a sha512 integrity cross-check between shipped file and `package-lock.json` via node one-liners (:996-997). Then wip-toolkit wheel find-or-build (:1028-1057). Densest CASE history: 441, 442, 495, 520.
 
 ### Group 10 — Permissions baseline + hooks
-`.claude/settings.json` regenerated every run in both (CASE-446); `.claude/settings.local.json` never touched. Two ~85-line heredocs that a comment claims are "one unified baseline" — **already drifted**: backend carries `mcp__wip-kb__*` allows the app lacks; app carries a `hooks` block (SessionStart/compact) the backend lacks. App also emits `.claude/hooks/post-compact-reanchor.sh` (CASE-480), a third embedded script.
+`.claude/settings.json` regenerated every run in both (CASE-446) — the engine has since replaced that with a merge, see the matrix row; `.claude/settings.local.json` never touched. Two ~85-line heredocs that a comment claims are "one unified baseline" — **already drifted**: backend carries `mcp__wip-kb__*` allows the app lacks; app carries a `hooks` block (SessionStart/compact) the backend lacks. App also emits `.claude/hooks/post-compact-reanchor.sh` (CASE-480), a third embedded script.
 
 ### Group 11 — Identity & metadata markers
 Both write `.claude/.session-role` (backend: hardcoded `BE-YAC`; app: `--prefix`, or preserve-with-warning). App persists `.claude/.app-meta` (CASE-418) with a 4-step refresh resolution chain: `.app-meta` → `--name` → CLAUDE.md title/namespace regex backfill (with CASE-460 `|| true` pipefail landmines) → hard error. The backfill parser greps markdown headings and is fragile by admission.
@@ -109,7 +109,7 @@ The core design artifact. Every generated/copied artifact, its owner, and its li
 | `.mcp.json` | both | regenerate every run; app preserves key-file + base-URL | CASE-516/520/521/539/558; key-file over literal key (CASE-287) |
 | `CLAUDE.md` | BE | regenerate every run (scaffold-owned) | TIER3 filter; `__WIP_ROOT__` substitution |
 | `CLAUDE.md` | APP | create-only; refresh → `CLAUDE.md.refresh` unless `--force-claude-md` | app-authored content is sacred (CASE-418) |
-| `.claude/settings.json` | both | regenerate every run; one baseline, no per-role fork | CASE-446; deny>ask>allow ordering verified |
+| `.claude/settings.json` | both | merge every run with the file the repo has (`merge_json_baseline`); one baseline, no per-role fork | CASE-446; merged, not regenerated, since CASE-882: baseline entries missing from the repo's file are added, retired ones removed, an entry the repo removed stays removed, and anything the repo added is kept; an unparseable file is left alone and the baseline written beside it. The baseline has `allow` and `ask` tiers and no `deny`; a `deny` list added to it would be advisory, since a repo that deletes it keeps it deleted |
 | `.claude/settings.local.json` | both | never touch | machine/operator-owned |
 | `.claude/commands/*.md` | both | wipe + recopy every run | tier 2 removes `wip-case.md` (CASE-463) |
 | `.claude/scripts/wake-rollover.py` | both | recopy every run | CASE-604 |
@@ -159,7 +159,7 @@ A single implementation of the shared logic; `setup-backend-agent.sh` and `creat
 **Engine discipline baseline (CASE-604).** `agent-scripts/src/wake_rollover.py` shipped the closest sibling pattern in this codebase: an ordered multi-surface engine with atomic writes (tempfile + rename), idempotence, and a *designed, tested* `--dry-run` mode. That discipline is this engine's baseline contract, not an emergent property: every surface write is atomic, every run is idempotent, and `--dry-run` (print what each surface would do, touch nothing) is a first-class mode with its own tests — not a byproduct of the matrix loop. The engine also eventually absorbs wake-rollover's own vendoring story: the `.claude/scripts/wake-rollover.py` copy both scaffolds perform today is just another row in the surface matrix.
 
 ### 3. The matrix as code
-The surface-policy table above becomes the engine's declarative core — a list of surface entries `{name, source, dest, roles, policy, tier, case_refs}` with policy ∈ {`regenerate`, `preserve`, `create_only`, `render_refresh`, `opt_in`, `never_touch`}. The engine is one loop over the matrix; per-surface special logic (tarball validation, meta resolution) hangs off entries as handlers. `--dry-run` is a first-class designed mode per the CASE-604 baseline above — print what each surface would do, touch nothing, with its own tests.
+The surface-policy table above becomes the engine's declarative core — a list of surface entries `{name, source, dest, roles, policy, tier, case_refs}` with policy ∈ {`regenerate`, `preserve`, `create_only`, `render_refresh`, `opt_in`, `never_touch`}. *As built* (`engine.py` `Policy`), five of these are engine policies — `REGENERATE`, `PRESERVE_OR_SET` (the `preserve` row), `CREATE_ONLY`, `RENDER_REFRESH`, and `MERGE_JSON_BASELINE`, which this list did not foresee (settings.json, CASE-882). `opt_in` is not a policy: `.claude/kb.json` is written by the wrapper's `enable_kb` action. `never_touch` is not one either: `settings.local.json` is never touched because no surface names it. The engine is one loop over the matrix; per-surface special logic (tarball validation, meta resolution) hangs off entries as handlers. `--dry-run` is a first-class designed mode per the CASE-604 baseline above — print what each surface would do, touch nothing, with its own tests.
 
 ### 3b. Actions stay in bash (ratified, closes step 3's scope question)
 
@@ -193,7 +193,7 @@ Validation gate for each step: re-run against a scratch clone and a scratch app 
 
 ## Already-scaffolded repos (CASE-610 gap 5)
 
-The fleet's existing clones (WIP-TC01–04, react-console, wip-aa, …) all carry heredoc-era `CLAUDE.md` / `settings.json`. No migration tooling is needed — the per-surface policies already define refresh-against-old-state, because `regenerate` surfaces (BE CLAUDE.md, settings.json, commands, `.mcp.json`) **never read what they overwrite**. The two exceptions that do read prior state are format-agnostic by construction: the `.mcp.json` preserve fields (CASE-516/520) parse plain JSON, and the CASE-418 `.app-meta` backfill chain was built precisely for pre-`.app-meta` clones. `render_refresh` (app CLAUDE.md) writes a sidecar and touches nothing. This is a stated-and-reasoned assumption, not a verified fact — hence the step-5 real-clone validation bullet above.
+The fleet's existing clones (WIP-TC01–04, react-console, wip-aa, …) all carry heredoc-era `CLAUDE.md` / `settings.json`. No migration tooling is needed — the per-surface policies already define refresh-against-old-state, because `regenerate` surfaces (BE CLAUDE.md, commands) **never read what they overwrite**. The exceptions that do read prior state are format-agnostic by construction: `settings.json` is merged (CASE-882), which reads the old file as plain JSON, keeps what it does not own and leaves an unparseable one alone with the baseline beside it; `.mcp.json` keeps the servers it does not own (CASE-516/520) the same way; and the CASE-418 `.app-meta` backfill chain was built precisely for pre-`.app-meta` clones. `render_refresh` (app CLAUDE.md) writes a sidecar and touches nothing. This is a stated-and-reasoned assumption, not a verified fact — hence the step-5 real-clone validation bullet above.
 
 ## Downstream gene-pool consumers (CASE-610 gap 7)
 

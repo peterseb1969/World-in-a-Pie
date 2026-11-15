@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart[matcher=compact] re-anchor (CASE-480). Plain stdout on exit 0 is
+# SessionStart[matcher=compact] re-anchor. Plain stdout on exit 0 is
 # injected into context before the next turn. Do not auto-run slash commands here
 # (unsupported) — nudge; running /wip-wake is the model's job.
 cat <<'REANCHOR'

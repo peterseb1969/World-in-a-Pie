@@ -140,11 +140,13 @@ def prior_part(root: Path, prior: str | None) -> list[str]:
 
 
 def git_part(root: Path) -> list[str]:
-    log = git(root, "log", "--oneline", "-5")
     status = git(root, "status", "--short")
-    if log is None:
+    if status is None:
         return ["Git: not a repository"]
-    out = ["Last commits:"] + ["  " + line for line in log.splitlines()]
+    # `git log` fails in a repository with no commits yet; status still works.
+    log = git(root, "log", "--oneline", "-5")
+    out = (["Last commits: none yet"] if log is None
+           else ["Last commits:"] + ["  " + line for line in log.splitlines()])
     lines = status.splitlines() if status else []
     if not lines:
         out.append("Uncommitted: nothing")

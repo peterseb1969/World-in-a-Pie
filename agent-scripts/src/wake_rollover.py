@@ -31,8 +31,11 @@ Modes
                  - `closed` -> skip the close phase entirely (no rewrite, no
                    second summary, no prior mirror).
                  - otherwise -> ONE atomic rewrite: set `status: closed` +
-                   `ended_at`, preserve the body, append
-                   `## Session Summary — auto-closed by /wip-wake (<ts>)`;
+                   `ended_at`, preserve the body, and append
+                   `## Session Summary — auto-closed by /wip-wake (<ts>)`
+                   only when the body has no `## Session Summary` section
+                   yet (a summary the session wrote, or a stub, stays as it
+                   is, with no claim that /wip-wake closed it over a summary);
                    then mirror the closed prior to kb.
               4. Mint `<ROLE>-<YYYYMMDD-HHMMSS>` (ROLE from
                  `.claude/.session-role`; missing -> exit 4 with the
@@ -70,12 +73,20 @@ Modes
                 (CLOSED=unchanged);
               - closed with a stub summary (the /wip-wake placeholder) ->
                 the stub is replaced, `ended_at` kept (CLOSED=replaced-stub);
+              - closed with no summary section at all -> the summary is
+                added, `ended_at` kept (CLOSED=added);
               - otherwise -> closed now (CLOSED=closed).
             No sentinel -> exit 2; no reports/<id>/session.md -> exit 3;
             an empty FILE -> exit 1. Output: SESSION_ID=<id>, CLOSED=<state>.
 
---dry-run   Walk the decisions and print the plan; write nothing, call
-            nothing.
+--dry-run   Walk the decisions and print the plan; write nothing (not even
+            an empty reports/), call nothing.
+
+Exit codes: 0 done; 1 a usage error, an empty summary file, or a file that
+cannot be read or written (an `Error:` line names it); 2 no session at the
+sentinel; 3 the session's report dir or session.md is missing; 4 no
+`.claude/.session-role`; 5 --fresh over an active session; 6 no fresh report
+dir after 3 attempts.
 
 Output contract (stdout, last lines, machine-readable):
     PRIOR_ID=<id or ->
@@ -156,16 +167,43 @@ def now_stamp() -> str:
 
 
 def stamp_to_iso(stamp: str) -> str:
-    """'20260704-011530' -> '2026-07-04T01:15:30' (naive, NO tz suffix)."""
-    d, t = stamp.split("-")
-    return f"{d[0:4]}-{d[4:6]}-{d[6:8]}T{t[0:2]}:{t[2:4]}:{t[4:6]}"
+    """'20260704-011530' -> '2026-07-04T01:15:30' (naive, NO tz suffix).
+
+    A stamp of any other shape raises ValueError naming it."""
+    try:
+        return datetime.strptime(stamp, "%Y%m%d-%H%M%S").isoformat()
+    except ValueError:
+        raise ValueError(f"not a YYYYMMDD-HHMMSS session stamp: {stamp!r}") from None
+
+
+def session_started(session_id: str) -> str:
+    """The start time a <ROLE>-<YYYYMMDD-HHMMSS> session id carries."""
+    try:
+        return stamp_to_iso("-".join(session_id.rsplit("-", 2)[1:]))
+    except ValueError:
+        raise ValueError(
+            f"not a <ROLE>-<YYYYMMDD-HHMMSS> session id: {session_id!r}") from None
+
+
+def file_mode(path: Path) -> int:
+    """The mode a plain write would give `path`: its own when it exists,
+    else what the umask leaves of 0o666. mkstemp creates owner-only (0600)
+    whatever the umask, so an atomic write sets the mode explicitly."""
+    try:
+        return path.stat().st_mode & 0o7777
+    except OSError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
 
 
 def atomic_write(path: Path, content: str) -> None:
+    mode = file_mode(path)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=path.name)
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -296,7 +334,11 @@ def summary_state(root: Path, prior_id: str | None) -> str:
     if not session_md.is_file():
         return "absent"
     _, body = parse_frontmatter(session_md.read_text())
+    return body_summary_state(body)
 
+
+def body_summary_state(body: str) -> str:
+    """'content' | 'stub' | 'absent' for a session.md body (see summary_state)."""
     lines = body.splitlines()
     starts = [i for i, line in enumerate(lines) if line.startswith("## Session Summary")]
     if not starts:
@@ -330,7 +372,7 @@ def close_prior(root: Path, prior_id: str, dry_run: bool) -> bool:
         # Regenerate well-formed frontmatter from the ID. continues_from is
         # unrecoverable here — acknowledged loss, matching the prose contract.
         role = prior_id.rsplit("-", 2)[0]
-        started = stamp_to_iso("-".join(prior_id.rsplit("-", 2)[1:]))
+        started = session_started(prior_id)
         log(f"prior {prior_id}: frontmatter missing/malformed — regenerating (continues_from lost)")
         fields = [
             ("session_id", prior_id),
@@ -355,8 +397,12 @@ def close_prior(root: Path, prior_id: str, dry_run: bool) -> bool:
                 seen.append(k)
         new_text = render_frontmatter([(k, fm[k]) for k in seen if k in fm]) + body
 
-    summary = f"\n## Session Summary — auto-closed by /wip-wake ({close_ts})\n"
-    new_text = new_text.rstrip("\n") + "\n" + summary
+    # The placeholder says the session ended without a summary. Written over
+    # one that exists (a real summary, or a stub already waiting for its
+    # backfill), it would leave that false statement in the durable record.
+    if body_summary_state(body) == "absent":
+        summary = f"\n## Session Summary — auto-closed by /wip-wake ({close_ts})\n"
+        new_text = new_text.rstrip("\n") + "\n" + summary
 
     if dry_run:
         log(f"dry-run: would close {prior_id} (status=closed, ended_at={close_ts})")
@@ -370,15 +416,16 @@ def mint_and_create(
     root: Path, role: str, continues_from: str | None, dry_run: bool
 ) -> str:
     reports = root / "reports"
+    if dry_run:
+        new_id = f"{role}-{now_stamp()}"
+        log(f"dry-run: would mkdir {reports / new_id} + write session.md")
+        return new_id
     reports.mkdir(exist_ok=True)
     last_err: Exception | None = None
     for attempt in range(3):
         stamp = now_stamp()
         new_id = f"{role}-{stamp}"
         new_dir = reports / new_id
-        if dry_run:
-            log(f"dry-run: would mkdir {new_dir} + write session.md")
-            return new_id
         try:
             new_dir.mkdir()  # plain mkdir — collision must surface
         except FileExistsError as e:
@@ -562,7 +609,7 @@ def close_current(root: Path, summary_file: Path, dry_run: bool) -> tuple[str, s
         if state == "content":
             log(f"session {session}: already closed with a summary — unchanged")
             return session, "unchanged"
-        outcome = "replaced-stub"
+        outcome = "replaced-stub" if state == "stub" else "added"
     else:
         outcome = "closed"
 
@@ -571,7 +618,7 @@ def close_current(root: Path, summary_file: Path, dry_run: bool) -> tuple[str, s
         fields = [
             ("session_id", session),
             ("role", role),
-            ("started_at", stamp_to_iso("-".join(session.rsplit("-", 2)[1:]))),
+            ("started_at", session_started(session)),
         ]
     else:
         raw = text[4 : text.find("\n---\n", 4)]
@@ -585,7 +632,8 @@ def close_current(root: Path, summary_file: Path, dry_run: bool) -> tuple[str, s
                 order.append(k)
         fields = [(k, fm[k]) for k in order if k in fm]
     fields = [(k, v) for k, v in fields if k not in ("status", "ended_at")]
-    ended = fm.get("ended_at") if (fm and outcome == "replaced-stub" and fm.get("ended_at")) else None
+    kept_end = outcome in ("replaced-stub", "added")
+    ended = fm.get("ended_at") if (fm and kept_end and fm.get("ended_at")) else None
     fields += [("status", "closed"), ("ended_at", ended or stamp_to_iso(now_stamp()))]
     new_text = render_frontmatter(fields) + _set_summary(body, summary)
 
@@ -599,6 +647,18 @@ def close_current(root: Path, summary_file: Path, dry_run: bool) -> tuple[str, s
 
 
 def main(argv: list[str]) -> int:
+    # Every expected failure exits with a documented code and an `Error:`
+    # line. A file that cannot be read or written, and a session id that is
+    # not <ROLE>-<YYYYMMDD-HHMMSS>, are reported the same way rather than as
+    # a traceback.
+    try:
+        return run(argv)
+    except (OSError, ValueError) as e:
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+def run(argv: list[str]) -> int:
     dry_run = "--dry-run" in argv
     mode_fresh = "--fresh" in argv
     close_file: str | None = None

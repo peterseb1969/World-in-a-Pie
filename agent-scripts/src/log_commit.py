@@ -15,6 +15,12 @@ author from git (so a commit someone makes by hand in an agent's clone is
 not attributed to the agent). An entry whose hash is already listed is not
 written again. A clone without a session sentinel logs nothing.
 
+An amend replaces the entry of the commit it rewrote, so the log never keeps
+an entry for a commit no ref reaches: when the last entry's commit has the
+same parents as the new one and no branch or tag contains it any more, the
+new entry takes its place. The file is rewritten atomically (a temporary
+file renamed over it), so an interrupted write never costs the log.
+
 A commit that changes only files under reports/ is bookkeeping (a session
 close, a running-log entry, the commit log itself) and is not logged. The
 hook runs after the commit exists, so a commit can never carry its own
@@ -29,10 +35,12 @@ Stdlib only — vendored into apps as .claude/scripts/log-commit.py.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -120,6 +128,47 @@ def entry(root: Path, rev: str, why_override: str | None) -> tuple[str, str]:
     return short, "\n".join(lines) + "\n"
 
 
+def amended_away(root: Path, old: str, rev: str) -> bool:
+    """True when `old` is the commit `rev` amended: same parents, and no
+    branch or tag reaches it any more."""
+    try:
+        parents = git(root, "rev-parse", f"{old}^@").split()
+        if parents != git(root, "rev-parse", f"{rev}^@").split():
+            return False
+        return not git(root, "for-each-ref", "--contains", old).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return False  # a hash git no longer knows is left as it is
+
+
+def replace_amended(root: Path, existing: str, rev: str, text: str) -> str | None:
+    """`existing` with its last entry replaced by `text` when that entry's
+    commit is the one `rev` amended; None otherwise."""
+    heads = list(re.finditer(r"^## (\S+) — ", existing, re.MULTILINE))
+    if not heads or not amended_away(root, heads[-1].group(1), rev):
+        return None
+    return existing[: heads[-1].start()].rstrip("\n") + "\n\n" + text
+
+
+def atomic_write(path: Path, content: str) -> None:
+    """Write via a temporary file renamed over `path`, keeping its mode."""
+    try:
+        mode = path.stat().st_mode & 0o7777
+    except OSError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=path.name)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--why", help="override the Why taken from the commit body")
@@ -149,8 +198,11 @@ def main(argv: list[str]) -> int:
     log.parent.mkdir(parents=True, exist_ok=True)
     if not existing:
         existing = f"# Commits — {session}\n"
-    log.write_text(existing.rstrip("\n") + "\n\n" + text)
-    print(f"log-commit: {short} logged to reports/{session}/commits.md")
+    replaced = replace_amended(root, existing, args.rev, text)
+    atomic_write(log, replaced if replaced is not None else
+                 existing.rstrip("\n") + "\n\n" + text)
+    verb = "replaced the amended commit's entry in" if replaced is not None else "logged to"
+    print(f"log-commit: {short} {verb} reports/{session}/commits.md")
     return 0
 
 

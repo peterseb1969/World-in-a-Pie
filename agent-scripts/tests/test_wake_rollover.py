@@ -335,9 +335,21 @@ class TestPriorSummarySignal:
         assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
 
     def test_content_wins_over_a_trailing_empty_heading(self, tmp_path):
-        # An active session that had already written a summary gets the
-        # placeholder appended anyway; the real one must still win, or the
+        # A summary with content wins over an empty heading after it, or the
         # backfill would overwrite a summary someone actually wrote.
+        root = make_project(tmp_path, prior_status="closed")
+        self._write_body(
+            root,
+            "\n# Session\n\n## Session Summary\nReal content someone wrote.\n\n"
+            "## Session Summary — auto-closed by /wip-wake (2026-07-01T13:00:00)\n",
+        )
+        res = run(root, kbc=make_fake_kbc(tmp_path)[0])
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PRIOR_SUMMARY"] == "content"
+
+    def test_active_session_with_a_summary_gets_no_placeholder(self, tmp_path):
+        # The placeholder says the session ended without a summary; written
+        # below one, it would leave that false statement in the record.
         root = make_project(tmp_path, prior_status="active")
         self._write_body(
             root,
@@ -347,6 +359,19 @@ class TestPriorSummarySignal:
         res = run(root, kbc=make_fake_kbc(tmp_path)[0])
         assert res.returncode == 0, res.stderr
         assert out_ids(res)["PRIOR_SUMMARY"] == "content"
+        text = (root / "reports" / PRIOR_ID / "session.md").read_text()
+        assert "auto-closed" not in text
+        assert "status: closed" in text
+        assert "Real content someone wrote." in text
+
+    def test_active_session_with_a_stub_keeps_one_stub(self, tmp_path):
+        root = make_project(tmp_path, prior_status="active")
+        self._write_body(root, "\n# Session\n\n## Session Summary\n", status="active")
+        res = run(root, kbc=make_fake_kbc(tmp_path)[0])
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
+        text = (root / "reports" / PRIOR_ID / "session.md").read_text()
+        assert text.count("## Session Summary") == 1
 
     def test_no_prior_reports_absent(self, tmp_path):
         root = make_project(tmp_path, with_prior=False)
@@ -530,6 +555,54 @@ class TestDryRun:
         # left a placeholder — rather than the untouched file's state.
         assert out_ids(res)["PRIOR_SUMMARY"] == "stub"
 
+    def test_fresh_dry_run_creates_no_reports_dir(self, tmp_path):
+        # /wip-setup's Step 0 is a pure read: a repo without reports/ must
+        # not have one afterwards.
+        root = make_project(tmp_path, with_prior=False)
+        res = run(root, "--fresh", "--dry-run")
+        assert res.returncode == 0, res.stderr
+        assert out_ids(res)["NEW_ID"] == f"BE-YAC-{FROZEN}"
+        assert not (root / "reports").exists()
+        assert not (root / ".claude" / ".session-id").exists()
+
+
+class TestErrors:
+    """A failure outside the named exits is an `Error:` line and exit 1,
+    never a traceback."""
+
+    def test_malformed_session_id_is_an_error_line(self, tmp_path):
+        root = make_project(tmp_path, with_frontmatter=False)
+        bad = "BE-YAC-notastamp"
+        (root / "reports" / PRIOR_ID).rename(root / "reports" / bad)
+        (root / ".claude" / ".session-id").write_text(bad + "\n")
+        res = run(root)
+        assert res.returncode == 1
+        assert "Traceback" not in res.stderr
+        assert "Error:" in res.stderr and bad in res.stderr
+
+    def test_unwritable_reports_dir_is_an_error_line(self, tmp_path):
+        root = make_project(tmp_path)
+        d = root / "reports" / PRIOR_ID
+        d.chmod(0o500)
+        try:
+            res = run(root)
+        finally:
+            d.chmod(0o755)
+        assert res.returncode == 1
+        assert "Traceback" not in res.stderr
+        assert res.stderr.strip().splitlines()[-1].startswith("Error:")
+
+    def test_session_record_gets_umask_mode(self, tmp_path):
+        root = make_project(tmp_path)
+        res = run(root)
+        assert res.returncode == 0, res.stderr
+        umask = os.umask(0)
+        os.umask(umask)
+        new = root / "reports" / f"BE-YAC-{FROZEN}" / "session.md"
+        assert stat.S_IMODE(new.stat().st_mode) == 0o666 & ~umask
+        sentinel = root / ".claude" / ".session-id"
+        assert stat.S_IMODE(sentinel.stat().st_mode) == 0o666 & ~umask
+
 
 class TestClose:
     """--close: /wip-report session-end with the frontmatter owned by the script."""
@@ -578,6 +651,17 @@ class TestClose:
         assert "ended_at: 2026-07-02T08:00:00\n" in text
         assert "auto-closed" not in text
         assert "Built the shelf view." in text
+
+    def test_closed_without_a_summary_reports_added(self, tmp_path):
+        root = make_project(tmp_path, prior_status="closed")
+        md = root / "reports" / PRIOR_ID / "session.md"
+        md.write_text(md.read_text().replace("status: closed\n",
+                                             "status: closed\nended_at: 2026-07-02T08:00:00\n"))
+        res = run(root, "--close", str(self.summary(tmp_path)))
+        assert out_ids(res)["CLOSED"] == "added"
+        text = self.session_md(root)
+        assert "ended_at: 2026-07-02T08:00:00\n" in text
+        assert "## Session Summary\n\nBuilt the shelf view." in text
 
     def test_real_summary_never_overwritten(self, tmp_path):
         root = make_project(tmp_path, prior_status="closed")

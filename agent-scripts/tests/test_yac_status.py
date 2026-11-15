@@ -353,6 +353,43 @@ def test_exclude_entries_are_added_once(tmp_path):
     assert lines.count("/.claude/.yac-activity") == 1
 
 
+def test_a_linked_worktree_never_shows_them_as_untracked(tmp_path):
+    """A linked worktree's .git is a file; git reads the shared info/exclude."""
+    main = git_project(tmp_path)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b",
+           "GIT_COMMITTER_NAME": "a", "GIT_COMMITTER_EMAIL": "a@b"}
+    subprocess.run(["git", "-C", str(main), "commit", "-q", "--allow-empty", "-m", "init"],
+                   check=True, env=env)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt)], check=True)
+    (wt / ".claude").mkdir()
+    (wt / ".claude" / ".session-id").write_text(SESSION + "\n")
+    prompt(wt, "/wip-case read 12")
+    line(wt)
+    assert (wt / ".claude-context-pct").exists()
+    assert (wt / ".claude" / ".yac-activity").exists()
+    left = [p for p in untracked(wt) if p.endswith((".claude-context-pct", ".yac-activity"))]
+    assert left == []
+
+
+def test_an_unexpected_activity_record_never_stops_the_context_file(tmp_path):
+    """The stop rule reads the context file: a record the line cannot show
+    must not leave a stale number there."""
+    root = make_project(tmp_path)
+    activity = root / ".claude" / ".yac-activity"
+    records = [
+        "[1, 2]",
+        json.dumps({"session_id": SESSION, "since": 0}),
+        json.dumps({"session_id": SESSION, "text": "x", "since": "soon"}),
+        json.dumps({"session_id": SESSION, "label": "implementing"}),
+    ]
+    for pct, record in zip((10.0, 20.0, 30.0, 40.0), records, strict=True):
+        activity.write_text(record)
+        out = line(root, {"context_window": {"used_percentage": pct}})
+        assert out == f"ctx {pct:.0f}%", record
+        assert context_file(root).read_text() == f"{pct:.0f}%\n", record
+
+
 def test_no_git_dir_is_fine(tmp_path):
     root = make_project(tmp_path)
     line(root)

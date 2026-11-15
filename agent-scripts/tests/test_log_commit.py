@@ -7,6 +7,7 @@ hook and lets `git commit` fire it.
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -198,3 +199,52 @@ def test_the_shipped_hook_logs_a_real_commit(tmp_path):
     assert f"## {short} — feat: hooked" in text
     assert "**Why:** Because." in text
     assert "**Tests:** 1 passed" in text
+
+
+def test_amend_replaces_the_entry_of_the_commit_it_rewrote(tmp_path):
+    # The amended-away commit is reachable from no ref; an entry citing it
+    # would be an orphan with the old figures.
+    root = make_repo(tmp_path)
+    first = commit(root, "feat: one", {"a.txt": "1\n"})
+    run(root)
+    old = commit(root, "feat: two", {"a.txt": "2\n"})
+    run(root)
+    (root / "b.txt").write_text("b\n")
+    git(root, "add", "b.txt")
+    git(root, "commit", "-q", "--no-verify", "--amend", "-m", "feat: two, with b")
+    new = git(root, "rev-parse", "--short", "HEAD").strip()
+    res = run(root)
+    assert "replaced" in res.stdout
+    text = log(root)
+    assert f"## {old} " not in text
+    assert f"## {new} — feat: two, with b" in text
+    assert "**Files:** 2 changed" in text
+    assert text.index(f"## {first} ") < text.index(f"## {new} ")
+    assert text.count("\n## ") == 2
+
+
+def test_a_rewritten_commit_still_on_a_branch_keeps_its_entry(tmp_path):
+    # Same parents but still reachable (an amend of a commit another branch
+    # holds): it is a live commit, and its entry stays.
+    root = make_repo(tmp_path)
+    commit(root, "feat: one", {"a.txt": "1\n"})
+    old = commit(root, "feat: two", {"a.txt": "2\n"})
+    run(root)
+    git(root, "branch", "keep")
+    git(root, "commit", "-q", "--no-verify", "--amend", "-m", "feat: two again")
+    new = git(root, "rev-parse", "--short", "HEAD").strip()
+    run(root)
+    text = log(root)
+    assert f"## {old} " in text and f"## {new} " in text
+
+
+def test_log_keeps_its_mode_and_leaves_no_temporary_file(tmp_path):
+    root = make_repo(tmp_path)
+    commit(root, "feat: one", {"a.txt": "1\n"})
+    run(root)
+    path = root / "reports" / SESSION / "commits.md"
+    path.chmod(0o640)
+    commit(root, "feat: two", {"a.txt": "2\n"})
+    run(root)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert sorted(p.name for p in path.parent.iterdir()) == ["commits.md"]

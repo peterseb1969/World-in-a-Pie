@@ -1,9 +1,11 @@
 """wip_scaffold — the agent-scaffold engine (docs/design/scaffold-revamp.md).
 
-Migration step 3 lands the engine here (surface matrix, renderer, guards).
-Step 1 (this commit's sibling tests/) is the golden-snapshot regression net
-captured against the CURRENT bash scripts; the engine must reproduce those
-snapshots before it may replace them.
+Writes every file surface of a backend clone or an app repo: the surface
+matrix (surfaces.py) names each file and the policy it is written under, and
+the engine (engine.py) plans every surface before writing any. The wrappers,
+scripts/setup-backend-agent.sh and scripts/create-app-project.sh, resolve
+their inputs, run `python -m wip_scaffold`, and keep the actions that are not
+file writes.
 """
 
 __version__ = "0.0.1"

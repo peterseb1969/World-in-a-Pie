@@ -41,7 +41,6 @@ def _add_mcp_args(parser) -> None:
     parser.add_argument("--mcp-python", default="")
     parser.add_argument("--mcp-base-url", default="")
     parser.add_argument("--mcp-key-file", default="")
-    parser.add_argument("--mcp-key", default="")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         surfaces = backend_surfaces()
         if args.mcp_python:
             surfaces.insert(0, mcp_json_surface(
-                args.mcp_python, args.mcp_base_url, args.mcp_key_file, args.mcp_key))
+                args.mcp_python, args.mcp_base_url, args.mcp_key_file))
     else:
         ctx = Context(
             wip_root=args.wip_root.resolve(),
@@ -121,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.mcp_python:
             surfaces.insert(0, mcp_json_surface(
-                args.mcp_python, args.mcp_base_url, args.mcp_key_file, args.mcp_key))
+                args.mcp_python, args.mcp_base_url, args.mcp_key_file))
         if args.query_scaffold:
             surfaces = query_scaffold_surfaces(
                 args.app_name, args.app_slug, args.app_namespace) + surfaces

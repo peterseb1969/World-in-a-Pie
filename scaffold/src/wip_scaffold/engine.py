@@ -85,14 +85,32 @@ class Surface:
     executable: bool = False
 
 
+def _write_mode(dest: Path, executable: bool) -> int:
+    """The mode a plain shell write would leave: an existing file keeps its
+    own, a new one gets what the umask leaves of 0o666 (0o777 when
+    executable). mkstemp creates owner-only (0600) whatever the umask, so
+    without this every generated file would land unreadable to group and
+    other, and every executable 0700."""
+    umask = os.umask(0)
+    os.umask(umask)
+    try:
+        mode = dest.stat().st_mode & 0o7777
+    except FileNotFoundError:
+        mode = 0o666 & ~umask
+    if executable:
+        # Whoever may read it may run it, and the owner always may.
+        mode |= stat.S_IXUSR | (0o111 & ~umask)
+    return mode
+
+
 def _atomic_write(dest: Path, data: bytes, executable: bool) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    mode = _write_mode(dest, executable)
     fd, tmp = tempfile.mkstemp(dir=str(dest.parent), prefix=f".{dest.name}.")
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
-        if executable:
-            os.chmod(tmp, os.stat(tmp).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.chmod(tmp, mode)
         os.replace(tmp, dest)
     except BaseException:
         with contextlib.suppress(OSError):

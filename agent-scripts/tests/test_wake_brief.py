@@ -126,3 +126,26 @@ def test_long_summary_is_capped(tmp_path):
     out = run(root).stdout
     assert "(truncated" in out
     assert len(out) < 6000
+
+
+def test_repository_without_commits_lists_what_is_uncommitted(tmp_path):
+    # git log fails before the first commit; the repository is still one,
+    # and a freshly scaffolded app looks exactly like this.
+    root = tmp_path / "app"
+    root.mkdir()
+    git(root, "init", "-q")
+    (root / "a.txt").write_text("x\n")
+    out = run(root).stdout
+    assert "not a repository" not in out
+    assert "Last commits: none yet" in out
+    assert "?? a.txt" in out
+
+
+def test_a_directory_outside_git_is_not_a_repository(tmp_path):
+    root = tmp_path / "plain"
+    root.mkdir()
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}
+    out = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True,
+                         env={**env, "CLAUDE_PROJECT_DIR": str(root)}, timeout=30,
+                         cwd=root).stdout
+    assert "Git: not a repository" in out
