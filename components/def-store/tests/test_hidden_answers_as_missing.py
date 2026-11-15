@@ -37,6 +37,7 @@ from httpx import AsyncClient
 from def_store.models.audit_log import TermAuditLog
 from def_store.models.term import Term
 from def_store.models.terminology import Terminology
+from wip_auth.resolve import EntityNotFoundError, resolve_entity_id
 
 API = "/api/def-store"
 APP_KEY = {"X-API-Key": "test_xns_writer_key"}  # 'wip' only; 'xns-closed' is invisible
@@ -172,7 +173,18 @@ async def _ghost_ids(client: AsyncClient, auth_headers: dict, *, with_history: b
     await Term.find({"term_id": {"$in": [a, b]}}).delete()
     if not with_history:
         await TermAuditLog.find({"terminology_id": tid}).delete()
+    for entity_id, entity_type in ((tid, "terminology"), (a, "term"), (b, "term")):
+        assert await _resolves(entity_id, entity_type), f"{entity_id} must still resolve"
     return {"tid": tid, "term": a, "other": b}
+
+
+async def _resolves(entity_id: str, entity_type: str) -> bool:
+    """Whether the Registry answers for this id in 'wip', as the doors ask it."""
+    try:
+        await resolve_entity_id(entity_id, entity_type, "wip")
+    except EntityNotFoundError:
+        return False
+    return True
 
 
 @pytest.mark.asyncio
@@ -184,6 +196,7 @@ async def test_an_id_whose_row_is_gone_answers_as_a_missing_one(
     headers = auth_headers if mode == "admin-unresolved" else APP_KEY
     ghost_ids = await _ghost_ids(client, auth_headers, with_history=False)
     missing_ids = {name: _missing_id() for name in ghost_ids}
+    assert not await _resolves(missing_ids["tid"], "terminology")
 
     ghost = await _call(client, headers, door, ghost_ids)
     missing = await _call(client, headers, door, missing_ids)

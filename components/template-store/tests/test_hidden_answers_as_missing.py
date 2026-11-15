@@ -25,6 +25,7 @@ import pytest
 from httpx import AsyncClient
 
 from template_store.models.template import Template
+from wip_auth.resolve import EntityNotFoundError, resolve_entity_id
 
 API = "/api/template-store/templates"
 APP_KEY = {"X-API-Key": "test_xns_writer_key"}  # 'wip' only; 'xns-closed' is invisible
@@ -133,7 +134,17 @@ async def _ghost_template(client: AsyncClient, auth_headers: dict) -> str:
     """A template whose Registry entry outlives every row of it."""
     template_id = await _template(client, auth_headers, GHOST_NS)
     await Template.find({"template_id": template_id}).delete()
+    assert await _resolves(template_id), f"{template_id} must still resolve"
     return template_id
+
+
+async def _resolves(template_id: str) -> bool:
+    """Whether the Registry answers for this id in 'wip', as the doors ask it."""
+    try:
+        await resolve_entity_id(template_id, "template", "wip")
+    except EntityNotFoundError:
+        return False
+    return True
 
 
 @pytest.mark.asyncio
@@ -145,6 +156,7 @@ async def test_an_id_whose_rows_are_gone_answers_as_a_missing_one(
     headers = auth_headers if mode == "admin-unresolved" else APP_KEY
     ghost_id = await _ghost_template(client, auth_headers)
     missing_id = str(uuid.uuid4())
+    assert not await _resolves(missing_id), "the comparison id must not resolve"
 
     ghost = await _call(client, headers, door, ghost_id, GHOST_DOORS)
     missing = await _call(client, headers, door, missing_id, GHOST_DOORS)
