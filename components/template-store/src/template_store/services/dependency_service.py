@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from wip_auth import DOCUMENT_STORE_KEY, service_api_key
 
 from ..models.template import Template
+from .errors import TemplateError
 from .inheritance_service import InheritanceService
 
 
@@ -60,7 +61,7 @@ class DependencyService:
         results = await Template.find(Template.template_id == template_id).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
-            raise ValueError(f"Template {template_id} not found")
+            raise TemplateError(f"Template {template_id} not found", "not_found")
 
         result = TemplateDependencies(
             template_id=template_id,

@@ -67,6 +67,23 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "groups": [],
     "namespaces": ["wip"],
     "grants": {"wip": "write"},
+}, {
+    # Reads 'xns-closed' and nothing else: a caller with a grant, but none on
+    # 'wip' (the authorization matrix, test_case_845_authz).
+    "name": "test-xns-only",
+    "key": "test_xns_only_key",
+    "owner": "test-xns-only",
+    "groups": [],
+    "namespaces": ["xns-closed"],
+    "grants": {"xns-closed": "read"},
+}, {
+    # Admin on 'wip' alone, not a privileged group.
+    "name": "test-wip-admin",
+    "key": "test_wip_admin_key",
+    "owner": "test-wip-admin",
+    "groups": [],
+    "namespaces": ["wip"],
+    "grants": {"wip": "admin"},
 }]))
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")

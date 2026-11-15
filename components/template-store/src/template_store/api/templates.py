@@ -607,7 +607,7 @@ async def delete_templates(
         # dependency check's not-found); one it may only read is forbidden.
         if (refusal := refused.get(item.id)) is not None:
             if refusal[1] == "not_found":
-                raise ValueError(f"Template {item.id} not found")
+                raise TemplateError(f"Template {item.id} not found", "not_found")
             return BulkResultItem(
                 index=i, status="error", id=item.id,
                 error=refusal[0], error_code=refusal[1],
