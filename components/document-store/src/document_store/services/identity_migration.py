@@ -210,9 +210,11 @@ async def _rehash_row(
 
     Returns the item and its outcome: "error" (template unreadable, or
     identity paths that cannot be classified), "not_referent" (no identity,
-    or no referent identity field: nothing to recompute), "unresolved" (no
-    stored resolution to recompute from), "current" (the stored hash is the
-    recomputed one) or "changed" (``item.new_hash`` differs).
+    or no referent identity field: nothing to recompute), "unresolved" (the
+    row cannot be rehashed offline: a referent identity field has no stored
+    resolution, or an identity field is missing or null on the row),
+    "current" (the stored hash is the recomputed one) or "changed"
+    (``item.new_hash`` differs).
     """
     item = RehashItem(
         document_id=row["document_id"],
@@ -250,9 +252,10 @@ async def _rehash_row(
             ),
         )
     except ValueError as exc:
-        # A legacy doc written during a resolution outage: no stored
-        # resolution to recompute from. Needs live re-resolution (or
-        # curation) before it can migrate.
+        # Nothing here to recompute from: a referent identity field whose
+        # resolution was never stored (a legacy doc written during a
+        # resolution outage), or an identity field the row does not carry.
+        # Needs live re-resolution (or curation) before it can migrate.
         item.status = "unresolved"
         item.detail = str(exc)
         return item, "unresolved"
