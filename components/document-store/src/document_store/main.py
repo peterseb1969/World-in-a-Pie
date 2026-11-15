@@ -31,6 +31,7 @@ from wip_auth import (
     require_admin_identity,
     require_groups,
     require_service_keys,
+    retry_mongo_step,
     service_api_key,
     setup_auth,
     setup_key_sync,
@@ -136,7 +137,11 @@ async def lifespan(app: FastAPI):
     )
     print("MongoDB connection and Beanie initialization successful.")
 
-    await drop_superseded_document_indexes(client[settings.DATABASE_NAME])
+    # Retries while MongoDB does not answer, as the connection above does.
+    await retry_mongo_step(
+        lambda: drop_superseded_document_indexes(client[settings.DATABASE_NAME]),
+        description="Drop superseded document indexes",
+    )
 
     # Store client in app state
     app.state.mongodb_client = client

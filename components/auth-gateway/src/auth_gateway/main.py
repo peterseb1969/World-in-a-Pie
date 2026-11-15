@@ -78,7 +78,11 @@ app.add_middleware(
 # every app, so this one budget is a client's platform-wide cap on protected
 # routes: a client spreading requests over several services reaches it
 # before any single service's. Behind Caddy a refused verify reaches the
-# client as the 429 with its Retry-After; behind a hand-built nginx
+# client as the 429 with its Retry-After: forward_auth sends the client's
+# address in X-Forwarded-For and copies back any answer no handle_response
+# matches (checked against Caddy 2.11.7), and the render turns only the 401
+# into the login redirect (deployer test_forward_auth_passes_refusals.py).
+# Behind a hand-built nginx
 # auth_request (not rendered by the deployer) it becomes a 500, as any
 # non-401/403 answer does there.
 setup_rate_limiting(app)

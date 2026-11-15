@@ -152,3 +152,99 @@ async def test_a_failed_template_write_undoes_the_registry_change(
     with pytest.raises(RuntimeError, match="mongo write failed"):
         await TemplateService.delete_template(tid, version=1)
     assert registry.calls == {"deactivate": [[tid]], "reactivate": [[tid]]}
+
+
+@pytest.mark.asyncio
+async def test_a_registry_4xx_is_registry_error_not_a_500(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    from wip_auth.registry_client import RegistryError
+
+    tid = (await _post(client, auth_headers, _declaration("LIFE_TPL_4XX")))["id"]
+
+    async def reject(entry_ids, updated_by=None, **kw):
+        raise RegistryError("Registry rejected the request: HTTP 422")
+    monkeypatch.setattr(registry, "deactivate_entries", reject)
+    with pytest.raises(TemplateError) as caught:
+        await TemplateService.delete_template(tid, version=1)
+    assert caught.value.code == "registry_error"
+    assert "HTTP 422" in str(caught.value)
+    assert await _statuses(tid) == {1: "active"}
+
+
+@pytest.mark.asyncio
+async def test_a_registry_error_raised_by_the_write_itself_is_not_relabelled(registry):
+    # Only the Registry's lifecycle call is reported as "Not changed": the
+    # block's own RegistryError passes through as it is.
+    from wip_auth.registry_client import RegistryError
+
+    with pytest.raises(RegistryError) as caught:
+        async with TemplateService._lifecycle("no-such-id", change=False, retired=True, actor=None):
+            raise RegistryError("raised by the write")
+    assert not isinstance(caught.value, TemplateError)
+    assert str(caught.value) == "raised by the write"
+
+
+# ── a revival's warnings reach the caller ────────────────────────────────────
+
+TAKEN = "synonym {'ext': 'X'} is held by another entity; not reclaimed"
+
+
+def _warning_on_revive(monkeypatch, registry):
+    """The Registry revives the entry, but not a synonym another took."""
+    async def revive(entry_ids, updated_by=None, **kw):
+        registry.calls["reactivate"].append(list(entry_ids))
+        await registry.real["reactivate"](entry_ids, updated_by=updated_by, **kw)
+        return [{"registry_id": e, "status": "reactivated", "warnings": [TAKEN]} for e in entry_ids]
+    monkeypatch.setattr(registry, "reactivate_entries", revive)
+
+
+@pytest.mark.asyncio
+async def test_reactivating_a_retired_template_reports_the_registrys_warning(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    tid = (await _post(client, auth_headers, _declaration("LIFE_TPL_WARN_REACT")))["id"]
+    assert await TemplateService.delete_template(tid, version=1) is True
+    _warning_on_revive(monkeypatch, registry)
+    resp = await client.post(
+        f"/api/template-store/templates/{tid}/reactivate?namespace=wip&version=1", headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == [TAKEN]
+    assert await _statuses(tid) == {1: "active"}
+
+
+@pytest.mark.asyncio
+async def test_a_new_version_reviving_a_template_reports_the_registrys_warning(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    tid = (await _post(client, auth_headers, _declaration("LIFE_TPL_WARN_REPOST")))["id"]
+    assert await TemplateService.delete_template(tid, version=1) is True
+    _warning_on_revive(monkeypatch, registry)
+    resp = await client.post(
+        "/api/template-store/templates", headers=auth_headers,
+        json=[_declaration("LIFE_TPL_WARN_REPOST", "Reposted")],
+    )
+    row = resp.json()["results"][0]
+    assert row["status"] == "updated", row
+    assert row["warnings"] == [TAKEN]
+
+
+@pytest.mark.asyncio
+async def test_activating_a_draft_reports_the_registrys_warning(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    # A draft has no active version, so activating it is a revival.
+    draft = {**_declaration("LIFE_TPL_WARN_DRAFT"), "status": "draft"}
+    resp = await client.post("/api/template-store/templates", headers=auth_headers, json=[draft])
+    row = resp.json()["results"][0]
+    assert row["status"] == "created", row
+    tid = row["id"]
+    _warning_on_revive(monkeypatch, registry)
+    resp = await client.post(
+        f"/api/template-store/templates/{tid}/activate?namespace=wip", headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["activated"] == [tid], body
+    assert {"field": "", "code": "synonym_not_reclaimed", "message": TAKEN} in body["warnings"]

@@ -30,8 +30,9 @@ from typing import Any
 SERVER_SELECTION_TIMEOUT_MS = 2000
 CONNECT_TIMEOUT_MS = 2000
 
-# A probe's ping answers within this — under the 5 s probe budget, with
-# room for the probe's other checks. Server selection bounds only finding a
+# A probe's ping answers within this — under the 5 s probe budget (the
+# deployer's HealthcheckSpec.timeout_seconds default; test_mongo_probe_budget
+# pins the two together), with room for the probe's other checks. Server selection bounds only finding a
 # server; a selected server that accepts the connection and then does not
 # answer is bounded here.
 PING_TIMEOUT_S = 2.5

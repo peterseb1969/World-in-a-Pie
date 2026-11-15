@@ -18,7 +18,6 @@ from wip_auth.document_identity import (
 )
 from wip_auth.registry_client import DependencyUnavailableError
 from wip_auth.synonym_lifecycle import (
-    LifecycleRefused,
     record_entry_lifecycle,
     undo_entry_lifecycle,
 )
@@ -2440,15 +2439,17 @@ class DocumentService:
         Retiring releases the document's synonyms — the identity-values
         synonym and any caller-added ones — so a different identity with the
         same spellings is no longer refused; reviving claims them again where
-        nobody took them meanwhile. A Registry that refuses raises
-        DocumentStoreError (registry_error); one that does not answer raises
-        RegistryUnavailableError. Either way the caller writes nothing.
+        nobody took them meanwhile. A Registry that refuses — an entry it
+        will not change, or any other answer that is an error (a 4xx) —
+        raises DocumentStoreError (registry_error), which a bulk door reports
+        per item; one that does not answer raises RegistryUnavailableError.
+        Either way the caller writes nothing.
         """
         try:
             return await record_entry_lifecycle(
                 get_registry_client(), [document_id], retired=retired, actor=actor,
             )
-        except LifecycleRefused as e:
+        except RegistryError as e:  # LifecycleRefused included; not an outage
             raise DocumentStoreError(f"Not changed — {e}", "registry_error") from e
 
     async def _record_revival(self, document_id: str, revival: bool, actor: str) -> list[str]:
@@ -3111,12 +3112,14 @@ class DocumentService:
             deleted_by: Deprecated - uses authenticated identity
             hard_delete: Permanently remove (requires namespace deletion_mode='full')
             version: Specific version to hard-delete (None = all). Ignored for soft-delete.
-            warnings: When given, receives the warnings of a soft delete whose
-                retirement did not fully reach the Registry, of a forced
-                hard delete that broke references, of a hard delete that
-                left a file it released inactive because its bytes could not
-                be deleted, and of a hard delete whose Registry entry the
-                Registry refused to remove.
+            warnings: When given, receives the warnings of a forced hard
+                delete that broke references, of a hard delete that left a
+                file it released inactive because its bytes could not be
+                deleted, of a hard delete whose Registry entry the Registry
+                refused to remove, and any the Registry attaches to a
+                retirement. A retirement the Registry does not fully record
+                is never a warning: the delete is refused (registry_error) or
+                fails as an outage, and nothing is written.
             force: Hard-delete even while other documents reference it.
             deleted_with: Documents hard-deleted (all versions) in the same
                 request; their references do not block this delete.

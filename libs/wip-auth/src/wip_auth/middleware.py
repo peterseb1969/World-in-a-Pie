@@ -25,9 +25,12 @@ _DEFAULT_PUBLIC_PATHS = frozenset({
     "/", "/health", "/ready", "/livez", "/docs", "/redoc", "/openapi.json",
 })
 
-# Every service's prefixed root, `/api/<svc>/` — its build-provenance probe,
-# which answers only the service's name, version and build. Exactly one
-# segment under /api/: everything below the root stays credential-checked.
+# Every service's prefixed root, `/api/<svc>/` — its service-info probe:
+# name, version, build provenance and links to its documentation and health
+# routes (ingest-gateway and reporting-sync also list their other route
+# groups). Nothing secret, and nothing the OpenAPI document does not already
+# publish. Exactly one segment under /api/: everything below the root stays
+# credential-checked.
 _SERVICE_ROOT = re.compile(r"/api/[^/]+/")
 
 

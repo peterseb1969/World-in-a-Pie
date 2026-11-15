@@ -423,6 +423,22 @@ class TemplateUpdateResponse(BaseModel):
         default=None,
         description="Previous version number if a new version was created"
     )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="The Registry's warnings when the version revived the template",
+    )
+
+
+class TemplateReactivateResponse(TemplateResponse):
+    """A reactivated template version, with what the revival did not do."""
+
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The Registry's warnings when the reactivation revived the template: a "
+            "synonym another entity took meanwhile stays with it"
+        ),
+    )
 
 
 # =============================================================================

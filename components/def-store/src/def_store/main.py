@@ -30,6 +30,7 @@ from wip_auth import (
     init_beanie_with_retry,
     install_liveness,
     require_service_keys,
+    retry_mongo_step,
     retry_until_done,
     service_api_key,
     setup_auth,
@@ -184,16 +185,25 @@ async def lifespan(app: FastAPI):
     # Convert legacy term aliases/translations to the unified names shape
     # BEFORE serving traffic — a term whose aliases live only in the legacy
     # field would be unresolvable by alias until converted. Runs once: a
-    # completion marker skips it on every later boot.
-    await drop_retired_terminology_fields()
-    migration = await migrate_legacy_term_names()
+    # completion marker skips it on every later boot. Each step retries
+    # while MongoDB does not answer, as the connection above does, and is
+    # safe to run again from the start.
+    await retry_mongo_step(
+        drop_retired_terminology_fields, description="Drop retired terminology fields",
+    )
+    migration = await retry_mongo_step(
+        migrate_legacy_term_names, description="Term-name migration",
+    )
     if migration["converted"] or migration["initialized"]:
         print(
             f"Term-name migration: {migration['converted']} converted, "
             f"{migration['initialized']} initialized."
         )
 
-    await reconcile_term_indexes(client[settings.DATABASE_NAME])
+    await retry_mongo_step(
+        lambda: reconcile_term_indexes(client[settings.DATABASE_NAME]),
+        description="Term index reconcile",
+    )
 
     # Store client in app state
     app.state.mongodb_client = client

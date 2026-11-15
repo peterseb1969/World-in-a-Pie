@@ -33,6 +33,7 @@ from ..models.api_models import (
     CreateTemplateRequest,
     DeleteItem,
     TemplateListResponse,
+    TemplateReactivateResponse,
     TemplateResponse,
     UpdateTemplateItem,
     ValidateTemplateRequest,
@@ -526,6 +527,7 @@ async def update_templates(
             value=result.value, version=result.version,
             is_new_version=result.is_new_version,
             details=details,
+            warnings=result.warnings,
         )
 
     results = [
@@ -852,7 +854,7 @@ async def _require_write_on_template(template_id: str, raw_id: str, namespace: s
         raise
 
 
-@router.post("/{template_id}/reactivate", response_model=TemplateResponse)
+@router.post("/{template_id}/reactivate", response_model=TemplateReactivateResponse)
 async def reactivate_template(
     template_id: str,
     namespace: str = Query(..., description="Namespace for the template"),

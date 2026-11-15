@@ -274,3 +274,64 @@ async def test_a_failed_bulk_revival_leaves_the_document_deleted(
     assert results[0]["status"] == "error", resp.text
     assert not await _active(document_id)
     assert registry.calls["deactivate"] == [[document_id]]
+
+
+def _rejecting(monkeypatch, registry, verb, *, only: str | None = None):
+    """The Registry answers the lifecycle request with an error status (a
+    4xx): the client raises a plain RegistryError, not an outage."""
+    from wip_auth.registry_client import RegistryError
+
+    passthrough = getattr(registry, f"{verb}_entries")
+
+    async def reject(entry_ids, updated_by=None, **kw):
+        if only is not None and only not in entry_ids:
+            return await passthrough(entry_ids, updated_by=updated_by, **kw)
+        registry.calls[verb].append(list(entry_ids))
+        raise RegistryError("Registry rejected the request: HTTP 422")
+    monkeypatch.setattr(registry, f"{verb}_entries", reject)
+
+
+@pytest.mark.asyncio
+async def test_a_registry_4xx_on_a_bulk_delete_is_one_item_error_not_a_500(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    # The items already deleted keep their results; the refused one is an
+    # error of its own, and the response is the batch's, not a 500.
+    first, second = (r["document_id"] for r in await _post(client, auth_headers, "730000001", "730000002"))
+    _rejecting(monkeypatch, registry, "deactivate", only=second)
+    results = await _delete(client, auth_headers, first, second)
+    assert results[0]["status"] == "deleted", results
+    assert results[1]["status"] == "error", results
+    assert results[1]["error_code"] == "registry_error"
+    assert "HTTP 422" in results[1]["error"]
+    assert not await _active(first)
+    assert await _active(second)
+
+
+@pytest.mark.asyncio
+async def test_a_registry_4xx_on_a_revival_is_an_item_error(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    [created] = await _post(client, auth_headers, "730000003")
+    document_id = created["document_id"]
+    await _delete(client, auth_headers, document_id)
+    _rejecting(monkeypatch, registry, "reactivate")
+    [row] = await _post(client, auth_headers, "730000003")
+    assert row["status"] == "error" and row["error_code"] == "registry_error", row
+    assert not await _active(document_id)
+
+
+@pytest.mark.asyncio
+async def test_after_one_outage_a_bulk_delete_asks_the_registry_no_more(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    # A Registry that hangs costs a timeout per ask; the rest of the batch
+    # is refused as the same outage without asking again.
+    ids = [r["document_id"] for r in await _post(client, auth_headers, "740000001", "740000002", "740000003")]
+    _unreachable(monkeypatch, registry, "deactivate")
+    results = await _delete(client, auth_headers, *ids)
+    assert [r["status"] for r in results] == ["error"] * 3, results
+    assert all(r["details"] == {"rule": "registry_unavailable"} for r in results), results
+    assert registry.calls["deactivate"] == [[ids[0]]]
+    for d in ids:
+        assert await _active(d)

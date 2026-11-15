@@ -188,14 +188,8 @@ class TestPatchedEndpointsAdmin:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Scoped-key rejection — verifies the new gates actually deny non-admin
-# keys targeting out-of-scope namespaces.
-#
-# These use a real namespace-scoped api-key created via the registry
-# endpoint, then call the patched endpoints. The check fires through
-# wip-auth → Registry → grants._resolve_permission. Requires CASE-351
-# to be in place (header forwarding) — without it, every scoped call
-# returns 404 even for in-scope namespaces.
+# Gate wiring — every namespace reads as invisible to the caller, and each
+# door answers as it does for an id that names nothing.
 
 
 async def _invisible(identity, namespace):
@@ -230,14 +224,9 @@ class TestNewGatesAreWired:
         )
         tid = create.json()["results"][0]["id"]
 
-        # Make check_namespace_permission raise 404 unconditionally.
-        # If the endpoint wires the gate correctly, the response is 404.
-        # If the gate is missing, the endpoint still returns 200.
-        from fastapi import HTTPException
-
-        async def deny(identity, namespace, level):
-            raise HTTPException(404, "Namespace not found")
-
+        # Every namespace reads as invisible (resolve_permission patched).
+        # A wired door answers 404 exactly as for an unknown id; an unwired
+        # one still returns 200.
         with patch("wip_auth.permissions.resolve_permission", side_effect=_invisible):
             resp = await client.get(
                 f"/api/def-store/terminologies/{tid}",
@@ -266,11 +255,6 @@ class TestNewGatesAreWired:
             headers=auth_headers,
         )
 
-        from fastapi import HTTPException
-
-        async def deny(identity, namespace, level):
-            raise HTTPException(404, "Namespace not found")
-
         with patch("wip_auth.permissions.resolve_permission", side_effect=_invisible):
             resp = await client.post(
                 f"/api/def-store/terminologies/{tid}/restore",
@@ -292,11 +276,6 @@ class TestNewGatesAreWired:
             headers=auth_headers,
         )
         tid = create.json()["results"][0]["id"]
-
-        from fastapi import HTTPException
-
-        async def deny(identity, namespace, level):
-            raise HTTPException(404, "Namespace not found")
 
         with patch("wip_auth.permissions.resolve_permission", side_effect=_invisible):
             resp = await client.get(

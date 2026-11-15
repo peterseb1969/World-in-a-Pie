@@ -63,7 +63,7 @@ from typing import Any, get_args
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
-from .middleware import is_public_path
+from .middleware import is_public_path, public_path_set
 
 
 def _body_models(annotation: Any):
@@ -460,7 +460,8 @@ _OPENAPI_METHODS = frozenset(
 
 @dataclass(frozen=True)
 class AnonymousProbe:
-    """One credential-less request the walker sent, and what came back."""
+    """One request the walker sent (credential-less, or carrying only the
+    stale-key headers), and what came back."""
 
     method: str
     template: str  # full path template, e.g. "/api/svc/items/{item_id}"
@@ -572,18 +573,29 @@ def _addressable_operations(app: Any) -> list[tuple[str, str, str]]:
 
 
 # A key no deployment issues: what a client with a stale or mistyped key sends.
-STALE_KEY_HEADERS = {"X-API-Key": "wip-walker-stale-key-0000000000000000"}
+STALE_KEY = "wip-walker-stale-key-0000000000000000"
+
+
+def stale_key_headers() -> dict[str, str]:
+    """A stale key, in the header the API-key provider reads: the name is
+    configurable (WIP_AUTH_API_KEY_HEADER), and a key sent in any other
+    header never reaches a provider, so the pass would refuse nothing and
+    pass without testing anything."""
+    from .config import get_auth_config
+
+    return {get_auth_config().api_key_header: STALE_KEY}
 
 
 def collect_anonymous_responses(
     app: Any, headers: Mapping[str, str] | None = None,
 ) -> list[AnonymousProbe]:
-    """Send one credential-less request per route operation on ``app`` and
-    return what each answered. ``headers``, when given, go with every
-    request (the stale-key pass sends a key nobody issued).
+    """Send one request per route operation on ``app`` — credential-less
+    unless ``headers`` is given — and return what each answered.
+    ``headers`` go with every request (the stale-key pass sends a key
+    nobody issued).
 
-    The request carries no headers, no query string and no body, and the
-    app's lifespan is NOT run (no databases, no background workers). An
+    The request carries no query string, no body and no headers beyond
+    ``headers``, and the app's lifespan is NOT run (no databases, no background workers). An
     enforcing route refuses before validation or handler code runs; a
     route that reaches its handler may fail on missing state, which is
     reported as the status it produced (exceptions become 500) rather
@@ -641,7 +653,9 @@ def assert_anonymous_refused(
     public: Mapping[str, str],
     expect_routes: bool = True,
 ) -> None:
-    """Fail unless every route on ``app`` refuses a credential-less request.
+    """Fail unless every route on ``app`` refuses a credential-less request,
+    except the allowlisted public ones, which must serve one and a request
+    carrying a stale key.
 
     ``public`` is the service's explicit allowlist: keys are
     ``"METHOD /full/path/template"`` (as in the OpenAPI schema), values a
@@ -656,9 +670,10 @@ def assert_anonymous_refused(
     A public route must also serve a request carrying a stale key (one
     nobody issued): a monitor or pre-configured client with an old key must
     not be refused on a probe meant for it. And every route the middleware
-    serves without trying credentials whatever the service passes (the
-    prefixed root ``/api/<svc>/``) must be allowlisted: a protected route
-    there would refuse every caller, valid key or not.
+    serves without trying credentials (the service's public paths — the
+    universal ones such as ``/health`` plus its own — and the prefixed
+    root ``/api/<svc>/``) must be allowlisted: a protected route there
+    would refuse every caller, valid key or not.
 
     ``expect_routes`` is the canary (same doctrine as the other gates): a
     walk that visited zero routes fails.
@@ -701,12 +716,15 @@ def _public_route_sections(
     key, and always-public routes missing from the allowlist."""
     stale_key_refused = [
         f"  {p.key} -> {p.status} (allowlisted as public: {public[p.key]})"
-        for p in collect_anonymous_responses(app, headers=STALE_KEY_HEADERS)
+        for p in collect_anonymous_responses(app, headers=stale_key_headers())
         if p.key in public and p.status in _REFUSED
     ]
+    # What the middleware serves without credentials: the public paths
+    # setup_auth recorded for this app, else the universal ones.
+    served = getattr(app.state, "wip_public_paths", None) or public_path_set(None)
     implicitly_public = sorted(
         f"  {p.key}" for p in probes
-        if p.key not in public and is_public_path(p.path, frozenset())
+        if p.key not in public and is_public_path(p.path, served)
     )
     return [
         ("Allowlisted public routes that refused a request carrying a stale key", stale_key_refused),

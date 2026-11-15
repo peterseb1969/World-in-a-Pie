@@ -132,6 +132,35 @@ async def retry_until_done(
         delay = min(delay * 2, max_delay_seconds)
 
 
+async def retry_mongo_step(
+    operation: Callable[[], Awaitable[T]],
+    *,
+    description: str,
+    max_wait_seconds: int = _DEFAULT_MAX_WAIT_SECONDS,
+    poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
+) -> T:
+    """Retry one MongoDB startup step (a migration, an index build) while
+    MongoDB does not answer, as `init_beanie_with_retry` does for the
+    connection itself.
+
+    Every client selects a server within 2 s (`wip_auth.mongo`), so a
+    MongoDB that drops out for a moment after the connection was made
+    fails the next step at once; without this the service exits and relies
+    on the orchestrator's restart loop. The step must be safe to run again
+    from the start. Anything other than an unreachable MongoDB surfaces
+    immediately.
+    """
+    from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+
+    return await retry_async(
+        operation,
+        retry_on=(ServerSelectionTimeoutError, ConnectionFailure),
+        description=description,
+        max_wait_seconds=max_wait_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+
 async def init_beanie_with_retry(
     *,
     database,  # motor database  # type: ignore[no-untyped-def]

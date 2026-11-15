@@ -20,7 +20,9 @@ dependencies = [
     "PyJWT>=2.8.0",
     "cryptography>=41.0.0",
     "bcrypt>=4.0.0",
-    "slowapi>=0.1.10",
+    # <0.2: setup_rate_limiting relies on 0.1 semantics (key_style, the
+    # middleware's endpoint key); a new minor is checked before it is taken.
+    "slowapi>=0.1.10,<0.2",
     "cachetools>=5.3.0",
 ]
 

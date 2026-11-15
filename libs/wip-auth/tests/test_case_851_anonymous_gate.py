@@ -207,3 +207,96 @@ def test_hidden_route_inside_a_router_is_never_silently_skipped():
 def test_empty_app_trips_the_canary():
     with pytest.raises(AssertionError, match="ZERO routes"):
         assert_anonymous_refused(FastAPI(), public={})
+
+
+# --- the public-route checks ------------------------------------------------
+
+
+def _refuses_any_key(request):
+    """A dependency that refuses a request carrying an API key, the way a
+    provider refuses a key it does not know on a route the middleware does
+    not treat as public."""
+    from fastapi import HTTPException
+
+    from wip_auth.config import get_auth_config
+
+    if request.headers.get(get_auth_config().api_key_header):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def _app_with_status(path: str = "/api/svc/status") -> FastAPI:
+    from fastapi import Request
+
+    app = _app_with_health()
+
+    @app.get(path)
+    async def status(request: Request):
+        _refuses_any_key(request)
+        return {"ok": True}
+
+    return app
+
+
+def test_public_route_refusing_a_stale_key_fails():
+    app = _app_with_status()
+    with pytest.raises(AssertionError) as exc:
+        assert_anonymous_refused(app, public={**HEALTH, "GET /api/svc/status": "monitor probe"})
+    assert "refused a request carrying a stale key" in str(exc.value)
+    assert "GET /api/svc/status -> 401" in str(exc.value)
+
+
+def test_the_stale_key_goes_in_the_configured_header(monkeypatch):
+    # Sent in a header the provider does not read, the key reaches nobody
+    # and the pass would succeed without testing anything.
+    from wip_auth.config import AuthConfig, reset_auth_config, set_auth_config
+
+    set_auth_config(AuthConfig(api_key_header="X-WIP-Key"))
+    try:
+        app = _app_with_status()
+        with pytest.raises(AssertionError, match="refused a request carrying a stale key"):
+            assert_anonymous_refused(app, public={**HEALTH, "GET /api/svc/status": "monitor probe"})
+    finally:
+        reset_auth_config()
+
+
+def test_a_guarded_route_on_the_service_root_must_be_allowlisted():
+    # The middleware serves /api/<svc>/ without trying credentials, so a
+    # guarded route there refuses every caller, valid key or not.
+    app = _app_with_health()
+
+    @app.get("/api/svc/", dependencies=[Depends(require_api_key)])
+    async def root():
+        return {}
+
+    with pytest.raises(AssertionError) as exc:
+        assert_anonymous_refused(app, public=HEALTH)
+    assert "always serves without credentials" in str(exc.value)
+    assert "GET /api/svc/" in str(exc.value)
+
+
+def test_the_services_own_public_paths_count_as_always_served():
+    # setup_auth records the service's public paths on the app; the gate
+    # reads them, not only the universal ones.
+    from wip_auth.middleware import public_path_set
+
+    app = _app_with_health()
+
+    @app.get("/api/svc/health", dependencies=[Depends(require_api_key)])
+    async def prefixed_health():
+        return {}
+
+    assert_anonymous_refused(app, public=HEALTH)  # not public: an ordinary guarded route
+    app.state.wip_public_paths = public_path_set(["/api/svc/health"])
+    with pytest.raises(AssertionError, match="always serves without credentials"):
+        assert_anonymous_refused(app, public=HEALTH)
+
+
+def test_a_universal_public_path_missing_from_the_allowlist_is_reported():
+    app = FastAPI()
+
+    @app.get("/health", dependencies=[Depends(require_api_key)])
+    async def health():
+        return {}
+
+    with pytest.raises(AssertionError, match="always serves without credentials"):
+        assert_anonymous_refused(app, public={})

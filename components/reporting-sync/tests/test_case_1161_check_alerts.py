@@ -26,6 +26,8 @@ async def test_active_alerts_are_not_raised_again_nor_downgraded_and_new_ones_ar
     collector.update_alert_config(AlertConfig(webhook_url="http://hook.invalid/x"))
     collector._send_webhook_notifications = AsyncMock()
 
+    # A first PostgreSQL miss raises nothing: one alone may be a busy pool.
+    assert await collector.check_alerts(None, nats_connected=True, postgres_connected=False) == []
     # Every condition at its critical level.
     collector.last_event_at = datetime.now(UTC) - timedelta(seconds=700)
     collector.events_processed, collector.events_failed = 1, 1

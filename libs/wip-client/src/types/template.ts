@@ -365,6 +365,15 @@ export interface ValidateTemplateResponse {
   will_also_activate?: string[]
 }
 
+/**
+ * A reactivated template version. `warnings` carries what the revival did not
+ * do: a synonym another entity took meanwhile stays with it, as the Registry
+ * reports it.
+ */
+export interface TemplateReactivateResponse extends Template {
+  warnings: string[]
+}
+
 export interface TemplateUpdateResponse {
   template_id: string
   value: string

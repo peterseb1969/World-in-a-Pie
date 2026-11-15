@@ -124,7 +124,7 @@ from .service_keys import (
     require_service_keys,
     service_api_key,
 )
-from .startup import init_beanie_with_retry, retry_async, retry_until_done
+from .startup import init_beanie_with_retry, retry_async, retry_mongo_step, retry_until_done
 from .term_resolution import (
     TermResolutionError,
     resolve_term_values,
@@ -239,6 +239,7 @@ __all__ = [
     "resolve_term_by_fields_or_404",
     "resolve_term_values",
     "retry_async",
+    "retry_mongo_step",
     "retry_until_done",
     "service_api_key",
     "set_auth_config",

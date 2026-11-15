@@ -227,3 +227,26 @@ def test_a_plain_outage_has_no_report():
 
     body = TestClient(app).get("/x").json()
     assert "report" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_undo_is_logged_and_propagates(caplog):
+    # A BaseException in the undo leaves the change recorded: the log line
+    # is what tells the reconcile pass, and the cancellation is not eaten.
+    import asyncio
+
+    from wip_auth.synonym_lifecycle import undo_entry_lifecycle
+
+    registry = FakeRegistry(down=asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await undo_entry_lifecycle(registry, ["e1"], retired=True, actor=None)
+    assert "not undone" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_undo_is_logged_and_swallowed(caplog):
+    from wip_auth.synonym_lifecycle import undo_entry_lifecycle
+
+    registry = FakeRegistry(down=RegistryUnavailableError("down", "registry"))
+    await undo_entry_lifecycle(registry, ["e1"], retired=True, actor=None)
+    assert "not undone" in caplog.text

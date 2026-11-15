@@ -21,7 +21,7 @@ from wip_auth.resolve import (
     resolve_entity_id,
     resolve_entity_ids,
 )
-from wip_auth.synonym_lifecycle import LifecycleRefused, entry_lifecycle
+from wip_auth.synonym_lifecycle import entry_lifecycle
 
 from ..api.auth import get_identity_string
 from ..models.api_models import (
@@ -30,6 +30,7 @@ from ..models.api_models import (
     CascadeResult,
     CreateTemplateRequest,
     EndpointRefIn,
+    TemplateReactivateResponse,
     TemplateResponse,
     TemplateUpdateResponse,
     UpdateTemplateRequest,
@@ -2169,7 +2170,7 @@ class TemplateService:
         )
         async with TemplateService._lifecycle(
             original.template_id, change=revives, retired=False, actor=actor,
-        ):
+        ) as lifecycle_warnings:
             await new_template.insert()
         await TemplateService._one_sync_strategy(new_template)
 
@@ -2187,7 +2188,8 @@ class TemplateService:
             version=new_version,
             is_new_version=True,
             changed=True,
-            previous_version=original.version
+            previous_version=original.version,
+            warnings=lifecycle_warnings,
         )
 
     @staticmethod
@@ -2318,7 +2320,7 @@ class TemplateService:
     async def reactivate_template(
         template_id: str,
         version: int,
-    ) -> TemplateResponse:
+    ) -> TemplateReactivateResponse:
         """Reactivate a soft-deleted (inactive) template version (CASE-490).
 
         The symmetric inverse of deactivate. Flips a specific inactive
@@ -2371,7 +2373,7 @@ class TemplateService:
         revives = await TemplateService._none_active(template_id)
         async with TemplateService._lifecycle(
             template_id, change=revives, retired=False, actor=actor,
-        ):
+        ) as lifecycle_warnings:
             template.status = "active"
             template.updated_at = datetime.now(UTC)
             template.updated_by = actor
@@ -2383,7 +2385,10 @@ class TemplateService:
             changed_by=actor,
         )
 
-        return TemplateService._to_template_response(template)
+        return TemplateReactivateResponse(
+            **TemplateService._to_template_response(template).model_dump(),
+            warnings=lifecycle_warnings,
+        )
 
     @staticmethod
     async def _none_active(template_id: str, *, besides: int | None = None) -> bool:
@@ -2398,10 +2403,11 @@ class TemplateService:
     @asynccontextmanager
     async def _lifecycle(
         template_id: str, *, change: bool, retired: bool, actor: str | None,
-    ) -> AsyncIterator[None]:
+    ) -> AsyncIterator[list[str]]:
         """Run the block (the template write) after the Registry recorded the
         template as retired or revived, when ``change`` says the write does
-        either.
+        either; yields the Registry's warnings (a revived synonym another
+        entity took meanwhile), for the caller to report.
 
         A template keeps one Registry entry across its versions, so it is
         retired only when no version is active: then its synonyms are
@@ -2412,18 +2418,25 @@ class TemplateService:
         reactivate it. The caller decides ``change`` from the state BEFORE
         its write.
 
-        A Registry that refuses the change makes it TemplateError
+        A Registry that refuses the change — an entry it will not change, or
+        any other answer that is an error (a 4xx) — makes it TemplateError
         (registry_error); one that does not answer raises
         RegistryUnavailableError (503). Either way nothing is written, and a
-        write that fails undoes what the Registry recorded.
+        write that fails undoes what the Registry recorded. Only the
+        Registry's own call is relabelled: a RegistryError the block raises
+        passes through as it is.
         """
+        recorded = False
         try:
             async with entry_lifecycle(
                 get_registry_client(), [template_id] if change else [],
                 retired=retired, actor=actor,
-            ):
-                yield
-        except LifecycleRefused as e:
+            ) as warnings:
+                recorded = True
+                yield warnings
+        except RegistryError as e:  # LifecycleRefused included; not an outage
+            if recorded:
+                raise
             raise TemplateError(f"Not changed — {e}", "registry_error") from e
 
     @staticmethod
@@ -3094,6 +3107,7 @@ class TemplateService:
                         version=update_resp.version,
                         is_new_version=True,
                         details={**diff, "impact": impact, "migration": migration},
+                        warnings=update_resp.warnings,
                     ))
                 else:
                     # A reporting-only change is made in place: no version,
@@ -3866,7 +3880,7 @@ class TemplateService:
                 revives = await TemplateService._none_active(t.template_id)
                 async with TemplateService._lifecycle(
                     t.template_id, change=revives, retired=False, actor=actor,
-                ):
+                ) as lifecycle_warnings:
                     t.status = "active"
                     t.updated_at = now
                     t.updated_by = actor
@@ -3875,6 +3889,12 @@ class TemplateService:
                 logger.exception("Activation stopped at %s", t.template_id)
                 return TemplateService._partial_activation(activation_set, activated_ids, t, e)
             activated_ids.append(t.template_id)
+            # A revival the Registry recorded without a synonym another
+            # entity took meanwhile: reported, not refused.
+            warnings.extend(
+                ValidationWarning(field="", code="synonym_not_reclaimed", message=w)
+                for w in lifecycle_warnings
+            )
 
             # Publish activation event
             await publish_template_event(

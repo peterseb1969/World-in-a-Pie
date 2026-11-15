@@ -162,3 +162,42 @@ def _async_return(value: bool):
     async def attempt() -> bool:
         return value
     return attempt
+
+
+@pytest.mark.asyncio
+async def test_mongo_step_retries_while_mongodb_does_not_answer() -> None:
+    from pymongo.errors import AutoReconnect, ServerSelectionTimeoutError
+
+    from wip_auth.startup import retry_mongo_step
+
+    calls = 0
+
+    async def step() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ServerSelectionTimeoutError("no server within 2 s")
+        if calls == 2:
+            raise AutoReconnect("connection dropped")  # a ConnectionFailure
+        return "done"
+
+    assert await retry_mongo_step(step, description="t", poll_interval_seconds=0.01) == "done"
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_mongo_step_surfaces_other_errors_at_once() -> None:
+    from pymongo.errors import OperationFailure
+
+    from wip_auth.startup import retry_mongo_step
+
+    calls = 0
+
+    async def step() -> None:
+        nonlocal calls
+        calls += 1
+        raise OperationFailure("not authorized")
+
+    with pytest.raises(OperationFailure):
+        await retry_mongo_step(step, description="t", poll_interval_seconds=0.01)
+    assert calls == 1

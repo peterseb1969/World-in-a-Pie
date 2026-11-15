@@ -27,6 +27,13 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Consecutive failed PostgreSQL probes before a connection-lost alert. The
+# probe has a 1 s budget that includes waiting for a pool connection, so one
+# miss is as likely a busy pool as a lost server; two checks in a row (a
+# check interval apart) is an outage. NATS reports its connection state
+# rather than probing, so a NATS loss alerts at once.
+POSTGRES_MISSES_TO_ALERT = 2
+
 
 class MetricsCollector:
     """Collects and calculates metrics for the sync service."""
@@ -40,6 +47,8 @@ class MetricsCollector:
         self.events_failed = 0
         # (processed, failed) at the previous alert check: the error-rate window.
         self._rate_window: tuple[int, int] = (0, 0)
+        # Failed PostgreSQL probes in a row, as of the previous alert check.
+        self._postgres_misses = 0
         self._last_events_count = 0
         self._last_events_time = datetime.now(UTC)
 
@@ -259,14 +268,18 @@ class MetricsCollector:
         check (POST /alerts/test) passes ``advance_window=False``: it reads
         the error rate over the events since the loop's last check without
         moving that window, so it neither consumes the loop's samples nor
-        leaves the loop an empty window that skips the error-rate check.
+        leaves the loop an empty window that skips the error-rate check; nor
+        does it count toward the PostgreSQL misses in a row
+        (``POSTGRES_MISSES_TO_ALERT``) that a connection-lost alert needs.
         """
         if not self._alert_config.enabled:
             return []
 
         thresholds = self._alert_config.thresholds
         new_alerts: list[Alert | None] = [
-            self._connection_alert(nats_connected, postgres_connected),
+            self._connection_alert(
+                nats_connected, self._postgres_up(postgres_connected, advance_window),
+            ),
         ]
 
         if consumer_info:
@@ -326,6 +339,15 @@ class MetricsCollector:
         if raised and self._alert_config.webhook_url:
             await self._send_webhook_notifications(raised)
         return raised
+
+    def _postgres_up(self, probe_ok: bool, advance_window: bool) -> bool:
+        """PostgreSQL counts as down only after POSTGRES_MISSES_TO_ALERT failed
+        probes in a row; a manual check (advance_window False) reads the count
+        without moving it."""
+        misses = 0 if probe_ok else self._postgres_misses + 1
+        if advance_window:
+            self._postgres_misses = misses
+        return misses < POSTGRES_MISSES_TO_ALERT
 
     def _connection_alert(self, nats_connected: bool, postgres_connected: bool) -> Alert | None:
         """A new connection-lost alert (NATS first, then PostgreSQL) unless

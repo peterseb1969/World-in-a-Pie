@@ -47,8 +47,9 @@ async def _audited_namespace(
     Audit rows expose previous and new values, so the read gate applies even
     when the entity itself is gone (hard-deleted): the namespace then comes
     from the entity's most recent audit row. Reads are scoped to that one
-    namespace — a terminology_id is unique per namespace only, and another
-    namespace's rows under the same id are not this entity's history.
+    namespace: an id is unique install-wide, so an audit row of another
+    namespace under the same id is not this entity's history — and it must
+    not be served past the read gate this namespace's rows passed.
 
     An id with neither an entity row nor any audit row was never written here,
     so there is no history to serve: it answers ``miss`` (the resolution 404 of

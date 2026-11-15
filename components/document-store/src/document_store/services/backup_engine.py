@@ -357,8 +357,8 @@ def _scan_unresolved_references(
     a fork nobody asked for. ``edge_templates`` is empty when edges are kept.
     References from a dropped edge are reported as the drop, not again as
     unresolved references. A dropped edge is keyed by (namespace,
-    document_id): ids are unique within a namespace, not across the
-    archive's namespaces (a prefixed id sequence is per namespace).
+    document_id): ids are unique install-wide, but an archive's records
+    are read as they came, and the pair is what each record carries.
     """
     # (namespace, referent) -> {document_id: field paths}
     referrers: dict[tuple[str, str], dict[str, set[str]]] = {}

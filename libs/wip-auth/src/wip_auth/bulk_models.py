@@ -129,6 +129,14 @@ class TemplateBulkResultItem(BulkResultItemBase):
     value: str | None = None
     version: int | None = None
     is_new_version: bool | None = None
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What the write did not do, without refusing it: a template revived "
+            "without a synonym another entity took meanwhile, as the Registry "
+            "reports it."
+        ),
+    )
 
 
 class TerminologyTermBulkResultItem(BulkResultItemBase):

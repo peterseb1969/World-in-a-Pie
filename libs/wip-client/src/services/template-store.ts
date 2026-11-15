@@ -3,6 +3,7 @@ import { BaseService } from './base.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
   Template,
+  TemplateReactivateResponse,
   TemplateListResponse,
   CreateTemplateRequest,
   UpdateTemplateRequest,
@@ -157,12 +158,13 @@ export class TemplateStoreService extends BaseService {
    * and addresses the latest version — `version` is required here and targets a
    * known frozen version (there is no "latest" default). Idempotent on an
    * already-active version; a draft version is rejected by the backend.
+   * `warnings` names a synonym the revival could not reclaim.
    */
   async reactivateTemplate(
     id: string,
     version: number,
     options: { namespace: string },
-  ): Promise<Template> {
+  ): Promise<TemplateReactivateResponse> {
     return this.post(`/templates/${seg(id)}/reactivate`, null, {
       namespace: options.namespace,
       version,

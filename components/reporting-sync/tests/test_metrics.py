@@ -488,6 +488,10 @@ class TestCheckAlertsConnectionLost:
 
     @pytest.mark.asyncio
     async def test_postgres_connection_lost(self, collector: MetricsCollector):
+        # The probe's 1 s budget includes waiting for a pool connection, so
+        # one miss may be a busy pool: two in a row are an outage.
+        first = await collector.check_alerts(None, nats_connected=True, postgres_connected=False)
+        assert [a for a in first if a.alert_type == AlertType.CONNECTION_LOST] == []
         alerts = await collector.check_alerts(None, nats_connected=True, postgres_connected=False)
         conn_alerts = [a for a in alerts if a.alert_type == AlertType.CONNECTION_LOST]
         assert len(conn_alerts) == 1
@@ -764,6 +768,8 @@ async def test_a_connection_alert_names_what_is_down_now():
     await collector.check_alerts(None, nats_connected=False, postgres_connected=True)
     await collector.check_alerts(None, nats_connected=False, postgres_connected=False)
     alert = collector._active_alerts[AlertType.CONNECTION_LOST.value]
+    assert alert.message == "Lost connection to NATS"  # one PostgreSQL miss is not yet an outage
+    await collector.check_alerts(None, nats_connected=False, postgres_connected=False)
     assert alert.message == "Lost connection to NATS and PostgreSQL"
     await collector.check_alerts(None, nats_connected=True, postgres_connected=False)
     assert alert.details == {"connection": "postgres"}
@@ -776,3 +782,27 @@ def test_alert_interval_has_a_floor():
 
     with pytest.raises(ValidationError):
         AlertConfig(check_interval_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_a_postgres_miss_between_successes_never_alerts():
+    from reporting_sync.models import AlertType
+
+    collector = MetricsCollector()
+    for ok in (False, True, False, True, False):
+        await collector.check_alerts(None, nats_connected=True, postgres_connected=ok)
+        assert AlertType.CONNECTION_LOST.value not in collector._active_alerts
+
+
+@pytest.mark.asyncio
+async def test_a_manual_check_does_not_count_toward_the_misses():
+    from reporting_sync.models import AlertType
+
+    collector = MetricsCollector()
+    await collector.check_alerts(None, True, False, advance_window=False)
+    await collector.check_alerts(None, True, False, advance_window=False)
+    assert AlertType.CONNECTION_LOST.value not in collector._active_alerts
+    await collector.check_alerts(None, True, False)
+    assert AlertType.CONNECTION_LOST.value not in collector._active_alerts
+    alerts = await collector.check_alerts(None, True, False)
+    assert [a.alert_type for a in alerts] == [AlertType.CONNECTION_LOST]

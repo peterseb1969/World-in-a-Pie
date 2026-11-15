@@ -145,8 +145,9 @@ async def test_action_filter_accepts_only_real_actions(
 
 @pytest.mark.asyncio
 async def test_terminology_door_reads_only_its_namespace(client: AsyncClient, auth_headers: dict):
-    """A terminology_id is unique per namespace only; another namespace's
-    rows under the same id are not this terminology's history."""
+    """The door reads only the terminology's own namespace: an audit row of
+    another namespace under the same id is not this terminology's history,
+    and must not be served past the read gate this namespace passed."""
     tid = await _terminology(client, auth_headers, "probe_1181_ns")
     await TermAuditLog(
         namespace="elsewhere", term_id="t-elsewhere", terminology_id=tid,

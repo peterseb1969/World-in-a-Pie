@@ -116,13 +116,19 @@ async def undo_entry_lifecycle(
     """Best effort: reverse a lifecycle change the Registry recorded for a
     write that is not going ahead. A failure here is logged — the write it
     served is refused either way, and the store's
-    /maintenance/reconcile-synonym-lifecycle settles what is left."""
+    /maintenance/reconcile-synonym-lifecycle settles what is left.
+
+    A cancellation (or any other BaseException) during the undo is logged
+    the same way, then propagates: the change stays recorded, and the log
+    line is what tells the reconcile pass it has work."""
     if not entry_ids:
         return
     try:
         await _change(registry, entry_ids, retired=not retired, actor=actor)
-    except Exception as e:
+    except BaseException as e:
         logger.error("Registry lifecycle change for %d entries not undone: %s", len(entry_ids), e)
+        if not isinstance(e, Exception):
+            raise
 
 
 @asynccontextmanager

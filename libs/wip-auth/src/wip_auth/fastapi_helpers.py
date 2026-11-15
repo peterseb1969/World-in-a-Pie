@@ -248,12 +248,15 @@ async def unresolved_detail(
     A read that resolves an id and then finds the entity in a namespace the
     caller cannot read answers with this same text, so the answer cannot tell
     "exists, hidden" from "does not exist". ``namespace`` is the one the
-    caller passed (None derives it as resolve_or_404 does).
+    caller passed (None derives it as resolve_or_404 does). With neither, the
+    text names no namespace: "namespace 'None'" would name one that does not
+    exist.
     """
     if namespace is None:
         namespace = await _derive_namespace_from_identity()
     label = param_name or entity_type
-    return f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"
+    where = f" in namespace '{namespace}'" if namespace is not None else ""
+    return f"Could not resolve {label} '{raw_id}'{where}"
 
 
 async def resolve_term_by_fields_or_404(

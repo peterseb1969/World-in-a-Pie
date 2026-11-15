@@ -291,8 +291,9 @@ class _BatchGate(NamedTuple):
     """The write gate of a bulk write, asked before any item is written.
 
     ``namespaces`` maps each document_id the items name to every namespace
-    holding a document under it: an id is unique only within its namespace,
-    so one id can name documents in several. ``refusals`` are the
+    holding a document under it. An id is unique install-wide (it is a
+    Registry entry_id), so that is one namespace; mapping to a set keeps
+    the gate refusing should two ever hold it. ``refusals`` are the
     write_refusals of all those namespaces."""
 
     namespaces: dict[str, set[str]]
@@ -960,6 +961,11 @@ async def delete_documents(
     gate = await _batch_write_refusals(identity, items, "id")
     deleted_with = await _hard_delete_exemptions(service, items, identity)
     results = []
+    # Once the Registry did not answer for one item, the rest are refused as
+    # the same outage without asking it again: each ask of a Registry that
+    # hangs costs the client's timeout twice (the call and its undo), one
+    # item after another.
+    registry_down: RegistryUnavailableError | None = None
     for i, item in enumerate(items):
         try:
             # `force` overrides the hard-delete reference guard. A soft delete
@@ -985,6 +991,11 @@ async def delete_documents(
                     index=i, status="error", id=item.id, error=refusal[0], error_code=refusal[1],
                 ))
                 continue
+            if registry_down is not None:
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.id, **error_fields(registry_down),
+                ))
+                continue
             warnings: list[str] = []
             broken: list[dict] = []
             success = await service.delete_document(
@@ -1006,6 +1017,8 @@ async def delete_documents(
         except (ValueError, RegistryUnavailableError) as e:
             # A Registry that cannot record the item's retirement refuses
             # that item (nothing written for it); the items before it stand.
+            if isinstance(e, RegistryUnavailableError):
+                registry_down = e
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return held.answer(BulkResponse(
