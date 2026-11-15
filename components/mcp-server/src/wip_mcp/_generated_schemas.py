@@ -9,7 +9,7 @@ Generated from:
   schemas/registry.json  version 2.1.0  sha256 fe95d575cec45c54
   schemas/def-store.json  version 2.1.0  sha256 af9dbfcd0add89a8
   schemas/template-store.json  version 2.1.0  sha256 baafbd56b6b77b8b
-  schemas/document-store.json  version 2.1.0  sha256 0ab0c642e3c384fb
+  schemas/document-store.json  version 2.1.0  sha256 1971526eea8a95de
   schemas/reporting-sync.json  version 2.1.0  sha256 a93a928b3136b21a
 """
 
