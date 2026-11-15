@@ -126,24 +126,28 @@ export interface NamespaceIntegrityIssue {
 }
 
 export interface NamespaceIntegritySummary {
+  /** Document versions matching the scan's filters: a document with three versions counts three. */
   total_documents: number
+  /** Version rows the scan went through; below total_documents when a limit stopped it, or when rows were removed while it ran. */
   documents_checked: number
+  /** Distinct document ids among the issues, whatever their version. */
   documents_with_issues: number
   orphaned_template_refs: number
   orphaned_term_refs: number
   /**
    * Documents whose current version is pinned to a template version that has
-   * since been retired. A superseded version keeps its pin as history and is
-   * not counted.
+   * since been retired: one per document, such a document cannot be updated as
+   * it stands. A superseded version keeps its pin as history and is not
+   * counted.
    */
   inactive_template_refs: number
   orphaned_document_refs: number
   /** References whose held document id lives in another namespace than the reference names. */
   misplaced_document_refs: number
   orphaned_file_refs: number
-  /** Documents whose stored identity hash differs from the one recomputed. */
+  /** Version rows whose stored identity hash differs from the one recomputed: one per row. */
   identity_hash_mismatches: number
-  /** Documents whose identity could not be compared (a value or resolution missing, or the pinned template version not found). */
+  /** Version rows whose identity was not verified (a value or resolution missing, or the pinned template version not found; counted with check_identity off too). */
   identity_unverified: number
   /**
    * Mandatory fields of the pinned template version with no value in a

@@ -576,8 +576,8 @@ export interface RehashIdentitiesItem {
    * whose Registry re-key for it did not answer `unchanged` (an earlier
    * apply's Registry leg had failed) — see `registry_status`.
    * `unresolved`: nothing to recompute the row's hash from — a referent
-   * identity field with no stored resolution, or an identity field the row
-   * does not carry; left as is.
+   * identity field with no stored resolution, or an identity field missing or
+   * null on the row; left as is.
    * `collision`: another document converges on the same identity; reported,
    * never applied.
    * `error`: the template version could not be read, or an identity path the

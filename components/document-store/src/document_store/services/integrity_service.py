@@ -107,11 +107,11 @@ class IntegritySummary(BaseModel):
     documents_checked: int = Field(
         default=0,
         description="Version rows the scan went through; below total_documents "
-                    "only when a limit stopped it",
+                    "when a limit stopped it, or when rows were removed while it ran",
     )
     documents_with_issues: int = Field(
         default=0,
-        description="Distinct documents among the issues, whatever their version",
+        description="Distinct document ids among the issues, whatever their version",
     )
     orphaned_template_refs: int = Field(
         default=0,
@@ -155,9 +155,9 @@ class IntegritySummary(BaseModel):
     identity_unverified: int = Field(
         default=0,
         description=(
-            "Version rows whose identity could not be compared: an identity "
-            "value or resolution missing, or the template version they are "
-            "pinned to not found"
+            "Version rows whose identity was not verified: an identity value or "
+            "resolution missing, or the template version they are pinned to not "
+            "found (counted with check_identity off too)"
         ),
     )
     mandatory_fields_missing: int = Field(

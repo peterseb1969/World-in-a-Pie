@@ -1,0 +1,2973 @@
+{
+ "components/def-store/src/def_store/api/import_export.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 258,
+   "lineno": 116,
+   "name": "import_terminology",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/def-store/src/def_store/api/terminologies.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 490,
+   "lineno": 405,
+   "name": "delete_terminologies",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 255,
+   "lineno": 199,
+   "name": "update_terminologies",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 89,
+   "lineno": 47,
+   "name": "create_terminologies",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/def-store/src/def_store/api/terms.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 832,
+   "lineno": 760,
+   "name": "merge_terms",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 16,
+   "endline": 585,
+   "lineno": 499,
+   "name": "update_terms",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 222,
+   "lineno": 113,
+   "name": "create_terms",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 448,
+   "lineno": 353,
+   "name": "search_terms",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 751,
+   "lineno": 676,
+   "name": "delete_terms",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 667,
+   "lineno": 594,
+   "name": "deprecate_terms",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/def-store/src/def_store/services/dependency_service.py": [
+  {
+   "classname": "DependencyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 191,
+   "lineno": 111,
+   "name": "_get_referencing_templates",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/def-store/src/def_store/services/import_export.py": [
+  {
+   "classname": "ImportExportService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 42,
+   "endline": 1237,
+   "lineno": 1017,
+   "name": "import_ontology",
+   "rank": "F",
+   "type": "method"
+  },
+  {
+   "classname": "ImportExportService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 28,
+   "endline": 952,
+   "lineno": 840,
+   "name": "_parse_obo_graph",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "ImportExportService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 296,
+   "lineno": 218,
+   "name": "export_terminology",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ImportExportService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 625,
+   "lineno": 604,
+   "name": "_apply_lifecycle",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 1237,
+   "lineno": 210,
+   "methods": [
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 15,
+     "endline": 296,
+     "lineno": 218,
+     "name": "export_terminology",
+     "rank": "C",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 10,
+     "endline": 364,
+     "lineno": 300,
+     "name": "_export_json",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 8,
+     "endline": 405,
+     "lineno": 367,
+     "name": "_export_csv",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 4,
+     "endline": 438,
+     "lineno": 409,
+     "name": "export_all_terminologies",
+     "rank": "A",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 6,
+     "endline": 509,
+     "lineno": 445,
+     "name": "import_terminology",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 8,
+     "endline": 530,
+     "lineno": 512,
+     "name": "_terminology_block",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 3,
+     "endline": 549,
+     "lineno": 533,
+     "name": "_target_terminology",
+     "rank": "A",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 6,
+     "endline": 567,
+     "lineno": 552,
+     "name": "_create_terminology",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 10,
+     "endline": 601,
+     "lineno": 570,
+     "name": "_create_term_levels",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 14,
+     "endline": 625,
+     "lineno": 604,
+     "name": "_apply_lifecycle",
+     "rank": "C",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 7,
+     "endline": 673,
+     "lineno": 628,
+     "name": "_import_csv",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 8,
+     "endline": 723,
+     "lineno": 677,
+     "name": "_import_term_relations",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 4,
+     "endline": 762,
+     "lineno": 727,
+     "name": "import_from_url",
+     "rank": "A",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 1,
+     "endline": 789,
+     "lineno": 786,
+     "name": "_uri_to_value",
+     "rank": "A",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 7,
+     "endline": 825,
+     "lineno": 792,
+     "name": "_detect_prefix",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 4,
+     "endline": 837,
+     "lineno": 828,
+     "name": "_map_predicate",
+     "rank": "A",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 28,
+     "endline": 952,
+     "lineno": 840,
+     "name": "_parse_obo_graph",
+     "rank": "D",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 8,
+     "endline": 1014,
+     "lineno": 957,
+     "name": "_ensure_relation_types",
+     "rank": "B",
+     "type": "method"
+    },
+    {
+     "classname": "ImportExportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 42,
+     "endline": 1237,
+     "lineno": 1017,
+     "name": "import_ontology",
+     "rank": "F",
+     "type": "method"
+    }
+   ],
+   "name": "ImportExportService",
+   "rank": "C",
+   "type": "class"
+  }
+ ],
+ "components/def-store/src/def_store/services/ontology_service.py": [
+  {
+   "classname": "OntologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 19,
+   "endline": 260,
+   "lineno": 85,
+   "name": "create_term_relations",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "OntologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 619,
+   "lineno": 574,
+   "name": "_neighbours",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "OntologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 671,
+   "lineno": 622,
+   "name": "_traverse",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/def-store/src/def_store/services/system_terminologies.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 372,
+   "lineno": 265,
+   "name": "ensure_system_terminologies",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/def-store/src/def_store/services/term_names.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 16,
+   "endline": 279,
+   "lineno": 175,
+   "name": "migrate_legacy_term_names",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 111,
+   "lineno": 58,
+   "name": "validate_names",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/def-store/src/def_store/services/term_reconcile.py": [
+  {
+   "classname": "TermReconcileService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 38,
+   "endline": 425,
+   "lineno": 192,
+   "name": "reconcile",
+   "rank": "E",
+   "type": "method"
+  },
+  {
+   "col_offset": 0,
+   "complexity": 21,
+   "endline": 443,
+   "lineno": 188,
+   "methods": [
+    {
+     "classname": "TermReconcileService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 38,
+     "endline": 425,
+     "lineno": 192,
+     "name": "reconcile",
+     "rank": "E",
+     "type": "method"
+    },
+    {
+     "classname": "TermReconcileService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 1,
+     "endline": 443,
+     "lineno": 429,
+     "name": "_response",
+     "rank": "A",
+     "type": "method"
+    }
+   ],
+   "name": "TermReconcileService",
+   "rank": "D",
+   "type": "class"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 15,
+   "endline": 185,
+   "lineno": 142,
+   "name": "_reconcile_diff",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/def-store/src/def_store/services/term_search.py": [
+  {
+   "classname": "TermSearchService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 12,
+     "complexity": 6,
+     "endline": 180,
+     "lineno": 165,
+     "name": "consider",
+     "rank": "B",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 218,
+   "lineno": 111,
+   "name": "search",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 284,
+   "lineno": 107,
+   "methods": [
+    {
+     "classname": "TermSearchService",
+     "closures": [
+      {
+       "closures": [],
+       "col_offset": 12,
+       "complexity": 6,
+       "endline": 180,
+       "lineno": 165,
+       "name": "consider",
+       "rank": "B",
+       "type": "function"
+      }
+     ],
+     "col_offset": 4,
+     "complexity": 14,
+     "endline": 218,
+     "lineno": 111,
+     "name": "search",
+     "rank": "C",
+     "type": "method"
+    },
+    {
+     "classname": "TermSearchService",
+     "closures": [
+      {
+       "closures": [],
+       "col_offset": 8,
+       "complexity": 6,
+       "endline": 257,
+       "lineno": 241,
+       "name": "root_of",
+       "rank": "B",
+       "type": "function"
+      }
+     ],
+     "col_offset": 4,
+     "complexity": 6,
+     "endline": 284,
+     "lineno": 222,
+     "name": "_rollup_to_root",
+     "rank": "B",
+     "type": "method"
+    }
+   ],
+   "name": "TermSearchService",
+   "rank": "C",
+   "type": "class"
+  }
+ ],
+ "components/def-store/src/def_store/services/terminology_service.py": [
+  {
+   "classname": "TerminologyService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 4,
+     "endline": 2158,
+     "lineno": 2145,
+     "name": "_apply_clearable",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 24,
+   "endline": 2206,
+   "lineno": 2066,
+   "name": "update_term",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 3,
+     "endline": 655,
+     "lineno": 651,
+     "name": "_track",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 23,
+   "endline": 739,
+   "lineno": 593,
+   "name": "update_terminology",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 19,
+   "endline": 1494,
+   "lineno": 1381,
+   "name": "_write_term_batch",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 2,
+     "endline": 1154,
+     "lineno": 1153,
+     "name": "_fold",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 1226,
+   "lineno": 1139,
+   "name": "_batch_name_collisions",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 2,
+     "endline": 2472,
+     "lineno": 2471,
+     "name": "fold",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 2517,
+   "lineno": 2435,
+   "name": "merge_terms",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 2432,
+   "lineno": 2311,
+   "name": "delete_term",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 2608,
+   "lineno": 2550,
+   "name": "registry_ghosts",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 2,
+     "endline": 2680,
+     "lineno": 2679,
+     "name": "_cmp",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 2721,
+   "lineno": 2658,
+   "name": "resolve_values",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 1378,
+   "lineno": 1229,
+   "name": "_partition_term_batch",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TerminologyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 1636,
+   "lineno": 1540,
+   "name": "_process_term_batch",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/api/documents.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 15,
+   "endline": 213,
+   "lineno": 161,
+   "name": "_bulk_create_per_namespace",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 1014,
+   "lineno": 945,
+   "name": "delete_documents",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 138,
+   "lineno": 68,
+   "name": "create_documents",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/api/files.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 565,
+   "lineno": 511,
+   "name": "reactivate_files",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 806,
+   "lineno": 737,
+   "name": "delete_namespace_storage_objects",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 427,
+   "lineno": 388,
+   "name": "update_files_metadata",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 478,
+   "lineno": 439,
+   "name": "delete_files",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 203,
+   "lineno": 153,
+   "name": "upload_file",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/api/table_view.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 18,
+   "endline": 301,
+   "lineno": 226,
+   "name": "_flatten_document",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 468,
+   "lineno": 349,
+   "name": "get_table_view",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/main.py": [
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 11,
+     "endline": 292,
+     "lineno": 257,
+     "name": "_startup_integrity_check",
+     "rank": "C",
+     "type": "function"
+    },
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 4,
+     "endline": 308,
+     "lineno": 301,
+     "name": "_convert_allowed_templates",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 337,
+   "lineno": 118,
+   "name": "lifespan",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/services/backup_engine.py": [
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 21,
+   "endline": 3969,
+   "lineno": 3877,
+   "name": "_repair_endpoint_declarations",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 4746,
+   "lineno": 4639,
+   "name": "_write_restore_provenance",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 7660,
+   "lineno": 7589,
+   "name": "_reporting_phase_counts",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 227,
+   "lineno": 212,
+   "name": "_unresolved_hits",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 1,
+     "endline": 1520,
+     "lineno": 1519,
+     "name": "norm",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 1532,
+   "lineno": 1510,
+   "name": "_same_document_content",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 4286,
+   "lineno": 4233,
+   "name": "_rewritten_synonyms",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 5723,
+   "lineno": 5664,
+   "name": "_rewrite_namespace",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 6111,
+   "lineno": 6061,
+   "name": "_apply_definitions",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 6271,
+   "lineno": 6256,
+   "name": "_referenced_ids",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 7747,
+   "lineno": 7664,
+   "name": "_upsert_namespace",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 2305,
+   "lineno": 2280,
+   "name": "_alignment_rows",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "classname": "DirectBackupEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 1259,
+   "lineno": 1203,
+   "name": "_template_versions_to_leave_out",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 2962,
+   "lineno": 2889,
+   "name": "_restore_entity_type",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 3474,
+   "lineno": 3424,
+   "name": "_resolve_remap_mapping",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 4634,
+   "lineno": 4581,
+   "name": "_check_derived_archive",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 6913,
+   "lineno": 6862,
+   "name": "_recount_file_references",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 4053,
+   "lineno": 4015,
+   "name": "_write_remapped",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 4365,
+   "lineno": 4336,
+   "name": "_rewrite_synonym_for_restore",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 5595,
+   "lineno": 5535,
+   "name": "_build_merge_plan_inputs",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DirectRestoreEngine",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 6415,
+   "lineno": 6362,
+   "name": "_apply_merge",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/document_service.py": [
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 20,
+   "endline": 1439,
+   "lineno": 1251,
+   "name": "create_document",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 19,
+   "endline": 5865,
+   "lineno": 5726,
+   "name": "_migrate_one",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 18,
+   "endline": 3016,
+   "lineno": 2911,
+   "name": "list_documents",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 16,
+   "endline": 2568,
+   "lineno": 2483,
+   "name": "_document_to_event_payload",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 16,
+   "endline": 5613,
+   "lineno": 5507,
+   "name": "migrate_document_version",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 1670,
+   "lineno": 1564,
+   "name": "_create_new_document",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 2154,
+   "lineno": 2036,
+   "name": "_create_new_version",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 3724,
+   "lineno": 3648,
+   "name": "_build_query",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 2326,
+   "lineno": 2228,
+   "name": "_overwrite_in_place",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 4092,
+   "lineno": 4031,
+   "name": "_insert_planned",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 4664,
+   "lineno": 4601,
+   "name": "_register_bulk_auto_synonyms",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 1522,
+   "lineno": 1463,
+   "name": "_register_inline_synonyms",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 2758,
+   "lineno": 2671,
+   "name": "find_relationships",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "DocumentService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 3895,
+   "lineno": 3862,
+   "name": "_per_item_document_ids",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/file_service.py": [
+  {
+   "classname": "FileService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 16,
+   "endline": 763,
+   "lineno": 688,
+   "name": "list_files",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "FileService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 270,
+   "lineno": 127,
+   "name": "upload_file",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/import_service.py": [
+  {
+   "classname": "ImportService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 221,
+   "lineno": 165,
+   "name": "preview",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ImportService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 256,
+   "lineno": 225,
+   "name": "parse_rows",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 306,
+   "lineno": 151,
+   "methods": [
+    {
+     "classname": "ImportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 3,
+     "endline": 162,
+     "lineno": 155,
+     "name": "detect_format",
+     "rank": "A",
+     "type": "method"
+    },
+    {
+     "classname": "ImportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 17,
+     "endline": 221,
+     "lineno": 165,
+     "name": "preview",
+     "rank": "C",
+     "type": "method"
+    },
+    {
+     "classname": "ImportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 12,
+     "endline": 256,
+     "lineno": 225,
+     "name": "parse_rows",
+     "rank": "C",
+     "type": "method"
+    },
+    {
+     "classname": "ImportService",
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 7,
+     "endline": 306,
+     "lineno": 259,
+     "name": "build_documents",
+     "rank": "B",
+     "type": "method"
+    }
+   ],
+   "name": "ImportService",
+   "rank": "C",
+   "type": "class"
+  }
+ ],
+ "components/document-store/src/document_store/services/integrity_service.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 15,
+   "endline": 542,
+   "lineno": 461,
+   "name": "check_batch_references",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/services/merge_definitions.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 1487,
+   "lineno": 1456,
+   "name": "_compatibility",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/services/merge_plan.py": [
+  {
+   "classname": "MergePlanner",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 16,
+   "endline": 346,
+   "lineno": 278,
+   "name": "plan",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/reference_validator.py": [
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 3,
+     "endline": 339,
+     "lineno": 335,
+     "name": "add",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 16,
+   "endline": 359,
+   "lineno": 320,
+   "name": "_collect_targets",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "classname": "ReferenceValidator",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 198,
+   "lineno": 93,
+   "name": "validate_document_references",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/referent_resolution.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 147,
+   "lineno": 109,
+   "name": "resolve_referents",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/services/registry_client.py": [
+  {
+   "classname": "RegistryClient",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 473,
+   "lineno": 406,
+   "name": "register_auto_synonyms_per_item",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/remap_restore.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 835,
+   "lineno": 794,
+   "name": "check_collisions_before_writing",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 791,
+   "lineno": 716,
+   "name": "plan_multi",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 879,
+   "lineno": 852,
+   "name": "_check_target_collisions",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/document-store/src/document_store/services/reporting_client.py": [
+  {
+   "classname": "ReportingSyncClient",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 132,
+   "lineno": 104,
+   "name": "_queued_any",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/template_store_client.py": [
+  {
+   "classname": "TemplateStoreClient",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 342,
+   "lineno": 274,
+   "name": "get_template_resolved",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/document-store/src/document_store/services/validation_service.py": [
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 21,
+   "endline": 1963,
+   "lineno": 1803,
+   "name": "_validate_references",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 19,
+   "endline": 2651,
+   "lineno": 2596,
+   "name": "_resolve_bare_document_reference",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 16,
+   "endline": 1590,
+   "lineno": 1534,
+   "name": "_typed_leaves",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 2087,
+   "lineno": 2042,
+   "name": "_collect_file_values",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 1717,
+   "lineno": 1677,
+   "name": "_candidate_referent_paths",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 1532,
+   "lineno": 1430,
+   "name": "_validate_terms",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 455,
+   "lineno": 358,
+   "name": "_validate",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 1627,
+   "lineno": 1592,
+   "name": "_composed_candidate",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "ValidationService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 2039,
+   "lineno": 1966,
+   "name": "_validate_files",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/ingest-gateway/src/ingest_gateway/worker.py": [
+  {
+   "classname": "IngestWorker",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 489,
+   "lineno": 423,
+   "name": "_process_message",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "IngestWorker",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 609,
+   "lineno": 514,
+   "name": "start",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/mcp-server/src/wip_mcp/client.py": [
+  {
+   "classname": "WipClient",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 18,
+   "endline": 325,
+   "lineno": 281,
+   "name": "__init__",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/mcp-server/src/wip_mcp/server.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 22,
+   "endline": 1492,
+   "lineno": 1375,
+   "name": "_build_data_model_markdown",
+   "rank": "D",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 20,
+   "endline": 3156,
+   "lineno": 2994,
+   "name": "create_edge_type",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 2489,
+   "lineno": 2424,
+   "name": "update_term",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/api/api_keys.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 18,
+   "endline": 404,
+   "lineno": 272,
+   "name": "create_api_key",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/api/attachments.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 18,
+   "endline": 186,
+   "lineno": 100,
+   "name": "upsert_attachments",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/api/entries.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 20,
+   "endline": 1473,
+   "lineno": 1345,
+   "name": "reserve_ids",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 20,
+   "endline": 2652,
+   "lineno": 2573,
+   "name": "delete_entries",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 18,
+   "endline": 1291,
+   "lineno": 1208,
+   "name": "provision_ids",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 18,
+   "endline": 2351,
+   "lineno": 2280,
+   "name": "lookup_candidates",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 469,
+   "lineno": 348,
+   "name": "unified_search",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 16,
+   "endline": 2494,
+   "lineno": 2375,
+   "name": "lookup_by_keys",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 2761,
+   "lineno": 2713,
+   "name": "reactivate_entries",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 12,
+     "complexity": 3,
+     "endline": 1128,
+     "lineno": 1116,
+     "name": "rekey",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 1156,
+   "lineno": 1029,
+   "name": "rekey_identity",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 1532,
+   "lineno": 1477,
+   "name": "_attach_activation_synonyms",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 2704,
+   "lineno": 2661,
+   "name": "deactivate_entries",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 601,
+   "lineno": 516,
+   "name": "register_keys",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/api/grants.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 606,
+   "lineno": 555,
+   "name": "activate_grants",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/api/search.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 211,
+   "lineno": 122,
+   "name": "search_by_term",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/api/synonyms.py": [
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 2,
+     "endline": 436,
+     "lineno": 434,
+     "name": "finish",
+     "rank": "A",
+     "type": "function"
+    },
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 2,
+     "endline": 443,
+     "lineno": 438,
+     "name": "first_write",
+     "rank": "A",
+     "type": "function"
+    },
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 3,
+     "endline": 462,
+     "lineno": 456,
+     "name": "mutate",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 482,
+   "lineno": 404,
+   "name": "_write_synonym_lists",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/models/composite_key_claim.py": [
+  {
+   "classname": "CompositeKeyClaim",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 194,
+   "lineno": 123,
+   "name": "claim",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/registry/src/registry/services/attachments.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 163,
+   "lineno": 133,
+   "name": "parse_upstream",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 290,
+   "lineno": 253,
+   "name": "check_upstream",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/services/claims.py": [
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 12,
+     "complexity": 4,
+     "endline": 713,
+     "lineno": 707,
+     "name": "strip",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 718,
+   "lineno": 626,
+   "name": "backfill_claims",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 578,
+   "lineno": 541,
+   "name": "revive_entry_synonyms",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 801,
+   "lineno": 769,
+   "name": "_reconcile_batch",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/services/key_import.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 19,
+   "endline": 199,
+   "lineno": 164,
+   "name": "_read_key_file",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 263,
+   "lineno": 232,
+   "name": "_align_provider",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 470,
+   "lineno": 403,
+   "name": "_import_grants",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/services/key_shadowing.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 14,
+   "endline": 176,
+   "lineno": 129,
+   "name": "_reconcile",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/services/namespace_deletion.py": [
+  {
+   "classname": "NamespaceDeletionService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 1822,
+   "lineno": 1741,
+   "name": "_exec_file_storage_step",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/registry/src/registry/services/reservation_store.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 226,
+   "lineno": 173,
+   "name": "check_new_reservation",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/registry/src/registry/services/system_backup.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 21,
+   "endline": 1804,
+   "lineno": 1726,
+   "name": "_restore_reservations",
+   "rank": "D",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 1460,
+   "lineno": 1420,
+   "name": "_key_skip",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/batch_sync.py": [
+  {
+   "classname": "BatchSyncService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 19,
+   "endline": 1539,
+   "lineno": 1416,
+   "name": "batch_sync_term_relations",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "BatchSyncService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 1072,
+   "lineno": 967,
+   "name": "batch_sync_terminologies",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "BatchSyncService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 1184,
+   "lineno": 1074,
+   "name": "batch_sync_templates",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/bookkeeping.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 15,
+   "endline": 164,
+   "lineno": 86,
+   "name": "repair_bookkeeping_location",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/main.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 22,
+   "endline": 1974,
+   "lineno": 1814,
+   "name": "aggregated_integrity_check",
+   "rank": "D",
+   "type": "function"
+  },
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 2,
+     "endline": 2662,
+     "lineno": 2649,
+     "name": "_run",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 16,
+   "endline": 2714,
+   "lineno": 2611,
+   "name": "execute_query",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 1,
+     "endline": 3469,
+     "lineno": 3468,
+     "name": "_quoted",
+     "rank": "A",
+     "type": "function"
+    },
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 15,
+     "endline": 3520,
+     "lineno": 3471,
+     "name": "_run",
+     "rank": "C",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 16,
+   "endline": 3560,
+   "lineno": 3414,
+   "name": "read_view_rows",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 768,
+   "lineno": 683,
+   "name": "lifespan",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 2225,
+   "lineno": 2191,
+   "name": "_hide_unreadable_targets",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/parity_monitor.py": [
+  {
+   "classname": "ParityMonitor",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 285,
+   "lineno": 229,
+   "name": "check_namespace",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/pg_roles.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 13,
+   "endline": 219,
+   "lineno": 106,
+   "name": "provision_roles",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/schema_manager.py": [
+  {
+   "classname": "SchemaManager",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 23,
+   "endline": 1250,
+   "lineno": 1075,
+   "name": "update_table_schema",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "SchemaManager",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 19,
+   "endline": 704,
+   "lineno": 535,
+   "name": "generate_create_table_ddl",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SchemaManager",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 1751,
+   "lineno": 1657,
+   "name": "ensure_table_for_template",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SchemaManager",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 1884,
+   "lineno": 1839,
+   "name": "_shared_columns",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/search_service.py": [
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 1580,
+   "lineno": 1443,
+   "name": "_get_document_references",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 1746,
+   "lineno": 1584,
+   "name": "_get_template_references",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 16,
+   "endline": 656,
+   "lineno": 561,
+   "name": "search",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 1908,
+   "lineno": 1861,
+   "name": "_search_files",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 793,
+   "lineno": 721,
+   "name": "_search_terms",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 1954,
+   "lineno": 1910,
+   "name": "_get_recent_files",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 1072,
+   "lineno": 998,
+   "name": "_fts_query",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SearchService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 1269,
+   "lineno": 1211,
+   "name": "_get_recent_terms",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/transformer.py": [
+  {
+   "classname": "DocumentTransformer",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 345,
+   "lineno": 277,
+   "name": "_flatten_object",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/reporting-sync/src/reporting_sync/worker.py": [
+  {
+   "classname": "SyncWorker",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 21,
+   "endline": 269,
+   "lineno": 125,
+   "name": "_process_document_event",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "SyncWorker",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 19,
+   "endline": 437,
+   "lineno": 295,
+   "name": "_process_template_event",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "SyncWorker",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 118,
+   "lineno": 68,
+   "name": "_fetch_template",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/template-store/src/template_store/main.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 193,
+   "lineno": 72,
+   "name": "lifespan",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/template-store/src/template_store/services/dependency_service.py": [
+  {
+   "classname": "DependencyService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 112,
+   "lineno": 49,
+   "name": "check_template_dependencies",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "components/template-store/src/template_store/services/endpoint_heal.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 115,
+   "lineno": 56,
+   "name": "heal_endpoints",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/template-store/src/template_store/services/integrity_service.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 15,
+   "endline": 188,
+   "lineno": 169,
+   "name": "_check_field",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "components/template-store/src/template_store/services/portable.py": [
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 3,
+     "endline": 124,
+     "lineno": 119,
+     "name": "_fmt",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 34,
+   "endline": 146,
+   "lineno": 83,
+   "name": "template_with_portable_refs",
+   "rank": "E",
+   "type": "function"
+  }
+ ],
+ "components/template-store/src/template_store/services/template_service.py": [
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 46,
+   "endline": 2190,
+   "lineno": 1882,
+   "name": "update_template",
+   "rank": "F",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 1,
+     "endline": 4257,
+     "lineno": 4256,
+     "name": "_resolve_tpl",
+     "rank": "A",
+     "type": "function"
+    },
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 1,
+     "endline": 4260,
+     "lineno": 4259,
+     "name": "_resolve_term",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 38,
+   "endline": 4285,
+   "lineno": 4151,
+   "name": "_normalize_field_references",
+   "rank": "E",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 33,
+   "endline": 878,
+   "lineno": 586,
+   "name": "create_template",
+   "rank": "E",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 27,
+   "endline": 1879,
+   "lineno": 1747,
+   "name": "compute_template_compatibility",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 27,
+   "endline": 3139,
+   "lineno": 2846,
+   "name": "create_templates_with_conflict_policy",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 24,
+   "endline": 4541,
+   "lineno": 4481,
+   "name": "_validate_field_references",
+   "rank": "D",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 8,
+     "endline": 2575,
+     "lineno": 2549,
+     "name": "_widen",
+     "rank": "B",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 20,
+   "endline": 2607,
+   "lineno": 2430,
+   "name": "add_edge_type_endpoints",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 18,
+   "endline": 4407,
+   "lineno": 4340,
+   "name": "_check_reference_isolation",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 17,
+   "endline": 2734,
+   "lineno": 2652,
+   "name": "_version_event_impact",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 3302,
+   "lineno": 3235,
+   "name": "cascade_to_children",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 8,
+     "complexity": 1,
+     "endline": 4453,
+     "lineno": 4450,
+     "name": "_pinned_exists",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 4,
+   "complexity": 14,
+   "endline": 4477,
+   "lineno": 4410,
+   "name": "_validate_pinned_versions",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 13,
+   "endline": 379,
+   "lineno": 328,
+   "name": "_validate_renames",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 1244,
+   "lineno": 1192,
+   "name": "get_template",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 1355,
+   "lineno": 1271,
+   "name": "list_templates",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 3743,
+   "lineno": 3645,
+   "name": "_prepare_activation",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 160,
+   "lineno": 93,
+   "name": "_validate_relationship_template_shape",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 269,
+   "lineno": 222,
+   "name": "_validate_full_text_indexed_constraints",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 3898,
+   "lineno": 3777,
+   "name": "activate_template",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "TemplateService",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 4147,
+   "lineno": 4093,
+   "name": "_resolve_endpoint_declarations",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/__init__.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 16,
+   "endline": 368,
+   "lineno": 258,
+   "name": "create_providers_from_config",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/document_identity.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 240,
+   "lineno": 203,
+   "name": "referent_identity_fields",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 269,
+   "lineno": 243,
+   "name": "build_referent_resolutions",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/events.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 673,
+   "lineno": 617,
+   "name": "ensure_stream",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/fastapi_helpers.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 17,
+   "endline": 237,
+   "lineno": 110,
+   "name": "resolve_or_404",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 10,
+     "endline": 424,
+     "lineno": 411,
+     "name": "_item_context",
+     "rank": "B",
+     "type": "function"
+    },
+    {
+     "closures": [],
+     "col_offset": 4,
+     "complexity": 2,
+     "endline": 472,
+     "lineno": 468,
+     "name": "_write_back",
+     "rank": "A",
+     "type": "function"
+    }
+   ],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 476,
+   "lineno": 355,
+   "name": "resolve_bulk_ids",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/federation.py": [
+  {
+   "classname": "FederatedGroupPolicy",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 11,
+   "endline": 139,
+   "lineno": 126,
+   "name": "apply",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/providers/api_key.py": [
+  {
+   "classname": "APIKeyProvider",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 22,
+   "endline": 562,
+   "lineno": 488,
+   "name": "_validate_key",
+   "rank": "D",
+   "type": "method"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/registry_client.py": [
+  {
+   "classname": "RegistryClientBase",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 457,
+   "lineno": 404,
+   "name": "_register_auto_synonyms_bulk",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "RegistryClientBase",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 15,
+   "endline": 588,
+   "lineno": 541,
+   "name": "lookup_entry_namespaces",
+   "rank": "C",
+   "type": "method"
+  },
+  {
+   "classname": "RegistryClientBase",
+   "closures": [],
+   "col_offset": 4,
+   "complexity": 12,
+   "endline": 502,
+   "lineno": 461,
+   "name": "resolve_candidates",
+   "rank": "C",
+   "type": "method"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/resolve.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 15,
+   "endline": 715,
+   "lineno": 672,
+   "name": "terminology_coordinates_by_id",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 12,
+   "endline": 804,
+   "lineno": 736,
+   "name": "resolve_term_by_fields",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 11,
+   "endline": 664,
+   "lineno": 608,
+   "name": "_post_lookup_by_id",
+   "rank": "C",
+   "type": "function"
+  }
+ ],
+ "libs/wip-auth/src/wip_auth/testing.py": [
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 20,
+   "endline": 571,
+   "lineno": 508,
+   "name": "_addressable_operations",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 18,
+   "endline": 638,
+   "lineno": 638,
+   "name": "assert_anonymous_refused",
+   "rank": "C",
+   "type": "function"
+  },
+  {
+   "closures": [],
+   "col_offset": 0,
+   "complexity": 15,
+   "endline": 327,
+   "lineno": 285,
+   "name": "collect_codeless_error_items",
+   "rank": "C",
+   "type": "function"
+  }
+ ]
+}

@@ -28,7 +28,7 @@ packages: [wip-client]
   carried no description at all; each now names its own unit. The counts
   themselves are unchanged.
 - **Rehash outcomes.** `status: "unresolved"` covers two cases, not one: a
-  referent identity field with no stored resolution, and an identity field the
-  row does not carry at all. `status: "error"` names its second cause too — an
+  referent identity field with no stored resolution, and an identity field
+  missing or null on the row. `status: "error"` names its second cause too — an
   identity path the template cannot classify, not only an unreadable template
   version. `@wip/client`'s `RehashIdentitiesItem` docs match the served text.

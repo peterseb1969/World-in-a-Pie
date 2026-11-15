@@ -254,7 +254,7 @@ async def _rehash_row(
     except ValueError as exc:
         # Nothing here to recompute from: a referent identity field whose
         # resolution was never stored (a legacy doc written during a
-        # resolution outage), or an identity field the row does not carry.
+        # resolution outage), or an identity field missing or null on the row.
         # Needs live re-resolution (or curation) before it can migrate.
         item.status = "unresolved"
         item.detail = str(exc)
