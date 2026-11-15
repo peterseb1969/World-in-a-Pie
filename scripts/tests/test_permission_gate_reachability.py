@@ -130,6 +130,127 @@ def test_no_gate_at_all_is_reported():
     assert [v["function"] for v in violations] == ["list_things"]
 
 
+def test_gate_in_an_if_test_behind_a_short_circuit_is_reported():
+    """`if existing and not await can_read(...)`: with no row the auth layer is
+    never asked, and the request goes on to answer."""
+    violations = _permission_violations("""
+        @router.get("/{thing_id}")
+        async def get_thing(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing and not await can_read(identity, existing.namespace):
+                raise HTTPException(404, "Thing not found")
+            return await ThingService.export(thing_id)
+    """)
+    assert [v["function"] for v in violations] == ["get_thing"]
+
+
+def test_gate_in_a_short_circuited_assignment_is_reported():
+    """The `hidden = found and not await can_read(...)` idiom asks nothing when
+    the lookup misses, so the read that follows is ungated."""
+    violations = _permission_violations("""
+        @router.get("/{thing_id}/children")
+        async def get_children(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            hidden = existing is not None and not await can_read(identity, existing.namespace)
+            if hidden:
+                raise HTTPException(404, "Thing not found")
+            children = await ThingService.children_of(thing_id)
+            return ThingListResponse(items=children, total=len(children))
+    """)
+    assert [v["function"] for v in violations] == ["get_children"]
+
+
+def test_method_call_returned_before_the_gate_is_reported():
+    """`cached.model_dump()` takes no arguments, but emptiness is what a
+    constructor is given, not what a method happens to be called on."""
+    violations = _permission_violations(f"""
+        @router.get("/list")
+        async def list_things(identity: str = Depends(require_api_key)):
+            if cached:
+                return cached.model_dump()
+            {GATE}
+            return await ThingService.list()
+    """)
+    assert [v["function"] for v in violations] == ["list_things"]
+
+
+def test_gate_in_try_body_with_an_ungated_handler_is_reported():
+    """Whatever raises jumps to the handler, and it may do so before the body
+    reached its gate — so the handler's data answer escapes."""
+    violations = _permission_violations(f"""
+        @router.get("/list")
+        async def list_things(thing_id: str, identity: str = Depends(require_api_key)):
+            try:
+                row = await ThingService.get(thing_id)
+                {GATE}
+                return row.payload
+            except LookupError:
+                return await ThingService.fallback(thing_id)
+    """)
+    assert [v["function"] for v in violations] == ["list_things"]
+
+
+def test_match_without_an_irrefutable_case_is_reported():
+    """A subject matching no case walks past the statement, so gates in the
+    cases it does have are conditional. (ast.Match has no `orelse`: a `case _`
+    is an ordinary case.)"""
+    violations = _permission_violations(f"""
+        @router.get("/list")
+        async def list_things(kind: str, identity: str = Depends(require_api_key)):
+            match kind:
+                case "a":
+                    {GATE}
+                case "b":
+                    {GATE}
+            return await ThingService.list()
+    """)
+    assert [v["function"] for v in violations] == ["list_things"]
+
+
+def test_match_case_escaping_before_the_gate_is_reported():
+    violations = _permission_violations(f"""
+        @router.get("/list")
+        async def list_things(kind: str, identity: str = Depends(require_api_key)):
+            match kind:
+                case "cached":
+                    return await ThingService.cached_list()
+                case _:
+                    {GATE}
+            return await ThingService.list()
+    """)
+    assert [v["function"] for v in violations] == ["list_things"]
+
+
+def test_named_miss_answer_is_not_a_waiver():
+    """A listed miss answer makes a branch emptily answered; it does not gate the
+    ones that answer with data."""
+    violations = _permission_violations("""
+        @router.post("/{template_id}/validate")
+        async def validate_template(template_id: str, identity: str = Depends(require_api_key)):
+            if nowhere:
+                return TemplateService.template_not_found_validation(template_id)
+            return await TemplateService.validate_template(template_id)
+    """)
+    assert [v["function"] for v in violations] == ["validate_template"]
+
+
+def test_parent_lookup_that_gates_only_when_it_finds_a_row_is_reported():
+    """The `if term_parent:` shape this rule used to waive for create_terms: with
+    no terminology row the write goes ahead ungated."""
+    violations = _permission_violations("""
+        @router.post("/terminologies/{terminology_id}/terms")
+        async def create_terms(
+            terminology_id: str, items: list[Item], identity: str = Depends(require_api_key)
+        ):
+            parent = await Terminology.find_one({"terminology_id": terminology_id})
+            if parent:
+                await check_entity_permission(identity, parent.namespace, "write", "Terminology not found")
+            return await TerminologyService.create_term(terminology_id, items)
+    """)
+    assert [v["function"] for v in violations] == ["create_terms"]
+    assert "create_terms" not in checker.PERMISSION_CONDITIONAL_GATE_FUNCTIONS
+
+
 # --------------------------------------------------------------------------
 # Accepted: gates that do stand on every path.
 # --------------------------------------------------------------------------
@@ -234,6 +355,46 @@ def test_no_gate_at_all_is_reported():
         async def ok_depends_factory():
             return await cleanup()
     """, id="depends-factory-in-decorator"),
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def ok_miss_then_can_read(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing is None:
+                raise HTTPException(404, "Thing not found")
+            if not await can_read(identity, existing.namespace):
+                raise HTTPException(404, "Thing not found")
+            return await ThingService.export(thing_id)
+    """.replace("{GATE}", GATE), id="miss-answered-then-gate-in-the-test"),
+    pytest.param("""
+        @router.post("/{template_id}/validate")
+        async def ok_named_miss_answer(template_id: str, identity: str = Depends(require_api_key)):
+            existing = await Template.find_one({"template_id": template_id})
+            if existing is None:
+                return TemplateService.template_not_found_validation(template_id)
+            await check_readable(identity, existing.namespace, "Template not found")
+            return await TemplateService.validate_template(template_id)
+    """, id="listed-miss-answer-before-gate"),
+    pytest.param(f"""
+        @router.get("/list")
+        async def ok_match_catch_all(kind: str, identity: str = Depends(require_api_key)):
+            match kind:
+                case "a":
+                    {GATE}
+                case _:
+                    {GATE}
+            return await ThingService.list()
+    """, id="match-with-irrefutable-case"),
+    pytest.param("""
+        @router.post("/terminologies/{terminology_id}/terms")
+        async def create_terms(
+            terminology_id: str, items: list[Item], identity: str = Depends(require_api_key)
+        ):
+            parent = await Terminology.find_one({"terminology_id": terminology_id})
+            if parent is None:
+                raise HTTPException(404, "Terminology not found")
+            await check_entity_permission(identity, parent.namespace, "write", "Terminology not found")
+            return await TerminologyService.create_terms_bulk(terminology_id, items)
+    """, id="parent-miss-answered-then-gate"),
 ])
 def test_gated_shapes_pass(body: str) -> None:
     assert _permission_violations(body) == []

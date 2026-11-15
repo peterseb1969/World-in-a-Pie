@@ -149,8 +149,9 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     # A name here is a gate the rule looks for. It is not yet enough: the
     # rule also requires that the gate is reached on every path to an answer
     # (see the gate-reachability helpers below). A gate under `if existing:`,
-    # or one that only runs after the endpoint has already answered, is found
-    # by name and still reported.
+    # one sitting in an operand that a short-circuit may skip, or one that only
+    # runs after the endpoint has already answered, is found by name and still
+    # reported.
     # Local helper wrappers that delegate to the canonical helpers.
     # When a new wrapper lands, add the name here so the AST walker
     # treats the wrapper-call as a valid gate without needing to
@@ -278,14 +279,6 @@ PERMISSION_CONDITIONAL_GATE_FUNCTIONS = {
     ),
     "update_templates": _BATCH_GUARD,
     "delete_templates": _BATCH_GUARD,
-    "create_terms": (
-        "check_entity_permission asks write on the terminology's own namespace, "
-        "behind the lookup that found it. The branch the walk cannot follow is "
-        "`if term_parent:` — no terminology row, so no term can be added to it: "
-        "the service misses and the single-item path turns that into the 404 of "
-        "an id that names nothing (terms.py, _create_one_term), the bulk path "
-        "into a per-item not_found."
-    ),
     "start_restore": (
         "The gate splits by mode and the two halves together cover every "
         "namespace written. Every mode but one admin-checks effective_target "
@@ -293,6 +286,22 @@ PERMISSION_CONDITIONAL_GATE_FUNCTIONS = {
         "the URL namespace gates nothing and _parse_namespace_map admin-checks "
         "every target the map names before the job is queued."
     ),
+}
+
+# Calls that build a door's not-found answer, for a door whose miss is a
+# response body rather than an HTTP error (a validation outcome, a rejected
+# item). Each is a fixed failure that quotes only the id the caller sent, so
+# the path that answers with it carries nothing of any stored entity — the
+# scan may treat it like an empty return. The bodies are written by hand at
+# the cited place, so the claim is checkable; it is not a waiver of any gate:
+# a listed helper is still an answer, and a door that reaches a *data* answer
+# on this path is still reported.
+MISS_ANSWER_FUNCTIONS = {
+    "template_not_found_validation":
+        "template_store TemplateService: ValidateTemplateResponse(valid=False, "
+        "template_id=<the submitted id>, errors=[one ValidationError with "
+        "code='not_found']) — the /validate door's answer for an id that names "
+        "no template, and for one its caller cannot see.",
 }
 
 
@@ -312,7 +321,10 @@ PERMISSION_CONDITIONAL_GATE_FUNCTIONS = {
 #   - in the expression of a statement the path reaches: an assignment, a bare
 #     call, a raise, or a return;
 #   - in the *test* of an `if` or `while`, which runs whenever the statement
-#     does — the shape of `if not is_superadmin(identity): raise ...`;
+#     does — the shape of `if not is_superadmin(identity): raise ...`. Only
+#     where the test's own evaluation cannot skip it counts: in
+#     `if existing and not await can_read(...)`, a falsy `existing` never asks
+#     the auth layer, so that gate is conditional like one under `if existing:`;
 #   - in every branch of an `if`/`else`: one branch skipping the gate is
 #     exactly the fall-through that must not pass;
 #   - first in the body of a `for` over the items or namespaces a request
@@ -320,18 +332,23 @@ PERMISSION_CONDITIONAL_GATE_FUNCTIONS = {
 #     idiom, where each item is gated before anything of it is written;
 #   - in a `with` body, a `try` body or a `finally`, all of which run when the
 #     statement runs. A gate only in an `except` handler does NOT count: the
-#     try body can finish without ever reaching it.
+#     try body can finish without ever reaching it. Equally, a gate in the body
+#     does not cover an `except` handler that answers with data: something can
+#     raise before the body reaches the gate and leave the handler ungated.
 #
 # Before a gate, a path may only abort or answer emptily: `raise`, `continue`,
-# or a `return` of a literal or an empty structure. That is what keeps
-# "read the row to learn its namespace, then gate, then answer" legal, while an
-# early `return <the data>` is not — the lookup is not the answer, and a door
-# that answers nothing leaked nothing.
+# or a `return` of a literal or an empty structure, or of one of the miss
+# answers in MISS_ANSWER_FUNCTIONS. That is what keeps "read the row to learn
+# its namespace, then gate, then answer" legal, while an early `return <the
+# data>` is not — the lookup is not the answer, and a door that answers nothing
+# leaked nothing.
 #
 # What the scan will not try to prove, and so reports for review:
 #   - that a branch skipped by a condition writes nothing (`if ids:`); see
 #     PERMISSION_CONDITIONAL_GATE_FUNCTIONS;
-#   - that a service call behind the gate would have failed anyway.
+#   - that a service call behind the gate would have failed anyway — a door
+#     with no entity answers its own miss instead, so this never has to be
+#     assumed.
 # ---------------------------------------------------------------------------
 
 _GATE, _ESCAPE, _OPEN = "gate", "escape", "open"
@@ -349,14 +366,26 @@ def _callee_name(call: ast.Call) -> str | None:
 
 
 def _gate_in_expr(expr: ast.expr | None) -> bool:
-    """Whether an expression calls a recognised gate anywhere in it: a gate in a
-    comprehension counts as much as a direct call."""
+    """Whether evaluating this expression certainly calls a recognised gate.
+
+    Certain means the gate is not behind something the evaluation may skip: a
+    `BoolOp` short-circuits, so a gate in an operand after the first may never
+    run — in `if existing and not await can_read(...)`, a falsy `existing` asks
+    nothing of the auth layer, and the path that skips the test still answers.
+    A gate inside a comprehension counts: the comprehension runs when the
+    expression does, and the gate covers what it feeds the caller.
+    """
     if expr is None:
         return False
-    return any(
-        _callee_name(inner) in PERMISSION_ENFORCEMENT_NAMES
-        for inner in ast.walk(expr) if isinstance(inner, ast.Call)
-    )
+    if isinstance(expr, ast.BoolOp):
+        return _gate_in_expr(expr.values[0])
+    if isinstance(expr, ast.IfExp):
+        return _gate_in_expr(expr.test)
+    if isinstance(expr, ast.Call):
+        return (_callee_name(expr) in PERMISSION_ENFORCEMENT_NAMES
+                or any(_gate_in_expr(part)
+                      for part in [*expr.args, *(kw.value for kw in expr.keywords)]))
+    return any(_gate_in_expr(child) for child in ast.iter_child_nodes(expr))
 
 
 def _calls_a_gate(node: ast.AST) -> bool:
@@ -377,7 +406,12 @@ def _empty_answer(node: ast.expr | None) -> bool:
     """Whether a returned value carries no data: a literal (None, "", 0), a
     container of empties, or a model built from empties. `return
     BulkResponse(results=[], total=0, succeeded=0, failed=0)` is the empty bulk
-    answer; `return JSONResponse(content=result)` is not."""
+    answer; `return JSONResponse(content=result)` is not.
+
+    Only a constructor reads as a model: `cached.model_dump()` and
+    `report.to_dict()` are method calls on whatever the endpoint holds, and the
+    scan cannot know they build nothing. A call that does answer with nothing is
+    named in MISS_ANSWER_FUNCTIONS."""
     if node is None or isinstance(node, ast.Constant):
         return True
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -388,7 +422,9 @@ def _empty_answer(node: ast.expr | None) -> bool:
             for key, value in zip(node.keys, node.values, strict=True)
         )
     if isinstance(node, ast.Call):
-        return all(
+        if _callee_name(node) in MISS_ANSWER_FUNCTIONS:
+            return True
+        return isinstance(node.func, ast.Name) and all(
             _empty_answer(part)
             for part in [*node.args, *(kw.value for kw in node.keywords)]
         )
@@ -481,12 +517,15 @@ def _scan_seq(stmts: list) -> str:
 
 def _scan_try(st: ast.Try) -> str:
     head = _scan_seq(st.body)
-    if head != _OPEN:
-        return head
     others = [_scan_seq(handler.body) for handler in st.handlers]
     others.append(_scan_seq(st.orelse))
-    if _ESCAPE in others:
+    # A handler runs on the path where the body raised, which may be before the
+    # body reached its gate — so an answer with data in a handler escapes even
+    # when the body gates.
+    if head == _ESCAPE or _ESCAPE in others:
         return _ESCAPE
+    if head == _GATE:
+        return _GATE
     # A `finally` runs whatever the body and the handlers did — its gate is
     # passed on every path out of the statement.
     if st.finalbody and _scan_seq(st.finalbody) == _GATE:
@@ -522,11 +561,20 @@ def _scan_stmt(st: ast.stmt) -> str:
     if isinstance(st, ast.Try):
         return _scan_try(st)
     if isinstance(st, ast.Match):
-        # st.orelse is empty unless there is a `case _`, so a subject matching
-        # no case leaves the statement open.
+        # `ast.Match` has no `orelse` — a `case _` is an ordinary entry in
+        # `cases`. Unless some case is irrefutable the subject may match none of
+        # them and the statement is passed by, so what its cases gate is
+        # conditional however uniform they look.
         paths = [_scan_seq(case.body) for case in st.cases]
-        paths.append(_scan_seq(st.orelse))
-        return _combine(*paths)
+        if _ESCAPE in paths:
+            return _ESCAPE
+        irrefutable = any(
+            isinstance(case.pattern, ast.MatchAs) and case.pattern.pattern is None
+            for case in st.cases
+        )
+        if irrefutable and all(path == _GATE for path in paths):
+            return _GATE
+        return _OPEN
     return _OPEN
 
 
