@@ -164,6 +164,10 @@ The trusted header provider requires **both** `X-WIP-User` and a valid **privile
 | Normal app request (no OIDC) | absent | Valid | Falls through to `APIKeyProvider` |
 | Spoofing attempt | `admin@wip.local` | absent | `None` (ignored, warning logged) |
 | Spoofing attempt | `admin@wip.local` | invalid | `None` (ignored, warning logged) |
+| Key checks saturated | `admin@wip.local` | Valid, privileged, but the bounded bcrypt checks had no room | `503` + `Retry-After: 1` — refused here, never passed on |
+| Runtime keys unconfirmed | `admin@wip.local` | Any | `None` (identity ignored, warning logged); `APIKeyProvider` answers the same outage with `503` |
+
+The last two rows differ because one is transient per call and the other is a state covering every key. The bound on the bcrypt checks is judged on each call, so a value declined a moment ago can verify on the next: passing such a request to `APIKeyProvider` would answer it as the privileged key, with the asserted identity dropped. Unconfirmed runtime keys cover every key at once, so that provider refuses the request anyway and there is nothing to vouch for the assertion either way.
 
 `@wip/proxy` no longer forwards these headers (see component 2), so none of these rows is reached through it. The provider still serves callers that hold a privileged key themselves.
 
