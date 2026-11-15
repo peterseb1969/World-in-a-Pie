@@ -491,6 +491,13 @@ Per item:
 - error `invalid_state`, details.rule `storage_missing` — the object store no
   longer holds the file's bytes. Upload the same bytes again: an upload of a
   soft-deleted file's bytes revives it too, under the same file_id.
+- error `dependency_unavailable` — the object store could not be reached.
+
+During an outage the batch asks the store once: after the first item meets one,
+the later inactive items report `dependency_unavailable` without being asked
+again, so the request answers in about one timeout instead of one per item.
+Other items — no such file, no read access, already live — keep their own
+answer.
     """,
     dependencies=[Depends(require_file_storage)]
 )
@@ -513,6 +520,13 @@ async def reactivate_files(
         identity, {doc.namespace for doc in file_docs if doc}, "File not found"
     )
     results = []
+    # A reactivate reaches the object store only for an inactive file, so an
+    # unreachable store is met once per inactive item: each call waits out the
+    # whole connect-and-retry budget, and a full batch would answer hours after
+    # its caller gave up. The first outage is carried to the later inactive
+    # items instead of asking again. Items the store plays no part in (missing,
+    # unreadable, already live) keep their own answer.
+    outage: FileStorageUnavailableError | None = None
     for i, (item, file_doc) in enumerate(zip(items, file_docs, strict=True)):
         try:
             if not file_doc:
@@ -521,6 +535,9 @@ async def reactivate_files(
             if file_doc.namespace in refusals:
                 error, code = refusals[file_doc.namespace]
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error=error, error_code=code))
+                continue
+            if outage is not None and file_doc.status == FileStatus.INACTIVE:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(outage)))
                 continue
             outcome = await service.reactivate_file(item.id)
             if outcome is None:
@@ -531,6 +548,8 @@ async def reactivate_files(
                 index=i, status="reactivated" if reactivated else "unchanged", id=item.id,
             ))
         except _ITEM_FAILURES as e:
+            if isinstance(e, FileStorageUnavailableError):
+                outage = e
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return held.answer(BulkResponse(
