@@ -33,8 +33,8 @@ class BulkResultItemBase(BaseModel):
     """Universal per-item result for bulk write operations."""
 
     index: int
-    # created, updated, unchanged, deleted, skipped, error; some endpoints add
-    # their own (reactivated, merged, removed, deprecated)
+    # created, updated, unchanged, deleted, skipped, error; an endpoint adds
+    # its own where that is what happened (reactivated, deprecated)
     status: str
     id: str | None = None
     error: str | None = None
