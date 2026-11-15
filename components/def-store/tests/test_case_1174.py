@@ -74,34 +74,46 @@ async def test_by_value_without_namespace_picks_the_readable_one_and_names_no_ot
     assert response.json()["terminology_id"] == mine
 
 
+def _unreadable(namespace):
+    """Patch the validate doors' read check: ``namespace`` cannot be read."""
+    async def can_read(_identity, ns):
+        return ns != namespace
+    return patch("def_store.api.terms.can_read", side_effect=can_read)
+
+
 @pytest.mark.asyncio
-async def test_validate_by_value_does_not_reveal_an_unreadable_terminology(
+async def test_validate_does_not_reveal_an_unreadable_terminology(
     client: AsyncClient, auth_headers: dict
 ):
-    await _terminology(client, auth_headers, "PROBE_1174_VALIDATE", "wip")
+    # A terminology the caller cannot read answers exactly as a value that
+    # names nothing in that namespace.
     await _terminology(client, auth_headers, "PROBE_1174_VALIDATE", "test-ns")
-    p1, p2 = _readable("wip")
-    with p1, p2:
-        response = await client.post(
-            f"{API}/validate", headers=auth_headers,
-            json={"terminology_value": "PROBE_1174_VALIDATE", "value": "x"},
+    with _unreadable("test-ns"):
+        hidden = await client.post(
+            f"{API}/validate", headers=auth_headers, params={"namespace": "test-ns"},
+            json={"terminology_id": "PROBE_1174_VALIDATE", "value": "x"},
         )
-    body = response.json()
-    assert response.status_code == 200, response.text
-    assert "test-ns" not in str(body), body
-    assert body["error_code"] != "ambiguous_terminology", body
+        absent = await client.post(
+            f"{API}/validate", headers=auth_headers, params={"namespace": "test-ns"},
+            json={"terminology_id": "PROBE_1174_NOWHERE", "value": "x"},
+        )
+    assert hidden.status_code == 200, hidden.text
+    body = hidden.json()
+    assert body["valid"] is False and body["error_code"] == "not_found", body
+    assert body["error"].replace("PROBE_1174_VALIDATE", "<v>") == (
+        absent.json()["error"].replace("PROBE_1174_NOWHERE", "<v>")
+    ), (body, absent.json())
 
 
 @pytest.mark.asyncio
-async def test_bulk_validate_by_value_does_not_reveal_an_unreadable_terminology(
+async def test_bulk_validate_does_not_reveal_an_unreadable_terminology(
     client: AsyncClient, auth_headers: dict
 ):
     await _terminology(client, auth_headers, "PROBE_1174_BULK", "test-ns")
-    p1, p2 = _readable("wip")
-    with p1, p2:
+    with _unreadable("test-ns"):
         response = await client.post(
-            f"{API}/validate/bulk", headers=auth_headers,
-            json={"items": [{"terminology_value": "PROBE_1174_BULK", "value": "x"}]},
+            f"{API}/validate/bulk", headers=auth_headers, params={"namespace": "test-ns"},
+            json={"items": [{"terminology_id": "PROBE_1174_BULK", "value": "x"}]},
         )
     assert response.status_code == 200, response.text
     (item,) = response.json()["results"]

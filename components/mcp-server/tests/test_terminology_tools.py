@@ -435,7 +435,7 @@ async def test_validate_term_with_uuid_terminology():
 
     data = json.loads(result)
     assert data["valid"] is True
-    mock.validate_term.assert_awaited_once_with(terminology=uuid, value="CH")
+    mock.validate_term.assert_awaited_once_with(terminology=uuid, value="CH", namespace=None)
 
 
 @pytest.mark.asyncio
@@ -450,11 +450,11 @@ async def test_validate_term_with_terminology_value():
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await validate_term_value(terminology="COUNTRY", value="CH")
+        result = await validate_term_value(terminology="COUNTRY", value="CH", namespace="clinic")
 
     data = json.loads(result)
     assert data["valid"] is True
-    mock.validate_term.assert_awaited_once_with(terminology="COUNTRY", value="CH")
+    mock.validate_term.assert_awaited_once_with(terminology="COUNTRY", value="CH", namespace="clinic")
 
 
 @pytest.mark.asyncio

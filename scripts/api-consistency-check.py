@@ -163,7 +163,7 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     "_batch_write_refusals",        # document_store.api.documents: write_refusals for the documents a batch names
     "_require_write_on_template",   # template_store.api.templates: write on the template row's own namespace
     "_audited_namespace",           # def_store.api.audit: can_read on the audited entity's namespace
-    "_bulk_item_terminology",       # def_store.api.terms: can_read (via _visible_terminology) + resolve_accessible_namespaces
+    "_bulk_item_terminology",       # def_store.api.terms: can_read on the resolved terminology's namespace
 })
 
 # Names that count as valid permission gates when they appear as the

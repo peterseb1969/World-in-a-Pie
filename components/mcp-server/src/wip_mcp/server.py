@@ -2371,16 +2371,22 @@ async def search_terms(
 
 
 @mcp.tool()
-async def validate_term_value(terminology: str, value: str) -> str:
+async def validate_term_value(
+    terminology: str, value: str, namespace: str | None = None,
+) -> str:
     """Validate whether a value exists in a terminology. Use to test term resolution.
 
     Args:
-        terminology: Terminology ID (UUID) or value (e.g., 'COUNTRY', 'CT_AE_TERM_TEST').
+        terminology: The terminology: its ID, value (e.g. 'COUNTRY'), 'ns:VALUE'
+            (e.g. 'wip:COUNTRY' for a shared vocabulary) or a Registry synonym.
+            A value resolves in `namespace` only, never in another namespace.
         value: The term value to validate.
+        namespace: Namespace the terminology resolves in (derived for
+            single-namespace keys; WIP_MCP_DEFAULT_NAMESPACE when omitted).
     """
     try:
         data = await get_client().validate_term(
-            terminology=terminology, value=value
+            terminology=terminology, value=value, namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

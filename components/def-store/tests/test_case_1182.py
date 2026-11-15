@@ -86,14 +86,24 @@ async def test_validate_says_why_as_a_code(client: AsyncClient, auth_headers: di
                               json={"terminology_id": tid, "value": "nope"})).json()
     hit = (await client.post(f"{API}/validate", headers=auth_headers,
                              json={"terminology_id": tid, "value": "ok"})).json()
-    bulk = (await client.post(f"{API}/validate/bulk", headers=auth_headers, json={"items": [
-        {"terminology_value": "NO_SUCH_TERMINOLOGY_1182", "value": "x"},
-        {"value": "x"},
+    bulk = (await client.post(f"{API}/validate/bulk", headers=auth_headers, params={"namespace": "wip"},
+                              json={"items": [
+        {"terminology_id": "NO_SUCH_TERMINOLOGY_1182", "value": "x"},
     ]})).json()["results"]
+    unscoped = (await client.post(f"{API}/validate/bulk", headers=auth_headers, json={"items": [
+        {"terminology_id": "NO_SUCH_TERMINOLOGY_1182", "value": "x"},
+    ]})).json()["results"]
+    unnamed = await client.post(f"{API}/validate/bulk", headers=auth_headers, json={"items": [
+        {"value": "x"},
+    ]})
 
     assert miss["error_code"] == "term_not_found", miss
     assert hit.get("error_code") is None
-    assert [b["error_code"] for b in bulk] == ["not_found", "invalid_request"], bulk
+    assert [b["error_code"] for b in bulk] == ["not_found"], bulk
+    # A value with no namespace to resolve in: the caller's key has several.
+    assert [b["error_code"] for b in unscoped] == ["invalid_request"], unscoped
+    # An item naming no terminology is a malformed request.
+    assert unnamed.status_code == 422, unnamed.text
 
 
 @pytest.mark.asyncio

@@ -47,91 +47,52 @@ def _mock_http(response=None):
 
 
 # =========================================================================
-# validate_term — UUID vs non-UUID dispatch
+# validate_term — the identifier goes to the route as given
 # =========================================================================
 
 
 @pytest.mark.asyncio
-async def test_validate_term_with_uuid_sends_terminology_id():
-    """validate_term with UUID sends {"terminology_id": uuid, "value": ...}."""
-    uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+@pytest.mark.parametrize("terminology", [
+    "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+    "a1b2c3d4-e5f6",
+    "COUNTRY",
+    "CT_AE_TERM_TEST",
+    "wip:COUNTRY",
+])
+async def test_validate_term_sends_the_identifier_as_terminology_id(terminology):
+    """The route resolves the identifier through the Registry (UUID, value,
+    ns:VALUE or synonym); the client never guesses which form it is."""
     expected = {"valid": True, "term_id": "TRM-001"}
     mock_http = _mock_http(_mock_response(expected))
 
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
-        result = await client.validate_term(terminology=uuid, value="CH")
+        result = await client.validate_term(terminology=terminology, value="CH")
 
     assert result == expected
-    mock_http.post.assert_awaited_once()
     call_args = mock_http.post.call_args
     assert "/api/def-store/validate" in call_args.args[0]
-    body = call_args.kwargs["json"]
-    assert body["terminology_id"] == uuid
-    assert body["value"] == "CH"
-    assert "terminology_value" not in body
+    assert call_args.kwargs["json"] == {"terminology_id": terminology, "value": "CH"}
 
 
 @pytest.mark.asyncio
-async def test_validate_term_with_non_uuid_sends_terminology_value():
-    """validate_term with non-UUID value sends {"terminology_value": value, "value": ...}."""
-    expected = {"valid": True, "term_id": "TRM-002"}
-    mock_http = _mock_http(_mock_response(expected))
-
-    client = _make_client()
-    with patch.object(client, "_get_client", return_value=mock_http):
-        result = await client.validate_term(terminology="COUNTRY", value="GB")
-
-    assert result == expected
-    mock_http.post.assert_awaited_once()
-    body = mock_http.post.call_args.kwargs["json"]
-    assert body["terminology_value"] == "COUNTRY"
-    assert body["value"] == "GB"
-    assert "terminology_id" not in body
-
-
-@pytest.mark.asyncio
-async def test_validate_term_uppercase_uuid_detected():
-    """validate_term with uppercase UUID still uses terminology_id key."""
-    uuid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
+async def test_validate_term_sends_the_namespace():
     mock_http = _mock_http(_mock_response({"valid": True}))
-
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
-        await client.validate_term(terminology=uuid, value="X")
-
-    body = mock_http.post.call_args.kwargs["json"]
-    assert body["terminology_id"] == uuid
-    assert "terminology_value" not in body
+        await client.validate_term(terminology="COUNTRY", value="GB", namespace="clinic")
+    assert mock_http.post.call_args.kwargs["params"] == {"namespace": "clinic"}
 
 
 @pytest.mark.asyncio
-async def test_validate_term_partial_uuid_treated_as_value():
-    """validate_term with partial UUID string uses terminology_value key."""
-    not_uuid = "a1b2c3d4-e5f6"
-    mock_http = _mock_http(_mock_response({"valid": False}))
-
-    client = _make_client()
-    with patch.object(client, "_get_client", return_value=mock_http):
-        await client.validate_term(terminology=not_uuid, value="X")
-
-    body = mock_http.post.call_args.kwargs["json"]
-    assert body["terminology_value"] == not_uuid
-    assert "terminology_id" not in body
-
-
-@pytest.mark.asyncio
-async def test_validate_term_snake_case_value():
-    """validate_term with snake_case terminology name (like CT_AE_TERM_TEST) uses terminology_value."""
+async def test_validate_term_takes_the_default_namespace(monkeypatch):
+    monkeypatch.setenv("WIP_MCP_DEFAULT_NAMESPACE", "clinic")
     mock_http = _mock_http(_mock_response({"valid": True}))
-
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
-        await client.validate_term(terminology="CT_AE_TERM_TEST", value="HEADACHE")
-
-    body = mock_http.post.call_args.kwargs["json"]
-    assert body["terminology_value"] == "CT_AE_TERM_TEST"
-    assert body["value"] == "HEADACHE"
+        await client.validate_term(terminology="COUNTRY", value="GB")
+    assert mock_http.post.call_args.kwargs["params"] == {"namespace": "clinic"}
 
 
 # =========================================================================

@@ -108,27 +108,54 @@ async def test_list_terms_value_fallback_scoping(
 
 
 @pytest.mark.asyncio
-async def test_validate_ambiguous_value_fails_in_response_shape(
+async def test_validate_resolves_a_value_only_in_the_namespace_given(
     client: AsyncClient, auth_headers: dict
 ):
-    await _create_duplicates(client, auth_headers)
+    # The terminology identifier resolves through the Registry in the
+    # request's namespace; it is never searched across namespaces, so a
+    # value two namespaces carry is neither ambiguous nor guessed.
+    wip_id, other_id = await _create_duplicates(client, auth_headers)
 
+    for ns, expected in (("wip", wip_id), ("test-ns", other_id)):
+        single = await client.post(
+            "/api/def-store/validate", headers=auth_headers, params={"namespace": ns},
+            json={"terminology_id": VALUE, "value": "anything"},
+        )
+        assert single.status_code == 200
+        body = single.json()
+        assert body["terminology_id"] == expected and body["error_code"] == "term_not_found", body
+
+    qualified = await client.post(
+        "/api/def-store/validate", headers=auth_headers,
+        json={"terminology_id": f"test-ns:{VALUE}", "value": "anything"},
+    )
+    assert qualified.json()["terminology_id"] == other_id, qualified.json()
+
+    # No namespace and a key with several: the value names no namespace.
     single = await client.post(
-        "/api/def-store/validate",
-        headers=auth_headers,
-        json={"terminology_value": VALUE, "value": "anything"},
+        "/api/def-store/validate", headers=auth_headers,
+        json={"terminology_id": VALUE, "value": "anything"},
     )
     assert single.status_code == 200
     body = single.json()
-    assert body["valid"] is False
-    assert "multiple namespaces" in body["error"]
+    assert body["valid"] is False and body["error_code"] == "invalid_request", body
+    assert "namespace" in body["error"]
 
     bulk = await client.post(
-        "/api/def-store/validate/bulk",
-        headers=auth_headers,
-        json={"items": [{"terminology_value": VALUE, "value": "anything"}]},
+        "/api/def-store/validate/bulk", headers=auth_headers,
+        json={"items": [{"terminology_id": VALUE, "value": "anything"}]},
     )
     assert bulk.status_code == 200
     item = bulk.json()["results"][0]
-    assert item["valid"] is False
-    assert "multiple namespaces" in item["error"]
+    assert item["valid"] is False and item["error_code"] == "invalid_request", item
+
+
+@pytest.mark.asyncio
+async def test_validate_refuses_the_removed_terminology_value_field(
+    client: AsyncClient, auth_headers: dict
+):
+    resp = await client.post(
+        "/api/def-store/validate", headers=auth_headers, params={"namespace": "wip"},
+        json={"terminology_value": VALUE, "value": "anything"},
+    )
+    assert resp.status_code == 422, resp.text

@@ -1150,25 +1150,32 @@ curlk -s -H "X-API-Key: $API_KEY" \
 
 ```bash
 curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST/api/def-store/validate" \
+  "$HOST/api/def-store/validate?namespace=wip" \
   -d '{
-    "terminology_value": "COUNTRY",
+    "terminology_id": "COUNTRY",
     "value": "UK"
   }' | jq '{valid, matched_term: .matched_term.value, matched_via}'
 
 # → {"valid": true, "matched_term": "United Kingdom", "matched_via": "alias"}
 ```
 
+`terminology_id` takes any identifier of the terminology (its id, value,
+`ns:VALUE` or a Registry synonym), resolved through the Registry in
+`namespace`. A key with one namespace needs no `namespace`; with several, a
+value needs it (or the `ns:VALUE` form, e.g. `"wip:COUNTRY"`). A terminology
+that does not resolve is answered in the body, with `error_code`
+`not_found`, `ambiguous_terminology` or `invalid_request`.
+
 ### Validate multiple term values
 
 ```bash
 curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST/api/def-store/validate/bulk" \
+  "$HOST/api/def-store/validate/bulk?namespace=wip" \
   -d '{
     "items": [
-      {"terminology_value": "COUNTRY", "value": "Germany"},
-      {"terminology_value": "COUNTRY", "value": "Narnia"},
-      {"terminology_value": "CURRENCY", "value": "EUR"}
+      {"terminology_id": "COUNTRY", "value": "Germany"},
+      {"terminology_id": "COUNTRY", "value": "Narnia"},
+      {"terminology_id": "CURRENCY", "value": "EUR"}
     ]
   }' | jq '{total, valid_count, invalid_count, results: [.results[] | {value, valid}]}'
 ```

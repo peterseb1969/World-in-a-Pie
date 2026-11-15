@@ -415,13 +415,13 @@ class ExportTerminologyResponse(BaseModel):
 class ValidateValueRequest(StrictModel):
     """Request to validate a value against a terminology."""
 
-    terminology_id: str | None = Field(
-        default=None,
-        description="Terminology ID (use this or terminology_value)"
-    )
-    terminology_value: str | None = Field(
-        default=None,
-        description="Terminology value (use this or id)"
+    terminology_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The terminology: its canonical id, value, ns:VALUE or a Registry "
+            "synonym, resolved in the request's namespace"
+        ),
     )
     value: str = Field(
         ...,

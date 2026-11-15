@@ -312,12 +312,18 @@ export class DefStoreService extends BaseService {
 
   // ---- Validation ----
 
-  async validateValue(data: ValidateValueRequest): Promise<ValidateValueResponse> {
-    return this.post('/validate', data)
+  /** `namespace` is where a terminology value or synonym resolves; needed
+   * when the key has several namespaces. */
+  async validateValue(
+    data: ValidateValueRequest, options?: { namespace?: string },
+  ): Promise<ValidateValueResponse> {
+    return this.post('/validate', data, options)
   }
 
-  async bulkValidate(data: BulkValidateRequest): Promise<BulkValidateResponse> {
-    return this.post('/validate/bulk', data)
+  async bulkValidate(
+    data: BulkValidateRequest, options?: { namespace?: string },
+  ): Promise<BulkValidateResponse> {
+    return this.post('/validate/bulk', data, options)
   }
 
   // ---- Ontology / Term Relations ----

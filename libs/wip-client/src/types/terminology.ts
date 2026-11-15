@@ -262,8 +262,9 @@ export interface ExportTerminologyResponse {
 }
 
 export interface ValidateValueRequest {
-  terminology_id?: string
-  terminology_value?: string
+  /** The terminology: its canonical id, value, `ns:VALUE` or a Registry
+   * synonym, resolved in the request's `namespace`. */
+  terminology_id: string
   value: string
 }
 
