@@ -17,6 +17,10 @@ policy — the per-surface policy matrix from the design doc, as code:
                   on a refresh, render to a `.refresh` sidecar instead
                   (unless force) — app CLAUDE.md is generated-then-customised;
                   a silent overwrite would destroy app-authored content
+- CREATE_ONLY     a starting point the app then owns (bootstrap templates,
+                  the query preset, .env): on a refresh only targets that
+                  do not exist yet are written, so a refresh never
+                  overwrites app code, whatever flags the caller passed
 - MERGE_JSON_BASELINE  a scaffold-owned JSON baseline in an app-extended file:
                   three-way merge (last applied baseline, new baseline, the
                   file) keeps app entries, adds and retires baseline entries,
@@ -45,6 +49,7 @@ class Policy(Enum):
     REGENERATE = "regenerate"
     PRESERVE_OR_SET = "preserve_or_set"
     RENDER_REFRESH = "render_refresh"
+    CREATE_ONLY = "create_only"
     MERGE_JSON_BASELINE = "merge_json_baseline"
 
 
@@ -151,9 +156,26 @@ def _plan_surface(s: Surface, ctx: Context) -> tuple[dict[str, bytes], list[Path
                 redirected[rel] = data
         files = redirected
 
+    if s.policy is Policy.CREATE_ONLY and ctx.refresh:
+        kept = sorted(rel for rel in files if (ctx.target_root / rel).exists())
+        if kept:
+            ctx.notes.append(
+                f"{s.name}: kept {len(kept)} existing file(s) (create-only, the app owns "
+                f"them): {', '.join(kept[:5])}{' …' if len(kept) > 5 else ''}"
+            )
+        files = {rel: data for rel, data in files.items() if rel not in kept}
+
     if s.policy is Policy.MERGE_JSON_BASELINE:
         files = _merge_json_baselines(s.name, files, ctx)
 
+    if s.wipe_glob and not files:
+        # A wipe makes room for what the surface ships. With nothing to ship
+        # (a missing or emptied source) it would only delete: refuse, and
+        # leave the installed files for the run that can replace them.
+        raise RuntimeError(
+            f"{s.name}: nothing to write, so its installed files ({s.wipe_glob}) "
+            f"were not removed — the source is missing or empty. Restore it, then re-run."
+        )
     wiped: list[Path] = sorted(ctx.target_root.glob(s.wipe_glob)) if s.wipe_glob else []
     return files, wiped
 

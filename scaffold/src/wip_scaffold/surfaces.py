@@ -10,8 +10,10 @@ lockfile sync, git init) — stay in the bash
 wrappers permanently; the boundary rule is in the design doc §3b: if it
 can't be expressed as "write these bytes under this policy", it's an
 action. Create-only surfaces (bootstrap, query preset, .env) are
-REGENERATE here; their create-only semantics are enforced at the wrapper
-call site, which passes their flags only on create.
+CREATE_ONLY: on a refresh the engine writes only the targets that do not
+exist yet, so it never overwrites app code whatever flags a caller passes.
+The wrappers also pass their flags only on create, or on a refresh that
+retrofits a missing file (.env, an absent templates/bootstrap/).
 
 Every entry carries a substantive rationale — the incident lesson written
 out, not a ticket number — and the unit tests pin each policy's behavior
@@ -35,6 +37,10 @@ def _template(ctx: Context, rel: str) -> str:
 
 def _commands(ctx: Context, source_subdir: str) -> dict[str, bytes]:
     src = ctx.wip_root / "docs/slash-commands" / source_subdir
+    if not src.is_dir():
+        # The commands surface wipes the installed set before it copies; an
+        # empty copy would leave the agent with no commands at all.
+        raise FileNotFoundError(f"slash-command source directory not found: {src}")
     out: dict[str, bytes] = {}
     for p in sorted(src.glob("*.md")):
         if p.name == "wip-case.md" and not ctx.tier3:
@@ -193,14 +199,32 @@ def mcp_json_surface(
 """
     def produce(ctx: Context) -> dict[str, bytes]:
         existing_path = ctx.target_root / ".mcp.json"
+        if not existing_path.is_file():
+            return {".mcp.json": body.encode()}
+        # An unreadable file raises (OSError) and stops the run: its content
+        # is unknown, and the atomic replace would succeed anyway, since it
+        # needs the directory's permissions, not the file's. The file is
+        # gitignored, so nothing could restore what a rewrite destroyed.
         try:
-            existing = json.loads(existing_path.read_text()) if existing_path.is_file() else {}
-        except (OSError, ValueError):
-            ctx.notes.append("WARNING: existing .mcp.json is not valid JSON — rewritten from scratch")
-            existing = {}
-        servers = existing.get("mcpServers") if isinstance(existing, dict) else None
-        others = {k: v for k, v in (servers or {}).items() if k != "wip"} if isinstance(servers, dict) else {}
-        extra_keys = {k: v for k, v in existing.items() if k != "mcpServers"} if isinstance(existing, dict) else {}
+            existing = json.loads(existing_path.read_text(encoding="utf-8"))
+            problem = None
+        except (ValueError, UnicodeDecodeError) as e:
+            existing, problem = None, f"is not valid JSON ({e})"
+        if problem is None and not isinstance(existing, dict):
+            problem = "is not a JSON object"
+        if problem is None and not isinstance(existing.get("mcpServers", {}), dict):
+            problem = 'has an "mcpServers" that is not an object'
+        if problem is not None:
+            # Hand-edited config: a comment or a trailing comma is enough to
+            # fail the parse. Keep the file, as settings files are kept.
+            ctx.notes.append(
+                f"NOTICE: .mcp.json {problem} — left untouched; the scaffold's version "
+                f"was written to .mcp.json.refresh. Fix .mcp.json, then re-run."
+            )
+            return {".mcp.json.refresh": body.encode()}
+        servers = existing.get("mcpServers", {})
+        others = {k: v for k, v in servers.items() if k != "wip"}
+        extra_keys = {k: v for k, v in existing.items() if k != "mcpServers"}
         if not others and not extra_keys:
             return {".mcp.json": body.encode()}
         merged = {**extra_keys, "mcpServers": {**json.loads(body)["mcpServers"], **others}}
@@ -283,7 +307,7 @@ def bootstrap_surface() -> Surface:
 
     return Surface(
         name="bootstrap-templates",
-        policy=Policy.REGENERATE,
+        policy=Policy.CREATE_ONLY,
         rationale="genesis-stamped one-time starting points; the wrapper gates when, the banner stops canonical-misreads",
         produce=produce,
     )
@@ -305,7 +329,7 @@ WIP_API_KEY_FILE={key_file}
 """
     return Surface(
         name="env",
-        policy=Policy.REGENERATE,
+        policy=Policy.CREATE_ONLY,
         rationale="key FILE over baked plaintext so rotation is a restart, not a fleet-wide re-scaffold; create-time only (wrapper-gated)",
         produce=lambda ctx: {".env": body.encode()},
     )
@@ -379,13 +403,13 @@ def query_scaffold_surfaces(app_name: str, app_slug: str, app_namespace: str) ->
     return [
         Surface(
             name="query-scaffold",
-            policy=Policy.REGENERATE,
+            policy=Policy.CREATE_ONLY,
             rationale="curated create-time copy with in-process placeholder substitution — no sed -i flavor dependency, no accidental strays",
             produce=produce,
         ),
         Surface(
             name="query-entrypoint",
-            policy=Policy.REGENERATE,
+            policy=Policy.CREATE_ONLY,
             rationale="dev entrypoint must stay executable; exec bit is a surface property",
             executable=True,
             produce=produce_entrypoint,

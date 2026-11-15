@@ -121,6 +121,57 @@ def test_wipe_glob_removes_stale_dest_files(tmp_path):
     assert (tmp_path / ".claude/commands/current.md").exists()
 
 
+def test_wipe_with_nothing_to_write_refuses_and_keeps_installed_files(tmp_path):
+    # A missing or emptied source dir produced {} and the wipe still ran:
+    # every installed command was deleted and nothing replaced it.
+    (tmp_path / ".claude/commands").mkdir(parents=True)
+    (tmp_path / ".claude/commands/installed.md").write_text("keep")
+    s = _surface(name="commands", files={}, wipe_glob=".claude/commands/*.md")
+    with pytest.raises(RuntimeError, match="nothing to write"):
+        run_surfaces([s], _ctx(tmp_path))
+    assert (tmp_path / ".claude/commands/installed.md").read_text() == "keep"
+
+
+def test_commands_from_a_missing_source_dir_refuse(tmp_path):
+    from wip_scaffold.surfaces import _commands
+    with pytest.raises(FileNotFoundError, match="slash-command source directory"):
+        _commands(_ctx(tmp_path), "no-such-profile")
+
+
+# --- CREATE_ONLY ---------------------------------------------------------------
+# Starting points the app then owns (bootstrap templates, the query preset,
+# .env). Only the wrappers kept a refresh from overwriting them; an engine run
+# with --refresh and --query-scaffold would have replaced app code.
+
+def test_create_only_on_refresh_keeps_existing_and_writes_absent(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/App.tsx").write_text("app code")
+    s = _surface(name="query-scaffold", policy=Policy.CREATE_ONLY,
+                 files={"src/App.tsx": b"starter", ".env": b"fresh"})
+    ctx = _ctx(tmp_path, refresh=True)
+    run_surfaces([s], ctx)
+    assert (tmp_path / "src/App.tsx").read_text() == "app code"
+    assert (tmp_path / ".env").read_bytes() == b"fresh"
+    assert not (tmp_path / "src/App.tsx.refresh").exists()
+    assert any("kept 1 existing file(s)" in n and "src/App.tsx" in n for n in ctx.notes)
+
+
+def test_create_only_on_create_writes_everything(tmp_path):
+    (tmp_path / ".gitignore").write_text("old")
+    s = _surface(policy=Policy.CREATE_ONLY, files={".gitignore": b"old+new"})
+    run_surfaces([s], _ctx(tmp_path, refresh=False))
+    assert (tmp_path / ".gitignore").read_bytes() == b"old+new"
+
+
+def test_create_only_surfaces_declare_the_policy():
+    from wip_scaffold.surfaces import bootstrap_surface, env_surface, query_scaffold_surfaces
+    surfaces = [bootstrap_surface(), env_surface("/k"), *query_scaffold_surfaces("A", "a", "a")]
+    assert {s.name: s.policy for s in surfaces} == {
+        "bootstrap-templates": Policy.CREATE_ONLY, "env": Policy.CREATE_ONLY,
+        "query-scaffold": Policy.CREATE_ONLY, "query-entrypoint": Policy.CREATE_ONLY,
+    }
+
+
 def test_executable_bit(tmp_path):
     s = _surface(files={"hook.sh": b"#!/bin/sh\n"}, executable=True)
     run_surfaces([s], _ctx(tmp_path))
@@ -185,6 +236,9 @@ def test_matrix_sources_exist_in_repo():
         "agent-scripts/src/wake_rollover.py",
         "docs/slash-commands/backend",
         "docs/slash-commands/app-builder",
+        "docs/slash-commands/app-slim",
+        "scaffold/templates/hooks/post-compact-reanchor-slim.sh",
+        "docs/cards/core.md",
         "docs/playbooks/app-builder",
         "docs/design/ontology-support.md",
     ):
@@ -971,7 +1025,84 @@ def test_mcp_json_without_extras_is_byte_identical_to_a_fresh_write(tmp_path):
     assert again == fresh
 
 
-def test_mcp_json_invalid_existing_is_rewritten_with_a_warning(tmp_path):
-    text, ctx = _mcp(tmp_path, "{not json")
-    assert list(_json.loads(text)["mcpServers"]) == ["wip"]
-    assert any("not valid JSON" in n for n in ctx.notes)
+# .mcp.json is gitignored: a rewrite of a file the engine could not read
+# destroyed MCP servers the project had added, with no copy to restore.
+
+@pytest.mark.parametrize("existing, problem", [
+    ('{"mcpServers": {"mine": {"command": "x"}},}', "not valid JSON"),  # trailing comma
+    ('["wip"]', "not a JSON object"),
+    ('{"mcpServers": ["mine"]}', '"mcpServers" that is not an object'),
+])
+def test_mcp_json_it_cannot_merge_is_left_untouched_with_a_sidecar(tmp_path, existing, problem):
+    text, ctx = _mcp(tmp_path, existing)
+    assert text == existing
+    sidecar = _json.loads((tmp_path / ".mcp.json.refresh").read_text())
+    assert list(sidecar["mcpServers"]) == ["wip"]
+    assert any(problem in n and ".mcp.json.refresh" in n for n in ctx.notes)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_mcp_json_unreadable_stops_the_run_and_keeps_the_file(tmp_path):
+    # The atomic replace needs the directory's permissions, not the file's,
+    # so a rewrite would succeed over content nobody read. Raise instead.
+    from wip_scaffold.surfaces import mcp_json_surface
+    target = tmp_path / ".mcp.json"
+    target.write_text('{"mcpServers": {"mine": {}}}')
+    target.chmod(0)
+    try:
+        with pytest.raises(OSError):
+            run_surfaces([mcp_json_surface("/p", "https://h", key_file="/k")], _ctx(tmp_path))
+    finally:
+        target.chmod(0o600)
+    assert target.read_text() == '{"mcpServers": {"mine": {}}}'
+    assert not (tmp_path / ".mcp.json.refresh").exists()
+
+
+# --- slim re-anchor hook ---------------------------------------------------------
+# After a compaction the hook prints the core card without its card-sources
+# header. Its sed range once ended only at a "-->" in column 1: a closer the
+# drift test accepts anywhere on the line made it delete to the end of the
+# card, and the slim agent got the banner and no rules, silently.
+
+SLIM_HOOK = REPO_ROOT / "scaffold/templates/hooks/post-compact-reanchor-slim.sh"
+
+
+def _run_slim_hook(project: Path) -> str:
+    import subprocess
+    env = {**os.environ, "CLAUDE_PROJECT_DIR": str(project)}
+    return subprocess.run(["bash", str(SLIM_HOOK)], env=env, check=True,
+                          capture_output=True, text=True).stdout
+
+
+def _card_body(card: str) -> str:
+    """The card after its header, as test_card_drift.py's HEADER_RE reads it."""
+    import re
+    match = re.match(r"\A<!-- card-sources:.*?\n.*?-->[^\n]*\n", card, re.DOTALL)
+    assert match, "card has no card-sources header"
+    return card[match.end():]
+
+
+def test_slim_hook_prints_the_shipped_card_without_its_header(tmp_path):
+    card = (REPO_ROOT / "docs/cards/core.md").read_text()
+    (tmp_path / "docs/cards").mkdir(parents=True)
+    (tmp_path / "docs/cards/core.md").write_text(card)
+    out = _run_slim_hook(tmp_path)
+    assert "card-sources" not in out and "sha256:" not in out
+    assert out.endswith(_card_body(card))
+
+
+def test_slim_hook_strips_a_header_whose_closer_is_not_in_column_one(tmp_path):
+    (tmp_path / "docs/cards").mkdir(parents=True)
+    (tmp_path / "docs/cards/core.md").write_text(
+        "<!-- card-sources: x\ndocs/Vision.md sha256:0 reviewed:0\n  -->\n# Card\nrule one\n")
+    out = _run_slim_hook(tmp_path)
+    assert out.endswith("# Card\nrule one\n") and "sha256:" not in out
+
+
+@pytest.mark.parametrize("card", [None, "<!-- card-sources: x\nno closer at all\n"])
+def test_slim_hook_falls_back_to_the_invariant_when_no_card_text_is_left(tmp_path, card):
+    if card is not None:
+        (tmp_path / "docs/cards").mkdir(parents=True)
+        (tmp_path / "docs/cards/core.md").write_text(card)
+    out = _run_slim_hook(tmp_path)
+    assert "missing or empty" in out and "metadata.* is never identity" in out

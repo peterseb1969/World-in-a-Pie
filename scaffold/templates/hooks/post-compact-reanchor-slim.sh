@@ -21,10 +21,15 @@ else
     echo "Phase: not recorded yet."
 fi
 echo
-if [ -f "$card" ]; then
-    # The card's source-hash comment is for the drift test, not for the agent.
-    sed '/^<!-- card-sources/,/^-->/d' "$card"
+# The card's source-hash comment is for the drift test, not for the agent. The
+# range ends at the first line holding "-->" wherever it sits on the line, as
+# the drift test reads the header; an end anchored at column 1 that never
+# matches would delete to the end of the card.
+body=""
+[ -f "$card" ] && body="$(sed '/^<!-- card-sources/,/-->/d' "$card")"
+if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+    printf '%s\n' "$body"
 else
-    echo "docs/cards/core.md is missing — run the scaffold refresh. Core invariant meanwhile:"
+    echo "docs/cards/core.md is missing or empty — run the scaffold refresh. Core invariant meanwhile:"
     echo "WIP's primitives are your only data model; metadata.* is never identity, config or schema."
 fi
