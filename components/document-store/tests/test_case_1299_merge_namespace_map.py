@@ -374,10 +374,8 @@ async def test_an_unmapped_merge_still_writes_the_archives_own_namespaces(
 # --- restore-from-job: the same redirect, without re-uploading ---------------
 
 
-@pytest.mark.asyncio
-async def test_a_mapped_merge_from_a_retained_archive_records_its_targets(
-    client, auth_headers: dict, tmp_path,
-):
+async def _retained_two_namespace_backup(tmp_path) -> str:
+    """A COMPLETE backup job whose retained archive carries both namespaces."""
     from document_store.services.archive_store import scratch_path_for
 
     src = BackupJob(
@@ -391,7 +389,10 @@ async def test_a_mapped_merge_from_a_retained_archive_records_its_targets(
     scratch.write_bytes(_make_v3_archive(tmp_path, [SRC_A, SRC_B]).read_bytes())
     src.archive_path = str(scratch)
     await src.save()
+    return src.job_id
 
+
+async def _restore_from_job(client, auth_headers, src_job_id, body):
     done = asyncio.get_running_loop().create_future()
     done.set_result(None)
     with patch(
@@ -401,15 +402,55 @@ async def test_a_mapped_merge_from_a_retained_archive_records_its_targets(
         "document_store.api.backup.backup_service.start_async_job",
         new=AsyncMock(return_value=done),
     ):
-        resp = await client.post(
-            f"/api/document-store/backup/jobs/{src.job_id}/restore",
-            headers=auth_headers,
-            json={"mode": "merge", "namespace_map": MAP},
+        return await client.post(
+            f"/api/document-store/backup/jobs/{src_job_id}/restore",
+            headers=auth_headers, json=body,
         )
+
+
+@pytest.mark.asyncio
+async def test_a_mapped_merge_from_a_retained_archive_records_its_targets(
+    client, auth_headers: dict, tmp_path,
+):
+    src_job_id = await _retained_two_namespace_backup(tmp_path)
+
+    resp = await _restore_from_job(
+        client, auth_headers, src_job_id, {"mode": "merge", "namespace_map": MAP}
+    )
 
     assert resp.status_code == 202, resp.text
     body = resp.json()
     assert body["namespaces"] == [TGT_A, TGT_B]
     assert body["source_namespaces"] == [SRC_A, SRC_B]
     assert body["options"]["namespace_map"] == MAP
-    assert body["options"]["restored_from_job"] == src.job_id
+    assert body["options"]["restored_from_job"] == src_job_id
+
+
+@pytest.mark.asyncio
+async def test_the_retained_door_refuses_what_the_upload_door_refuses(
+    client, auth_headers: dict, tmp_path,
+):
+    """mode='restore' cannot redirect: a map it will not apply must not be
+    accepted here either, or the job runs into the archive's own namespaces
+    while reporting destinations it never wrote."""
+    src_job_id = await _retained_two_namespace_backup(tmp_path)
+
+    refused = await _restore_from_job(
+        client, auth_headers, src_job_id, {"mode": "restore", "namespace_map": MAP}
+    )
+    assert refused.status_code == 400, refused.text
+    assert "mode='restore' writes each to itself" in refused.json()["detail"]
+
+    competing = await _restore_from_job(
+        client, auth_headers, src_job_id,
+        {"mode": "merge", "target_namespace": TGT_A, "namespace_map": MAP},
+    )
+    assert competing.status_code == 400, competing.text
+    assert "one or the other" in competing.json()["detail"]
+
+    shared = await _restore_from_job(
+        client, auth_headers, src_job_id,
+        {"mode": "merge", "namespace_map": {SRC_A: "one", SRC_B: "one"}},
+    )
+    assert shared.status_code == 400, shared.text
+    assert "same target" in shared.json()["detail"]

@@ -726,6 +726,29 @@ async def start_restore(
     return BackupJobSnapshot.from_job(job)
 
 
+def _validate_namespace_map_mode(mode: str, has_namespace_map: bool) -> None:
+    """Reject a ``namespace_map`` outside the modes that can redirect.
+
+    Shared by both restore entry points. A plain restore inserts the archived
+    rows verbatim and they carry their namespace in their entities and
+    composite keys, so a destination it would have to re-namespace them into
+    is not something it can honour — accepting the parameter there would run a
+    restore into the archive's own namespaces while reporting a map the restore
+    never applied.
+    """
+    if not has_namespace_map or mode != "restore":
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "namespace_map redirects where the archived namespaces are "
+            "written, and mode='restore' writes each to itself — an "
+            "id-preserving restore cannot re-namespace data. Merge it "
+            "(mode=merge) or restore a copy with new ids (mode=fresh)."
+        ),
+    )
+
+
 async def _parse_namespace_map(
     namespace_map: str | None, mode: str, identity: UserIdentity,
 ) -> dict[str, str] | None:
@@ -733,23 +756,12 @@ async def _parse_namespace_map(
     of strings, and admin on every target it names.
 
     A merge and a fresh restore take it — both can write an archived
-    namespace somewhere other than its own name. A plain restore cannot: it
-    inserts the archived rows verbatim, and they embed the source namespace in
-    their entities and composite keys, so a destination other than its own is
-    not something it can honour.
+    namespace somewhere other than its own name; a plain restore cannot
+    (``_validate_namespace_map_mode``).
     """
     if namespace_map is None:
         return None
-    if mode == "restore":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "namespace_map redirects where the archived namespaces are "
-                "written, and mode='restore' writes each to itself — an "
-                "id-preserving restore cannot re-namespace data. Merge it "
-                "(mode=merge) or restore a copy with new ids (mode=fresh)."
-            ),
-        )
+    _validate_namespace_map_mode(mode, True)
     try:
         parsed_namespace_map = json.loads(namespace_map)
     except json.JSONDecodeError as e:
@@ -1632,6 +1644,7 @@ async def restore_from_job(
         carry_retirements=request.carry_retirements,
     )
     _validate_allow_missing_identity(request.mode, request.allow_missing_identity)
+    _validate_namespace_map_mode(request.mode, request.namespace_map is not None)
 
     src = await BackupJob.find_one(BackupJob.job_id == job_id)
     if src is None:
