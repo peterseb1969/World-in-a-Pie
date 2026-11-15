@@ -48,16 +48,16 @@ for f in "${staged[@]}"; do
   esac
 done
 
-# 2. Literal secret values from this machine
+# 2. Literal secret values from this machine, collected into $vals: each
+# file's content with every CR and LF removed, kept when 12 characters or
+# longer (shorter values, and empty files, would match ordinary text).
 vals="$(mktemp)"; chmod 600 "$vals"
 trap 'rm -f "$vals"' EXIT
+key_files=()
 add_val_file() {
   local p="$1"
   p="${p/#\~/$HOME}"
-  [ -f "$p" ] && [ -r "$p" ] || return 0
-  # Short values (and empty files) would match ordinary text.
-  local v; v="$(tr -d '\r\n' < "$p")"
-  [ "${#v}" -ge 12 ] && printf '%s\n' "$v" >> "$vals"
+  [ -f "$p" ] && [ -r "$p" ] && key_files+=("$p")
 }
 for p in "$HOME"/.wip-deploy/*/secrets/*; do
   case "$p" in *.DS_Store|*.crt) continue ;; esac
@@ -69,18 +69,30 @@ fi
 if [ -f .claude/kb.json ]; then
   add_val_file "$(python3 -c 'import json;print(json.load(open(".claude/kb.json")).get("kb_api_key_file",""))' 2>/dev/null)"
 fi
-if [ -s "$vals" ]; then
-  for f in "${staged[@]}"; do
-    if staged_diff "$f" | grep '^+' | grep -qF -f "$vals"; then
-      report "$f contains the value of a secret from this machine (value not shown)"
-    fi
-  done
+# One awk over every file, not a subshell per file: a host with many installs
+# holds hundreds of secret files, and forking per file cost over a second on
+# every commit. The count guard matters twice: awk with no file reads stdin,
+# and bash 3.2 calls an empty "${key_files[@]}" unbound under set -u.
+if [ "${#key_files[@]}" -gt 0 ]; then
+  awk 'function flush() { if (length(v) >= 12) print v; v = "" }
+       FNR == 1 && NR > 1 { flush() }
+       { gsub(/\r/, ""); v = v $0 }
+       END { flush() }' "${key_files[@]}" >> "$vals"
 fi
 
-# 3. Known credential shapes
+# Checks 2 and 3 read the same added lines: one diff per staged file. Only
+# lines inside a hunk count, so the "+++ b/<path>" header is skipped by
+# position, not by prefix: an added line that itself starts with "++" shows
+# as "+++…" in the diff and is still checked.
+added_lines() { staged_diff "$1" | awk '/^@@/ { h = 1; next } h && /^\+/'; }
 for f in "${staged[@]}"; do
+  added="$(added_lines "$f")"
+  if [ -s "$vals" ] && grep -qF -f "$vals" <<< "$added"; then
+    report "$f contains the value of a secret from this machine (value not shown)"
+  fi
+
+  # 3. Known credential shapes
   [ "$f" = ".githooks/pre-commit" ] && continue
-  added="$(staged_diff "$f" | grep '^+' | grep -v '^+++')"
   if grep -qE 'sk-ant-[A-Za-z0-9_-]{20,}' <<< "$added"; then
     report "$f contains what looks like an Anthropic API key"
   fi

@@ -104,3 +104,82 @@ def test_nothing_staged_passes(repo):
     root, env = repo
     result = subprocess.run([BASH, str(HOOK)], cwd=root, env=env, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+# --- collecting this machine's secret values in one pass ----------------------
+#
+# The gate reads every file under ~/.wip-deploy/*/secrets/ in one awk run (it
+# forked a subshell per file, over a second per commit on a host with many
+# installs). Each file's value is its content with every CR and LF removed,
+# kept when 12 characters or longer.
+
+
+def _secret(env: dict[str, str], install: str, name: str, content: bytes) -> None:
+    secrets = Path(env["HOME"]) / ".wip-deploy" / install / "secrets"
+    secrets.mkdir(parents=True, exist_ok=True)
+    (secrets / name).write_bytes(content)
+
+
+@pytest.mark.parametrize("content, value", [
+    (b"value-from-another-install\n", "value-from-another-install"),
+    (b"crlf-secret-value-here\r\n", "crlf-secret-value-here"),
+    (b"no-trailing-newline-value", "no-trailing-newline-value"),
+    (b"split-across-\nlines-value\n", "split-across-lines-value"),
+])
+def test_every_install_and_file_shape_is_collected(repo, content, value):
+    root, env = repo
+    _secret(env, "other", "token", content)
+    _secret(env, "other", "empty", b"")
+    result = _hook(root, env, "notes.txt", f"x={value}\n")
+    assert result.returncode == 1, result.stderr
+    assert "value of a secret from this machine" in result.stderr
+
+
+def test_a_value_shorter_than_twelve_characters_is_not_collected(repo):
+    root, env = repo
+    _secret(env, "other", "short", b"elevenchars\n")
+    result = _hook(root, env, "notes.txt", "x=elevenchars\n")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("value", ["first-file-value", "second-file-value", "third-file-value"])
+def test_each_file_is_its_own_value_when_read_in_one_pass(repo, value):
+    # One awk run reads every file; were neighbouring files joined into one
+    # value, a file's own value alone would no longer match. The empty file
+    # in the middle must not join its neighbours either.
+    root, env = repo
+    _secret(env, "a", "1", b"first-file-value\n")
+    _secret(env, "a", "2", b"")
+    _secret(env, "a", "3", b"second-file-value")
+    _secret(env, "a", "4", b"third-file-value\n")
+    result = _hook(root, env, "notes.txt", f"x={value}\n")
+    assert result.returncode == 1, result.stderr
+
+
+def test_a_secret_file_with_a_nul_byte_is_read_up_to_the_nul(repo):
+    # Pinned, not chosen: the awk that reads every secret file in one pass
+    # stops each line at a NUL byte (BSD awk), where the per-file subshell it
+    # replaced dropped the NULs. wip-deploy writes its secrets as text; a
+    # binary file's value is what precedes its first NUL, or nothing when that
+    # is under 12 characters.
+    root, env = repo
+    _secret(env, "other", "binary", b"visible-part-before\0rest\n")
+    result = _hook(root, env, "notes.txt", "x=visible-part-before\n")
+    assert result.returncode == 1, result.stderr
+
+
+def test_an_added_line_starting_with_plus_plus_is_checked(repo):
+    # The diff shows it as "+++…", the shape of the file header the checks skip.
+    root, env = repo
+    result = _hook(root, env, "notes.txt", f"++{LOCAL_SECRET}\n++token {KEY}\n")
+    assert "value of a secret from this machine" in result.stderr
+    assert "Anthropic API key" in result.stderr
+
+
+def test_a_host_without_wip_deploy_passes_and_does_not_wait_on_stdin(repo):
+    root, env = repo
+    shutil.rmtree(Path(env["HOME"]) / ".wip-deploy")
+    result = _hook(root, env, "readme.md", "nothing secret here\n")
+    assert result.returncode == 0, result.stderr
+    result = _hook(root, env, "notes.txt", f"token {KEY}\n")
+    assert result.returncode == 1, result.stderr

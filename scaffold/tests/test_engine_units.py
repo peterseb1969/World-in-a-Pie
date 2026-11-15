@@ -390,17 +390,35 @@ def test_pre_commit_gate_keeps_the_current_gate_quietly(tmp_path):
     assert not any("WARNING" in n for n in ctx.notes)
 
 
-def test_pre_commit_gate_replaces_an_unmodified_earlier_shipped_gate(tmp_path):
-    # The first shipped gate (969e63e2) read staged paths C-quoted; a clone
-    # that never edited it gets the current gate on refresh.
+# Every gate the scaffold shipped before the current one, by the commit that
+# last wrote it: 969e63e2 read staged paths C-quoted, b3a5b907 read each
+# secret file in its own subshell. A clone that never edited one gets the
+# current gate on refresh.
+SHIPPED_GATE_FIXTURES = ["pre-commit-gate-969e63e2.sh", "pre-commit-gate-b3a5b907.sh"]
+
+
+def test_every_superseded_gate_has_its_shipped_bytes_as_a_fixture():
+    import hashlib
+
+    from wip_scaffold.surfaces import SUPERSEDED_PRE_COMMIT_GATES
+
+    fixtures = {
+        hashlib.sha256((REPO_ROOT / "scaffold/tests/fixtures" / name).read_bytes()).hexdigest()
+        for name in SHIPPED_GATE_FIXTURES
+    }
+    assert fixtures == set(SUPERSEDED_PRE_COMMIT_GATES)
+
+
+@pytest.mark.parametrize("fixture", SHIPPED_GATE_FIXTURES)
+def test_pre_commit_gate_replaces_an_unmodified_earlier_shipped_gate(tmp_path, fixture):
     import hashlib
 
     from wip_scaffold.surfaces import SUPERSEDED_PRE_COMMIT_GATES
 
     # The shipped bytes, kept as a fixture: CI checks out too shallow to read
     # the old commit.
-    old = (REPO_ROOT / "scaffold/tests/fixtures/pre-commit-gate-969e63e2.sh").read_bytes()
-    assert hashlib.sha256(old).hexdigest() in SUPERSEDED_PRE_COMMIT_GATES
+    old = (REPO_ROOT / "scaffold/tests/fixtures" / fixture).read_bytes()
+    reason = SUPERSEDED_PRE_COMMIT_GATES[hashlib.sha256(old).hexdigest()]
     (tmp_path / ".githooks").mkdir()
     (tmp_path / ".githooks/pre-commit").write_bytes(old)
     ctx = _ctx(tmp_path)
@@ -408,7 +426,7 @@ def test_pre_commit_gate_replaces_an_unmodified_earlier_shipped_gate(tmp_path):
     current = (REPO_ROOT / "scaffold/templates/hooks/pre-commit-local-config.sh").read_bytes()
     assert (tmp_path / ".githooks/pre-commit").read_bytes() == current
     assert os.stat(tmp_path / ".githooks/pre-commit").st_mode & stat.S_IXUSR
-    assert any("Replaced: .githooks/pre-commit" in n for n in ctx.notes)
+    assert any("Replaced: .githooks/pre-commit" in n and reason in n for n in ctx.notes)
 
 
 def test_the_current_gate_is_not_among_the_superseded():

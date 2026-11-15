@@ -110,14 +110,25 @@ def _post_commit_log(ctx: Context) -> dict[str, bytes]:
 
 
 # sha256 of every pre-commit gate the scaffold shipped before the current
-# one. A clone still holding one of these byte for byte never extended it,
-# so a refresh replaces it with the current gate; any other content is the
-# app's and is kept. The first shipped gate read the staged paths C-quoted,
-# so a .env or a key under a directory with a non-ASCII character, a '"' or a
-# backslash passed every check.
-SUPERSEDED_PRE_COMMIT_GATES = frozenset({
-    "353e2fb9ad99e3febff94980799dcfbb289beb79db9268cdc0fdd9113e812035",
-})
+# one, with what the current gate does that it did not. A clone still holding
+# one of these byte for byte never extended it, so a refresh replaces it with
+# the current gate; any other content is the app's and is kept.
+SUPERSEDED_PRE_COMMIT_GATES = {
+    # The first shipped gate read the staged paths C-quoted, so a .env or a
+    # key under a directory with a non-ASCII character, a '"' or a backslash
+    # passed every check.
+    "353e2fb9ad99e3febff94980799dcfbb289beb79db9268cdc0fdd9113e812035": (
+        "it let a .env or a key through under a directory whose name has a "
+        "non-ASCII character, a '\"' or a backslash"
+    ),
+    # The second read each secret file in its own subshell and diffed each
+    # staged file twice: on a host with many installs, over a second on every
+    # commit before it looked at what was staged.
+    "5d5ff58876c6b637279624ebd7a2b753dfcae42ba480eb343ce0eff4ee2e42fc": (
+        "it read this host's secret files one subshell at a time, which on a "
+        "host with many installs added over a second to every commit"
+    ),
+}
 
 
 def _pre_commit_gate(ctx: Context) -> dict[str, bytes]:
@@ -129,20 +140,20 @@ def _pre_commit_gate(ctx: Context) -> dict[str, bytes]:
     if existing == current:
         ctx.notes.append("Kept: .githooks/pre-commit (app-owned once present)")
         return {}
-    if hashlib.sha256(existing).hexdigest() in SUPERSEDED_PRE_COMMIT_GATES:
+    superseded = SUPERSEDED_PRE_COMMIT_GATES.get(hashlib.sha256(existing).hexdigest())
+    if superseded:
         ctx.notes.append(
-            "Replaced: .githooks/pre-commit was an earlier shipped gate, unmodified; "
-            "it let a .env or a key through under a directory whose name has a "
-            "non-ASCII character, a '\"' or a backslash"
+            f"Replaced: .githooks/pre-commit was an earlier shipped gate, unmodified; {superseded}"
         )
         return {".githooks/pre-commit": current}
     ctx.notes.append(
         "WARNING: .githooks/pre-commit differs from the shipped gate and was kept "
-        "(app-owned). The gate the scaffold shipped until now read staged paths "
-        "with `git diff --cached --name-only`, which quotes a path with a "
-        "non-ASCII character, a '\"' or a backslash, so such a .env or key was "
-        "committed unchecked. If yours reads paths that way, read them "
-        "NUL-delimited (`-z`) as scaffold/templates/hooks/pre-commit-local-config.sh does."
+        "(app-owned). Compare it with scaffold/templates/hooks/pre-commit-local-config.sh: "
+        "earlier shipped gates read staged paths with `git diff --cached --name-only`, "
+        "which quotes a path with a non-ASCII character, a '\"' or a backslash, so such "
+        "a .env or key was committed unchecked (read them NUL-delimited, `-z`), and read "
+        "each secret file under ~/.wip-deploy in its own subshell, which slowed every "
+        "commit on a host with many installs (read them in one pass)."
     )
     return {}
 
