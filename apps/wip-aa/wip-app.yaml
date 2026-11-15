@@ -30,11 +30,13 @@ spec:
         description: "AuthorAssist app settings (bootstrap created)"
   image:
     name: wip-aa
-    # App lives in its own repo (WIP-AA). No containerized build has been
-    # published yet — placeholder tag; bump suffix on first/every rebuild
-    # since pull_policy: if-not-present caches by tag. The --app-source
-    # dev flow builds from WIP-AA/Dockerfile.dev and ignores this tag.
-    tag: 20260610a
+    # App lives in its own repo (WIP-AA); its "Build & Push Image" workflow
+    # publishes ghcr.io/<owner>/wip-aa:<tag>, multi-arch. Tags are
+    # write-once: pin a new one on every rebuild, since pull_policy:
+    # if-not-present caches by tag. 20261108b is WIP-AA 9b47592 (served at
+    # the root of its own origin). The --app-source dev flow builds from
+    # WIP-AA/Dockerfile.dev and ignores this tag.
+    tag: 20261108b
 
   ports:
     - {name: http, container_port: 3014}
@@ -54,12 +56,21 @@ spec:
       # AskBar NL-query + AI manuscript import use Anthropic. Both
       # degrade gracefully when the key is unset.
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
+      # A key set in the Settings page is written here and read back at
+      # start, ahead of ANTHROPIC_API_KEY, so it survives a restart. The
+      # path lies on the `settings` volume below.
+      - {name: ANTHROPIC_API_KEY_FILE, source: {literal: /data/anthropic-key}}
       # CASE-375: the query agent uses the MCP client; without MCP_URL it
       # falls back to spawning `python -m wip_mcp` via stdio, which fails
       # inside a Node.js container (no Python). Same literal shape as
       # wip-kb until a from_component_url env source exists.
       - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
       - {name: MCP_TRANSPORT, source: {literal: "http"}}
+
+  # Small writable volume for state the app keeps outside WIP: the
+  # Anthropic key set at runtime (ANTHROPIC_API_KEY_FILE).
+  storage:
+    - {name: settings, mount_path: /data, size: 16Mi}
 
   routes:
     - {path: /, auth_required: true}
