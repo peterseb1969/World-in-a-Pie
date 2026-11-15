@@ -4013,13 +4013,28 @@ async def export_terminology(
     format: str = "json",
     include_relations: bool = True,
     namespace: str | None = None,
+    include_inactive: bool = False,
+    include_metadata: bool = True,
+    languages: list[str] | None = None,
 ) -> str:
-    """Export a terminology with all its terms (and optionally relations).
+    """Export a terminology with its terms (and optionally relations).
+
+    By default only active terms are exported. To move a terminology whole,
+    with its lifecycle, pass include_inactive=true: deprecated terms then
+    carry their reason and replacement, inactive terms are included, and
+    import_terminology recreates both.
 
     Args:
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         format: 'json' or 'csv'.
         include_relations: Include ontology relations in export.
+        namespace: Namespace the terminology identifier resolves in.
+        include_inactive: Also export deprecated and inactive terms, and
+            inactive relations (default false).
+        include_metadata: Include terms' and the terminology's metadata
+            (default true).
+        languages: Keep only names in these languages (ISO 639-1 codes) and
+            names without a language; omit for every language.
     """
     try:
         data = await get_client().export_terminology(
@@ -4027,6 +4042,9 @@ async def export_terminology(
             format=format,
             include_relations=include_relations,
             namespace=namespace,
+            include_inactive=include_inactive,
+            include_metadata=include_metadata,
+            languages=languages,
         )
         if isinstance(data, str):
             return data

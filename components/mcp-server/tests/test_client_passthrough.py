@@ -180,6 +180,35 @@ async def test_export_terminology_csv_returns_the_text():
     assert data == "value,label\r\nGB,United Kingdom\r\n"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ["json", "csv"])
+async def test_export_terminology_passes_every_endpoint_option(fmt):
+    """An agent can export a terminology whole: deprecated and inactive terms
+    (whose lifecycle the import recreates), metadata, chosen languages."""
+    client = _client(None)
+    http = _http({"terms": []}, text="value\r\n")
+    with patch.object(client, "_get_client", return_value=http):
+        await client.export_terminology(
+            "COUNTRY", format=fmt, include_relations=False, namespace="geo",
+            include_inactive=True, include_metadata=False, languages=["de", "fr"],
+        )
+    assert http.get.call_args.kwargs["params"] == {
+        "format": fmt, "include_relations": False, "include_inactive": True,
+        "include_metadata": False, "languages": "de,fr", "namespace": "geo",
+    }
+
+
+@pytest.mark.asyncio
+async def test_export_terminology_defaults_as_the_endpoint_does():
+    client = _client(None)
+    http = _http({"terms": []})
+    with patch.object(client, "_get_client", return_value=http):
+        await client.export_terminology("COUNTRY")
+    params = http.get.call_args.kwargs["params"]
+    assert params["include_inactive"] is False and params["include_metadata"] is True
+    assert "languages" not in params
+
+
 # -- error details reach the agent --------------------------------------------
 
 

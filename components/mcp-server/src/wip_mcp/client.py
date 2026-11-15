@@ -1091,22 +1091,24 @@ class WipClient:
         format: str = "json",
         include_relations: bool = True,
         namespace: str | None = None,
+        include_inactive: bool = False,
+        include_metadata: bool = True,
+        languages: list[str] | None = None,
     ) -> dict | str:
-        """The export as parsed JSON, or the CSV text when format='csv'."""
+        """The export as parsed JSON, or the CSV text when format='csv'. Every
+        option the endpoint takes is passed through; include_inactive and
+        include_metadata default as the endpoint does."""
         path = f"/api/def-store/import-export/export/{quote(terminology_id, safe='')}"
+        params = {
+            "format": format, "include_relations": include_relations,
+            "include_inactive": include_inactive, "include_metadata": include_metadata,
+            "languages": ",".join(languages) if languages else None,
+            "namespace": namespace,
+        }
         if format != "csv":
-            return await self._get(
-                self.def_store_url, path, format=format,
-                include_relations=include_relations, namespace=namespace,
-            )
+            return await self._get(self.def_store_url, path, **params)
         client = await self._get_client()
-        resp = await client.get(
-            f"{self.def_store_url}{path}",
-            params=self._query({
-                "format": format, "include_relations": include_relations,
-                "namespace": namespace,
-            }),
-        )
+        resp = await client.get(f"{self.def_store_url}{path}", params=self._query(params))
         _raise_for_status_with_body(resp)
         return resp.text
 
