@@ -5,8 +5,9 @@ test: a soft-deleted document, a Registry that cannot say what the caller may
 do, no permission and read-only permission, a reference violation and an
 unreachable reference check, losing the version race on every retry, and an
 in-place (versioned:false) write losing every race until the retries run
-out. Documents are created through the API against the real in-process
-Registry; each test breaks one step.
+out. And what a success puts on the row: the new version carries the if_match
+token the next PATCH sends. Documents are created through the API against the
+real in-process Registry; each test breaks one step.
 """
 
 from __future__ import annotations
@@ -98,6 +99,22 @@ async def test_losing_the_version_race_on_every_retry_is_a_conflict(
     # And the document is left as it was: active, at version 1.
     got = (await client.get(f"{URL}/{doc_id}", headers=auth_headers)).json()
     assert (got["status"], got["version"], got["data"]["first_name"]) == ("active", 1, "Ann")
+
+
+@pytest.mark.asyncio
+async def test_a_new_version_answers_with_the_token_the_next_patch_sends(
+    client: AsyncClient, auth_headers: dict,
+):
+    # A versioned row is never overwritten, so its if_match token is its
+    # version: the row for the version this PATCH wrote carries that token, and
+    # sending it back guards the write over it.
+    doc_id = await _person(client, auth_headers, "116110051")
+    result = await _patch(client, auth_headers, doc_id)
+    assert (result["status"], result["version"], result["revision"]) == ("updated", 2, 2)
+    # The token it handed back is the live guard: a PATCH still holding the
+    # token of the version this one superseded is refused.
+    stale = await _patch(client, auth_headers, doc_id, if_match=1)
+    assert (stale["status"], stale["error_code"]) == ("error", "concurrency_conflict")
 
 
 @pytest.mark.asyncio

@@ -761,7 +761,6 @@ async def _check_patch_permission(namespace: str) -> None:
     """2. Permission check on the document's namespace. Uses
     resolve_permission directly to produce a per-item 'forbidden' error
     instead of an HTTP 403 from check_namespace_permission."""
-    # Lazy imports to avoid module-level coupling with FastAPI/wip-auth
     from wip_auth import (
         permission_sufficient,
         require_current_identity,
@@ -798,9 +797,10 @@ def _same_referent(field_path: str, stored_feed: dict[str, Any] | None, validati
 
 
 def _patch_result(
-    index: int, doc: Document, status: str, warnings: list[Any], *, revision: bool = True,
+    index: int, doc: Document, status: str, warnings: list[Any],
 ) -> BulkResultItem:
-    """A PATCH item's result row. A new version's row carries no revision."""
+    """A PATCH item's result row, carrying the token the next PATCH sends as
+    if_match (the row's own counter once it has one, else its version)."""
     return BulkResultItem(
         index=index,
         status=status,
@@ -809,7 +809,7 @@ def _patch_result(
         identity_hash=doc.identity_hash,
         version=doc.version,
         template_version=doc.template_version,
-        revision=current_revision(doc) if revision else None,
+        revision=current_revision(doc),
         is_new=False,
         warnings=warnings,
     )
@@ -6269,7 +6269,7 @@ class DocumentService:
         await self._update_file_reference_counts(
             current.file_references, delta=-1
         )
-        return _patch_result(index, new_doc, "updated", validation_result.warnings, revision=False)
+        return _patch_result(index, new_doc, "updated", validation_result.warnings)
 
 
 # Singleton instance
