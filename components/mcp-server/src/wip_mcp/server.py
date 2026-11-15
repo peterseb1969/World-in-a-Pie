@@ -5629,6 +5629,26 @@ _apply_read_only_mode()
 # ===================================================================
 
 
+def allowed_hosts_from_env() -> list[str]:
+    """The hosts the network transport accepts besides localhost: the
+    values of MCP_ALLOWED_HOST and MCP_ALLOWED_SERVICE_HOST, set and
+    distinct, in that order."""
+    hosts: list[str] = []
+    for var in ("MCP_ALLOWED_HOST", "MCP_ALLOWED_SERVICE_HOST"):
+        value = (os.getenv(var) or "").strip()
+        if value and value not in hosts:
+            hosts.append(value)
+    return hosts
+
+
+def allow_hosts(transport_security, hosts: list[str]) -> None:
+    """Add each host, with any port, to the SDK's DNS-rebinding allow-lists
+    (Host, and an https Origin)."""
+    for host in hosts:
+        transport_security.allowed_hosts.extend([host, f"{host}:*"])
+        transport_security.allowed_origins.extend([f"https://{host}", f"https://{host}:*"])
+
+
 def build_network_app(transport: str):
     """The Starlette app for a network transport ("streamable-http" or "sse").
 
@@ -5661,14 +5681,12 @@ def build_network_app(transport: str):
             file=sys.stderr,
         )
 
-    # Configure allowed hosts for DNS rebinding protection
-    allowed_host = os.getenv("MCP_ALLOWED_HOST")
-    if allowed_host and mcp.settings.transport_security:
-        ts = mcp.settings.transport_security
-        ts.allowed_hosts.append(allowed_host)
-        ts.allowed_hosts.append(f"{allowed_host}:*")
-        ts.allowed_origins.append(f"https://{allowed_host}")
-        ts.allowed_origins.append(f"https://{allowed_host}:*")
+    # Configure allowed hosts for DNS rebinding protection: the short name
+    # same-network clients and the router use (MCP_ALLOWED_HOST), and the
+    # name the public edge dials, which on k8s is the Service FQDN
+    # (MCP_ALLOWED_SERVICE_HOST).
+    if mcp.settings.transport_security:
+        allow_hosts(mcp.settings.transport_security, allowed_hosts_from_env())
 
     # Create the transport-appropriate Starlette app
     starlette_app = (

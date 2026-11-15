@@ -28,14 +28,16 @@ spec:
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
-      # CASE-377: DNS-rebinding protection allow-list. Without this the
-      # MCP server rejects same-network clients connecting via the
-      # container DNS name (e.g. WIP-KB at http://wip-mcp-server:8007/mcp)
-      # with HTTP 421 "Invalid Host header". Outer-Caddy-proxied calls
-      # work via Host normalization; same-network direct calls don't.
-      # Value matches the container hostname produced by the renderer
-      # (always `wip-<component-name>` per the compose/k8s naming contract).
+      # DNS-rebinding protection allow-list: the server answers 421
+      # "Invalid Host header" to any Host not on it. Two names cover every
+      # way in. MCP_ALLOWED_HOST is the short container name, which a
+      # same-network client dials (http://wip-mcp-server:8007/mcp) and the
+      # router sends. MCP_ALLOWED_SERVICE_HOST is the name the public edge
+      # dials: the same short name on compose and dev, the Service FQDN on
+      # k8s. Proxies reach the server with one of them as Host because the
+      # /mcp route below sets upstream_host_header.
       - {name: MCP_ALLOWED_HOST, source: {literal: "wip-mcp-server"}}
+      - {name: MCP_ALLOWED_SERVICE_HOST, source: {from_component_host: mcp-server}}
       # The proxies whose X-Forwarded-For entries the rate limit skips to
       # find the client: the ranges wip-caddy trusts (k8s pod ranges; empty
       # off k8s).
@@ -55,7 +57,10 @@ spec:
     # at /mcp (no slash) and 307-redirects /mcp/ → /mcp. Caddys default
     # bare-path redirect goes the other way, creating a loop. Backend
     # handles slash canonicalization; Caddy must stay out.
-    - {path: /mcp, auth_required: false, redirect_bare_path: false}
+    # upstream_host_header: the edge and the router forward the client's
+    # Host by default (the public hostname, or wip-router), which the
+    # allow-list above refuses; they send the server's own host instead.
+    - {path: /mcp, auth_required: false, redirect_bare_path: false, upstream_host_header: true}
 
   depends_on: [registry, def-store, template-store, document-store]
 

@@ -58,6 +58,11 @@ class RouterRoute:
     # for the inner router. Default True keeps existing /api/* routes
     # behavior; False is the /mcp case.
     redirect_bare_path: bool = True
+    # Send the backend its own host:port as Host (`header_up Host
+    # {upstream_hostport}`), as the public edge does for the same route.
+    # A backend that checks Host against an allowlist (the MCP server's
+    # DNS-rebinding protection) refuses the router's own host otherwise.
+    upstream_host_header: bool = False
 
 
 @dataclass(frozen=True)
@@ -80,10 +85,12 @@ def generate_router_config(
     router, not routees. The router exists to give apps a uniform
     entry point to the WIP service layer.
 
-    CASE-378: /mcp is now included. The router is the apps-side handle
-    for the WIP backend; MCP is part of that surface. Apps can set
-    MCP_URL to the router (e.g. http://wip-router:8080/mcp) the same
-    way they set WIP_BASE_URL.
+    /mcp is included: the router is the apps-side handle for the WIP
+    backend, and MCP is part of that surface. Apps can set MCP_URL to the
+    router (http://wip-router:8080/mcp) the same way they set
+    WIP_BASE_URL. That works because the /mcp route declares
+    upstream_host_header, so the MCP server receives its own name as Host
+    rather than wip-router, which its allowlist would refuse (421).
     """
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
@@ -106,6 +113,7 @@ def generate_router_config(
                 backend_port=port.container_port,
                 streaming=r.streaming,
                 redirect_bare_path=r.redirect_bare_path,
+                upstream_host_header=r.upstream_host_header,
             ))
 
     # Apps don't currently contribute /api/* routes, but guard against
@@ -123,6 +131,7 @@ def generate_router_config(
                 backend_port=port.container_port,
                 streaming=r.streaming,
                 redirect_bare_path=r.redirect_bare_path,
+                upstream_host_header=r.upstream_host_header,
             ))
 
     routes.sort(key=lambda r: (r.path, r.backend_host))

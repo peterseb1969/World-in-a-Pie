@@ -53,9 +53,10 @@ For a given app source directory (e.g. `~/Development/WIP-KB/`):
 
   - README "Development with wip-deploy" section — optional discipline;
     failure isn't a deployer-side blocker so leaving it as advisory.
-  - The platform side (CASE-377 `MCP_ALLOWED_HOST`, CASE-378 router /mcp)
-    — those are operator-transparent now; an app authoring against the
-    current platform doesn't need to verify them.
+  - The platform side of MCP: the mcp-server's host allow-list, and the
+    /mcp route at the router and the public edge, which sends the server
+    its own host as Host. Deployer tests pin both (an app cannot fix
+    them), so an app pointing MCP_URL at the router needs no check here.
   - Live deployment test — that's `wip-deploy add-app` itself. This
     check is the pre-flight.
 """

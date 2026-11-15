@@ -47,9 +47,14 @@ def render_router_caddyfile(cfg: RouterConfig) -> str:
 
         for matcher in matchers:
             out.write(f"    handle {matcher} {{\n")
+            opts: list[str] = []
+            if route.upstream_host_header:
+                opts.append("            header_up Host {upstream_hostport}\n")
             if route.streaming:
+                opts.append("            flush_interval -1\n")
+            if opts:
                 out.write(f"        reverse_proxy {backend} {{\n")
-                out.write("            flush_interval -1\n")
+                out.writelines(opts)
                 out.write("        }\n")
             else:
                 out.write(f"        reverse_proxy {backend}\n")

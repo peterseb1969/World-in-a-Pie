@@ -184,7 +184,7 @@ Under `--app-source` the repo is bind-mounted at `/app`, so source, `package.jso
 
 These are platform-side guarantees the contract assumes. They're invariants today, named here so apps can count on them.
 
-- **wip-router routes `/api/*` AND `/mcp`** — same-network MCP clients can reach the MCP server via the router; the internal Caddyfile carries the `/mcp` route.
+- **wip-router routes `/api/*` AND `/mcp`** — same-network MCP clients can reach the MCP server via the router (`MCP_URL=http://wip-router:8080/mcp`). The `/mcp` route forwards the MCP server its own name as `Host`, at the router and at the public edge, because the server's DNS-rebinding protection answers `421 Invalid Host header` to any other host.
 - **mcp-server accepts `Host: wip-mcp-server`** — DNS-rebinding protection is configured (the `MCP_ALLOWED_HOST` env on the mcp-server manifest) so in-cluster MCP calls aren't rejected.
 - **Standard preset defaults `auth.mode=hybrid`** — both JWT bearers (from local Dex) AND API keys (from cross-host clients) work without explicit `--auth-mode hybrid`. Operators wanting strict JWT-only opt in with `--auth-mode oidc`.
 - **`from_component: router` resolves to the public ingress URL** — `WIP_BASE_URL` set this way works for same-host and cross-host installs alike.
