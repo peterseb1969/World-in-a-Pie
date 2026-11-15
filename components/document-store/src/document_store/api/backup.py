@@ -22,8 +22,9 @@ Endpoints
     when none is given; a ``restore`` or ``merge`` also needs admin on every
     namespace the archive carries, and a ``fresh`` restore given only a
     ``namespace_map`` needs admin on the map's targets alone. The destination
-    is the archive's own namespace(s), which only a single-namespace
-    ``merge`` (``target_namespace``) or a ``fresh`` restore may change. A
+    is the archive's own namespace(s), which only a ``merge``
+    (``target_namespace`` for one namespace, ``namespace_map`` for several) or
+    a ``fresh`` restore may change. A
     target the mode cannot honour is refused, never silently replaced.
 * ``POST /backup/namespaces/{namespace}/validate``
     Verify a namespace's referential and identity integrity as a job. Started
@@ -48,7 +49,8 @@ Endpoints
     pulls the archive out from under the other. Reading the source job's
     archive needs admin on every namespace whose data it holds (a download
     needs read), and a fresh restore's input only to its creator or a
-    platform admin.
+    platform admin. A merge may be redirected with ``target_namespace`` or
+    ``namespace_map``, as on the upload restore.
 * ``GET  /backup/jobs``
     List recent jobs the caller can read every namespace of, optionally
     filtered by a namespace whose data they hold and/or status.
@@ -86,6 +88,7 @@ import contextlib
 import json
 import logging
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -474,19 +477,24 @@ async def start_restore(
             "data); a 'merge' of a single-namespace archive writes into this "
             "namespace; a 'fresh' restore requires this or namespace_map, "
             "since it places new identities. A multi-namespace archive takes "
-            "no target in restore or merge mode."
+            "no target here — redirect its namespaces with namespace_map."
         ),
     ),
     namespace_map: str | None = Form(
         None,
         description=(
-            "Fresh only — JSON object mapping EVERY archived namespace to "
-            "its target, e.g. {\"ns-a\": \"copy-a\", \"ns-b\": \"copy-a\"}. "
-            "Required for multi-namespace archives (there is no implicit "
-            "default: an unmapped namespace restored to its old name would "
-            "collide with the live original). Several sources may share one "
-            "target; Registry-key collisions between them refuse at plan "
-            "time. A target may equal its source name only when that "
+            "Merge and fresh only — JSON object mapping EVERY archived "
+            "namespace to a destination, e.g. {\"kb\": \"kb2\", "
+            "\"library\": \"library2\"}. A merge keeps every canonical id and "
+            "writes each namespace into its own target, rewriting the rows and "
+            "their references to carry the new name; the target must exist, and "
+            "the archive's ids must be free on this install. One destination "
+            "per source: folding two namespaces into one is what a fresh "
+            "restore does. A fresh restore needs the map for a "
+            "multi-namespace archive (there is no implicit default: an "
+            "unmapped namespace restored to its old name would collide with "
+            "the live original), and there several sources may share one "
+            "target. A target may equal its source name only when that "
             "namespace is empty or absent."
         ),
     ),
@@ -603,12 +611,13 @@ async def start_restore(
     namespace the archive carries, and a ``fresh`` restore given only a
     ``namespace_map`` needs admin on the map's targets alone (the URL
     ``namespace`` then gates nothing). The URL ``namespace`` is not the
-    destination. The destination is the archive's own namespace(s): a plain ``restore`` writes
-    each one to itself and refuses a ``target_namespace`` that differs; a
-    ``merge`` of a single-namespace archive may be redirected with
-    ``target_namespace``; a ``fresh`` restore needs ``target_namespace`` or
-    ``namespace_map``. An explicit target is honoured or refused, never
-    replaced.
+    destination. The destination is the archive's own namespace(s): a plain
+    ``restore`` writes each one to itself and refuses a ``target_namespace``
+    that differs; a ``merge`` may be redirected — ``target_namespace`` for a
+    single-namespace archive, ``namespace_map`` to give each namespace of a
+    multi-namespace archive its own target; a ``fresh`` restore needs
+    ``target_namespace`` or ``namespace_map``. An explicit target is honoured
+    or refused, never replaced.
 
     The archive is streamed to disk at ``$WIP_BACKUP_DIR/{job_id}.zip`` so
     multi-GB uploads don't buffer in RAM.
@@ -657,6 +666,7 @@ async def start_restore(
     prefixes, effective_target = await _authorize_restore_targets(
         mode, archive_path, identity, target_namespace, effective_target,
         map_only=parsed_namespace_map is not None and not target_namespace,
+        namespace_map=parsed_namespace_map,
     )
 
     options = {
@@ -719,14 +729,26 @@ async def start_restore(
 async def _parse_namespace_map(
     namespace_map: str | None, mode: str, identity: UserIdentity,
 ) -> dict[str, str] | None:
-    """The fresh restore's {source: target} map, checked: JSON, a non-empty
-    object of strings, and admin on every target it names."""
+    """The restore's {source: target} map, checked: JSON, a non-empty object
+    of strings, and admin on every target it names.
+
+    A merge and a fresh restore take it — both can write an archived
+    namespace somewhere other than its own name. A plain restore cannot: it
+    inserts the archived rows verbatim, and they embed the source namespace in
+    their entities and composite keys, so a destination other than its own is
+    not something it can honour.
+    """
     if namespace_map is None:
         return None
-    if mode != "fresh":
+    if mode == "restore":
         raise HTTPException(
             status_code=400,
-            detail="namespace_map applies only to mode='fresh'",
+            detail=(
+                "namespace_map redirects where the archived namespaces are "
+                "written, and mode='restore' writes each to itself — an "
+                "id-preserving restore cannot re-namespace data. Merge it "
+                "(mode=merge) or restore a copy with new ids (mode=fresh)."
+            ),
         )
     try:
         parsed_namespace_map = json.loads(namespace_map)
@@ -744,7 +766,7 @@ async def _parse_namespace_map(
             ),
         )
     checked: dict[str, str] = parsed_namespace_map
-    # New identities land in every mapped target — each needs admin.
+    # Every mapped target is written to — each one needs admin.
     for target in set(checked.values()):
         await check_namespace_permission(identity, target, "admin")
     return checked
@@ -820,6 +842,7 @@ async def _authorize_restore_targets(
     effective_target: str,
     *,
     map_only: bool = False,
+    namespace_map: dict[str, str] | None = None,
 ) -> tuple[list[str], str]:
     """Admin on the namespaces the restore writes, and the target it writes
     to. Returns (the archive's prefixes, the effective target); a refusal
@@ -849,23 +872,109 @@ async def _authorize_restore_targets(
         # namespace instead, and the engine's whole redirect path
         # (namespace rewrite, composite-key rehash, ids-must-be-free) was
         # unreachable from the API.
-        _check_restore_redirect(mode, target_namespace, prefixes)
-        if mode == "merge" and target_namespace:
-            # The archive prefixes were admin-checked above, but a
-            # redirected merge WRITES to the caller's target — admin
-            # there is the permission that gates the operation.
-            await check_namespace_permission(
-                identity, target_namespace, "admin"
+        _check_restore_redirect(mode, target_namespace, prefixes, namespace_map)
+        if mode == "merge":
+            effective_target = await _authorize_merge_targets(
+                identity, prefixes, target_namespace, namespace_map
             )
-            effective_target = target_namespace
     except HTTPException:
         archive_path.unlink(missing_ok=True)
         raise
     return prefixes, effective_target
 
 
-def _check_restore_redirect(mode: str, target_namespace: str | None, prefixes: list[str]) -> None:
-    """The targets a restore or merge cannot honour, refused before a job exists."""
+async def _authorize_merge_targets(
+    identity: UserIdentity,
+    prefixes: list[str],
+    target_namespace: str | None,
+    namespace_map: dict[str, str] | None,
+) -> str:
+    """Admin on every namespace a redirected merge WRITES, and the single
+    destination to record on the job.
+
+    ``_authorize_archive_restore`` gates the namespaces the archive carries —
+    right for a merge into itself, where those are the namespaces written. A
+    redirect writes elsewhere, so each destination needs admin too; without it
+    "merge into scratch-ns" would need rights over the source alone and could
+    write into a namespace the caller does not own.
+
+    The returned name is the destination when there is exactly one (a
+    single-namespace archive); '' when the archive's pairs each go to their own
+    target, where no single namespace is the destination. Unredirected, that is
+    the archive's own naming, which is what it returns then.
+    """
+    if target_namespace:
+        await check_namespace_permission(identity, target_namespace, "admin")
+        return target_namespace
+    if namespace_map:
+        for target in set(namespace_map.values()):
+            await check_namespace_permission(identity, target, "admin")
+        return namespace_map[prefixes[0]] if len(prefixes) == 1 else ""
+    return prefixes[0] if len(prefixes) == 1 else ""
+
+
+def _check_merge_namespace_map(
+    prefixes: list[str],
+    target_namespace: str | None,
+    namespace_map: dict[str, str],
+) -> None:
+    """A merge's map must name each archived namespace, and nothing else, and
+    no two of them the same destination.
+
+    The engine applies the same rules (``_validated_namespace_map``,
+    ``_mapped_targets``); refusing here answers the caller with a 400 instead
+    of a job that fails at plan time after taking the upload.
+    """
+    if target_namespace:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "target_namespace and namespace_map both name where the "
+                "archive is written; pass one or the other."
+            ),
+        )
+    unmapped = sorted(set(prefixes) - set(namespace_map))
+    unknown = sorted(set(namespace_map) - set(prefixes))
+    if unmapped or unknown:
+        problems = []
+        if unmapped:
+            problems.append(f"unmapped archive namespace(s) {unmapped}")
+        if unknown:
+            problems.append(f"mapped but not in the archive: {unknown}")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "namespace_map must cover exactly the archive's "
+                f"namespaces {sorted(prefixes)} — " + "; ".join(problems)
+            ),
+        )
+    shared = sorted(
+        target for target, count in Counter(namespace_map.values()).items()
+        if count > 1
+    )
+    if shared:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "namespace_map sends more than one archived namespace into the "
+                f"same target: {shared}. A merge keeps every canonical id, so "
+                "merge them one at a time, or restore a copy with new ids "
+                "(mode=fresh), which can fold several sources into one "
+                "namespace."
+            ),
+        )
+
+
+def _check_restore_redirect(
+    mode: str,
+    target_namespace: str | None,
+    prefixes: list[str],
+    namespace_map: dict[str, str] | None = None,
+) -> None:
+    """The targets a restore or merge cannot honour, refused before a job
+    exists."""
+    if mode == "merge" and namespace_map:
+        _check_merge_namespace_map(prefixes, target_namespace, namespace_map)
     if target_namespace and len(prefixes) > 1:
         # The engine would refuse this too, but only after a job
         # exists; refusing here turns a silent self-restore or
@@ -918,9 +1027,10 @@ def _restore_write_targets(
     automation (batch sync, validation) derives its scope from the job: a
     map-only fresh restore that recorded the URL path param here synced and
     "validated healthy" the SOURCE namespace while the target went unchecked
-    — a green verdict about the wrong namespace (CASE-745). restore/merge
-    keep the archive-prefixes semantics: they write to the archived
-    namespaces.
+    — a green verdict about the wrong namespace (CASE-745). A merge given a
+    namespace_map redirects the same way and reads the same rule. An
+    unredirected restore or merge keeps the archive-prefixes semantics: it
+    writes to the archived namespaces.
     """
     if mode == "fresh":
         write_targets = (
@@ -934,6 +1044,12 @@ def _restore_write_targets(
         # namespace — same reasoning as fresh above: sync and validation
         # derive their scope from the job record.
         return [effective_target], effective_target
+    if mode == "merge" and namespace_map:
+        # Every pair redirects to its own target; the job record names the
+        # namespaces the data landed in, for the same reason as above. With
+        # several of them there is no single destination, and the URL
+        # namespace stays the job's name, as for a multi-namespace self-merge.
+        return list(dict.fromkeys(namespace_map.values())), effective_target or namespace
     # The manifest's prefixes are the namespaces this restore writes; a
     # single-namespace archive derives prefixes == [effective_target], so
     # this one expression covers both the single- and multi-namespace
@@ -1396,14 +1512,32 @@ async def _insert_restore_from_job(
     record. Until the record is inserted nothing owns the copy, so any
     failure on the way (a refusal, an insert that meets a database blip)
     discards it: an object copy left behind would stay in the bucket for
-    good."""
+    good.
+
+    The redirect and the job's write targets follow the same rules as the
+    upload restore: this endpoint writes to the archive's own namespaces
+    unless the request redirects them, and a redirect changes what the job
+    record must name (the targets it writes, the sources its retained input
+    holds)."""
     try:
         prefixes, effective_target = await _authorize_archive_restore(
             scratch, identity
         )
+        _check_restore_redirect(
+            request.mode, request.target_namespace, prefixes, request.namespace_map
+        )
+        if request.mode == "merge":
+            effective_target = await _authorize_merge_targets(
+                identity, prefixes, request.target_namespace, request.namespace_map
+            )
+        write_targets, job_namespace = _restore_write_targets(
+            request.mode, request.namespace_map, request.target_namespace,
+            effective_target, prefixes, src.namespace,
+        )
         options = {
             "mode": request.mode,
             "target_namespace": effective_target,
+            "namespace_map": request.namespace_map,
             "on_clash": request.on_clash,
             "older_versions": request.older_versions,
             "add_missing": request.add_missing,
@@ -1423,10 +1557,15 @@ async def _insert_restore_from_job(
         job = BackupJob(
             job_id=new_job_id,
             kind=BackupJobKind.RESTORE,
-            namespace=effective_target or src.namespace,
+            namespace=job_namespace,
+            # The namespaces this restore writes — the archive's own, unless
+            # the request redirected them.
+            namespaces=write_targets,
             # The manifest's prefixes, as the upload restore records them
-            # (_authorize_archive_restore refuses an archive naming none).
-            namespaces=prefixes,
+            # (_authorize_archive_restore refuses an archive naming none). The
+            # retained input holds these namespaces' data even when the merge
+            # writes elsewhere, so download and delete ask about them too.
+            source_namespaces=prefixes,
             archive_path=f"{new_job_id}.zip" if object_copied else str(scratch),
             archive_backend=BACKEND_MINIO if object_copied else "local",
             archive_size=scratch.stat().st_size,
@@ -1470,6 +1609,12 @@ async def restore_from_job(
 
     One restore or merge runs at a time on an instance: while another one is
     running this answers 409 naming it. A dry run is not held back.
+
+    A merge may be redirected, as on the upload restore: ``target_namespace``
+    for a single-namespace archive, ``namespace_map`` to give each namespace of
+    a multi-namespace archive its own target. Each destination then needs admin
+    too, and the job records the namespaces it writes beside the sources its
+    input holds.
     """
     if request.mode not in ("restore", "merge"):
         raise HTTPException(

@@ -1955,6 +1955,39 @@ def _resolved_in(ref: Any, redirects: dict[str, str]) -> Any:
     return ref
 
 
+def _validated_namespace_map(
+    sources: list[str], namespace_map: dict[str, str]
+) -> dict[str, str]:
+    """Check a caller's {source: target} map against the archive's namespaces
+    and return it in archive order.
+
+    EVERY archived namespace must be mapped — restoring an unmapped namespace
+    to its old name by default would silently collide with the live original,
+    which is the accident both redirected modes exist to avoid. A namespace the
+    map names that the archive does not carry is a typo with no effect, so it
+    is refused rather than dropped. Archive order, not caller order:
+    provisioning order and the per-pair staging both key off it.
+    """
+    unknown = sorted(set(namespace_map) - set(sources))
+    unmapped = sorted(set(sources) - set(namespace_map))
+    if unknown or unmapped:
+        problems = []
+        if unmapped:
+            problems.append(f"unmapped archive namespace(s) {unmapped}")
+        if unknown:
+            problems.append(f"mapped but not in the archive: {unknown}")
+        raise RestoreEngineError(
+            "namespace_map must cover exactly the archive's "
+            f"namespaces {sorted(sources)} — " + "; ".join(problems)
+        )
+    invalid = {s: t for s, t in namespace_map.items() if not t}
+    if invalid:
+        raise RestoreEngineError(
+            f"namespace_map has empty target(s) for {sorted(invalid)}"
+        )
+    return {s: namespace_map[s] for s in sources}
+
+
 def _archived_template_ids(reader: Any, sources: list[str]) -> set[str]:
     """The template ids the archive carries in ``sources``."""
     return {
@@ -3439,7 +3472,7 @@ class DirectRestoreEngine:
     ) -> dict[str, str]:
         """Settle where every archived namespace goes.
 
-        With a map, its coverage rules are :meth:`_validated_namespace_map`'s;
+        With a map, its coverage rules are :func:`_validated_namespace_map`'s;
         a target equal to the source name is legal precisely when that
         namespace is absent (the per-target emptiness check enforces it).
         Without a map, only a single-namespace archive is unambiguous and
@@ -3451,7 +3484,7 @@ class DirectRestoreEngine:
         if namespace_map:
             # Preserve archive order, not caller order — provisioning order
             # and the N:1 first-source-config rule both key off it.
-            return self._validated_namespace_map(sources, namespace_map)
+            return _validated_namespace_map(sources, namespace_map)
 
         if not target_namespace:
             raise RestoreEngineError(
@@ -3465,39 +3498,6 @@ class DirectRestoreEngine:
                 "for each one: pass namespace_map."
             )
         return {sources[0]: target_namespace}
-
-    @staticmethod
-    def _validated_namespace_map(
-        sources: list[str], namespace_map: dict[str, str]
-    ) -> dict[str, str]:
-        """Check a caller's {source: target} map against the archive's
-        namespaces and return it in archive order.
-
-        EVERY archived namespace must be mapped — restoring an unmapped
-        namespace to its old name by default would silently collide with the
-        live original. A namespace the map names that the archive does not
-        carry is a typo with no effect, so it is refused rather than dropped.
-        Archive order, not caller order: provisioning order and the per-pair
-        staging both key off it.
-        """
-        unknown = sorted(set(namespace_map) - set(sources))
-        unmapped = sorted(set(sources) - set(namespace_map))
-        if unknown or unmapped:
-            problems = []
-            if unmapped:
-                problems.append(f"unmapped archive namespace(s) {unmapped}")
-            if unknown:
-                problems.append(f"mapped but not in the archive: {unknown}")
-            raise RestoreEngineError(
-                "namespace_map must cover exactly the archive's "
-                f"namespaces {sorted(sources)} — " + "; ".join(problems)
-            )
-        invalid = {s: t for s, t in namespace_map.items() if not t}
-        if invalid:
-            raise RestoreEngineError(
-                f"namespace_map has empty target(s) for {sorted(invalid)}"
-            )
-        return {s: namespace_map[s] for s in sources}
 
     @staticmethod
     def _rewrite_ns_config_refs(
@@ -7252,7 +7252,7 @@ class DirectRestoreEngine:
                 f"target_namespace '{target_namespace}' and namespace_map both "
                 "name where the archive is written; pass one or the other."
             )
-        mapping = self._validated_namespace_map(sources, namespace_map)
+        mapping = _validated_namespace_map(sources, namespace_map)
         shared = sorted(
             target for target, count in Counter(mapping.values()).items()
             if count > 1
