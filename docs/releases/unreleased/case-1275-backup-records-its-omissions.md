@@ -30,6 +30,12 @@ packages: [wip-toolkit]
   and never reference-validated, so a draft on one side against an active
   definition on the other now refuses the pair instead of silently keeping one.
   Both draft, or a retirement, merge as before.
+- The MCP `start_backup` description and `@wip/client`'s `BackupRequest` no
+  longer open with "every entity in every status and every version" and qualify
+  it two sentences later; they state the rule once — every entity in every
+  status, template versions by what the archive needs — and name the option that
+  carries all of them. Neither text calls a document `archived`, a status the
+  platform removed.
 - The unit Mongo fake answers the reads the leave-out scan makes (a bare
   projected `find`, and `aggregate`), so a unit run of `run_backup` exercises
   that scan instead of seeing nothing.
