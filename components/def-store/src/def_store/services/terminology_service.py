@@ -20,6 +20,7 @@ from wip_auth.synonym_lifecycle import (
 # This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
 from ..models.api_models import (
+    PATH_SPLITTING_CHAR,
     BulkResultItem,
     CreateTerminologyRequest,
     CreateTermRequest,
@@ -28,6 +29,7 @@ from ..models.api_models import (
     TermResponse,
     UpdateTerminologyRequest,
     UpdateTermRequest,
+    path_splitting_reason,
 )
 from ..models.audit_log import AuditAction, TermAuditLog
 from ..models.term import CASE_INSENSITIVE_COLLATION, Term, TermName
@@ -615,6 +617,13 @@ class TerminologyService:
         # If value changes, add auto-synonym in Registry for new value
         if value_changed:
             refuse_reserved_value(terminology.namespace, request.value)
+            # A rename is the other door a value enters through, so it takes
+            # the same addressability rule as the create.
+            if request.value and PATH_SPLITTING_CHAR in request.value:
+                raise DefStoreError(
+                    path_splitting_reason(request.value, "Terminology value"),
+                    "validation_failed", rule="unaddressable_value",
+                )
             # Check new value doesn't exist within the same namespace
             existing = await Terminology.find_one({"namespace": terminology.namespace, "value": request.value})
             if existing:
