@@ -147,7 +147,12 @@ export interface NamespaceIntegritySummary {
   orphaned_file_refs: number
   /** Version rows whose stored identity hash differs from the one recomputed: one per row. */
   identity_hash_mismatches: number
-  /** Version rows whose identity was not verified (a value or resolution missing, or the pinned template version not found; counted with check_identity off too). */
+  /**
+   * Version rows whose identity could not be compared (a value or resolution
+   * missing, or the pinned template version not found). Always 0 when
+   * `check_identity` is off; a missing pinned version is then still listed
+   * among the issues.
+   */
   identity_unverified: number
   /**
    * Mandatory fields of the pinned template version with no value in a

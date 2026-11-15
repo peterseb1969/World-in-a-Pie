@@ -138,3 +138,39 @@ def test_every_issue_type_lands_on_its_own_counter():
     assert (summary.total_documents, summary.documents_checked) == (9, 7)
     assert summary.documents_with_issues == 2
     assert summary.checks_not_run == {"term_reference:def-store": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("check_identity", "unverified"), [(True, 5), (False, 0)])
+async def test_identity_unverified_counts_only_when_identity_is_checked(
+    docs, monkeypatch, check_identity, unverified,
+):
+    """A row pinned to a missing template version used to count as identity
+    unverified even when the caller switched the identity check off. It now
+    counts only when the check was asked for. The issue itself is still
+    listed and counts in documents_with_issues either way."""
+    async def missing(template_id, template_version):
+        return integrity_service._MISSING
+
+    monkeypatch.setattr(integrity_service, "_identity_shape_for", missing)
+    with _templates():
+        result = await integrity_service.check_all_documents(
+            namespace=NS, check_term_refs=False, check_identity=check_identity,
+        )
+    missing_pins = [i for i in result.issues if i.type == "template_version_not_found"]
+    assert len(missing_pins) == 5  # every row, inactive ones included
+    assert result.summary.identity_unverified == unverified
+    assert result.summary.documents_with_issues == 5
+
+
+def test_the_summary_skips_identity_unverified_when_identity_was_not_checked():
+    issues = [
+        integrity_service.IntegrityIssue(
+            type="template_version_not_found", severity="error", document_id="D1",
+            template_id="T", version=1, reference="r", message="m",
+        )
+    ]
+    assert integrity_service._summarize(issues, 1, 1, {}).identity_unverified == 1
+    assert integrity_service._summarize(
+        issues, 1, 1, {}, check_identity=False,
+    ).identity_unverified == 0

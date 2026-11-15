@@ -52,8 +52,6 @@ class BulkResultItemBase(BaseModel):
             "cross_namespace_relationship, "
             "ambiguous_reference (an identifier the item names is borne by "
             "several entities; details.field, details.candidates), "
-            "ambiguous_terminology (several terminologies bear the value; "
-            "def-store's term-validation items), "
             "dependency_unavailable (a service or store the item needed could "
             "not answer; details.dependency), identity_hash_stale (a migrate "
             "dry run found the stored hash is not the one the target version "

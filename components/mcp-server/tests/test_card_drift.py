@@ -43,7 +43,9 @@ SERVER_PATH = "components/mcp-server/src/wip_mcp/server.py"
 CARD_BUDGETS = {
     "core.md": 8_000,
     "model.md": 10_000,
-    "build.md": 10_000,
+    # At 10_000 the card could not carry the primary hex, SEED_DIR and the
+    # @wip/react version floor beside the PoNIF pins.
+    "build.md": 10_200,
     "ship.md": 6_000,
 }
 

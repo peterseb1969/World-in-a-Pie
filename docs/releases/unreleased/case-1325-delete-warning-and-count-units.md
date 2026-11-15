@@ -25,8 +25,12 @@ packages: [wip-client]
   document **versions** (a document with three versions counts three),
   `documents_with_issues` counts **documents**, and each per-type counter counts
   **issues**. Several fields said "Documents" while counting rows, and eight
-  carried no description at all; each now names its own unit. The counts
-  themselves are unchanged.
+  carried no description at all; each now names its own unit. One count
+  changes: `identity_unverified` is 0 on a validation run with
+  `check_identity=false`. It used to count rows pinned to a template version
+  that no longer exists even when the caller had switched the identity check
+  off; that issue is still listed in `issues` and counted in
+  `documents_with_issues`.
 - **Rehash outcomes.** `status: "unresolved"` covers two cases, not one: a
   referent identity field with no stored resolution, and an identity field
   missing or null on the row. `status: "error"` names its second cause too — an

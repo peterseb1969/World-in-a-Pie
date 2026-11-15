@@ -33,8 +33,11 @@ DOCSTRING = bulk_models.__doc__ or ""
 # Codes set on items of a response model outside this contract, which carries
 # its own wording: registry's lookup items report an ambiguous identifier in
 # their `status` and name it `ambiguous` there, while the contract's item
-# calls the same thing `ambiguous_reference`.
-NON_CONTRACT_CODES = {"ambiguous"}
+# calls the same thing `ambiguous_reference`. def-store's term-validation
+# answers (POST /validate and /validate/bulk) return `ambiguous_terminology`,
+# documented in their own error_code description beside term_not_found; no
+# bulk write item carries it, so this contract's list does not name it.
+NON_CONTRACT_CODES = {"ambiguous", "ambiguous_terminology"}
 
 # Retired behaviours. Nothing on any service stamps these any more; they are
 # listed because each was once in the documented list and stayed after the

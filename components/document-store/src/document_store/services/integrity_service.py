@@ -155,9 +155,10 @@ class IntegritySummary(BaseModel):
     identity_unverified: int = Field(
         default=0,
         description=(
-            "Version rows whose identity was not verified: an identity value or "
-            "resolution missing, or the template version they are pinned to not "
-            "found (counted with check_identity off too)"
+            "Version rows whose identity could not be compared: an identity "
+            "value or resolution missing, or the template version they are "
+            "pinned to not found. Always 0 when check_identity is off; a missing "
+            "pinned version is then still listed among the issues"
         ),
     )
     mandatory_fields_missing: int = Field(
@@ -914,7 +915,9 @@ async def check_all_documents(
         if progress is not None:
             progress(documents_checked, effective_limit)
 
-    summary = _summarize(all_issues, total_count, documents_checked, not_run)
+    summary = _summarize(
+        all_issues, total_count, documents_checked, not_run, check_identity=check_identity,
+    )
     return IntegrityCheckResult(
         status=_overall_status(all_issues, summary),
         summary=summary,
@@ -979,11 +982,16 @@ _SUMMARY_COUNTERS = {
 
 def _summarize(
     issues: list[IntegrityIssue], total_count: int, documents_checked: int,
-    not_run: dict[str, int],
+    not_run: dict[str, int], *, check_identity: bool = True,
 ) -> IntegritySummary:
     counts = dict.fromkeys(set(_SUMMARY_COUNTERS.values()), 0)
     for issue in issues:
         counter = _SUMMARY_COUNTERS.get(issue.type)
+        if counter == "identity_unverified" and not check_identity:
+            # A scan that was not asked to compare identities has none
+            # unverified. A missing pinned version is still reported, as its
+            # own issue, and counts in documents_with_issues.
+            continue
         if counter:
             counts[counter] += 1
     return IntegritySummary(
