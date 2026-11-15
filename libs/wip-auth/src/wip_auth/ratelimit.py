@@ -14,7 +14,9 @@ platform's reverse proxy:
   (WIP_TRUSTED_PROXIES, the ranges wip-caddy trusts), and the leftmost one
   when every entry is trusted. Where nothing is trusted the header has one
   entry, which the proxy wrote. Behind wip-router an app is one client: the
-  router writes the app's own address.
+  router writes the app's own address. app-edge, between wip-caddy and an
+  attached app, hands auth-gateway's /auth/verify the header as wip-caddy
+  wrote it, without appending wip-caddy, so each user keeps their own bucket.
 - **Who is not.** A request without the header did not come through Caddy:
   it is a call from inside the platform (another service, a health probe,
   ingest's deliveries, a restore), and is not limited, so the platform never
@@ -198,6 +200,10 @@ def setup_rate_limiting(app) -> Limiter | None:
 
     Returns the limiter instance, or None if disabled.
     """
+    # Read before the disabled check, so a malformed WIP_TRUSTED_PROXIES
+    # stops the service at start whether or not the limit is on: it is not
+    # first noticed the day someone turns the limit on.
+    trusted_proxies()
     rate_limit = os.getenv("WIP_RATE_LIMIT", "40000/minute")
     if not rate_limit:
         return None

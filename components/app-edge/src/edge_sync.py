@@ -483,6 +483,14 @@ def _route_block(t: Target, s: Settings, matcher: str) -> list[str]:
             f"\t\t\t\turi {uri}",
             f"\t\t\t\theader_up X-Forwarded-Proto {s.public_scheme}",
             f"\t\t\t\theader_up X-Forwarded-Host {forwarded_host}",
+            # The gateway's rate limit keys on the client address, read from
+            # the right of X-Forwarded-For past the proxies it trusts. Left to
+            # its default the edge appends its peer, wip-caddy, which off k8s
+            # the gateway does not trust (nothing is), so every user of every
+            # protected app would share wip-caddy's one bucket. The header
+            # goes on as wip-caddy wrote it: the client, plus on k8s the
+            # ingress controller's pod, which the gateway skips.
+            "\t\t\t\theader_up X-Forwarded-For {http.request.header.X-Forwarded-For}",
             f"\t\t\t\tcopy_headers {' '.join(s.gateway_headers)}",
             "\t\t\t\t@unauth status 401",
             "\t\t\t\thandle_response @unauth {",

@@ -138,6 +138,7 @@ def test_protected_route_order_and_headers():
         "uri /auth/verify?allowed_groups=aa-users",
         "header_up X-Forwarded-Proto https",
         "header_up X-Forwarded-Host {http.request.hostport}",
+        "header_up X-Forwarded-For {http.request.header.X-Forwarded-For}",
         "copy_headers X-WIP-User X-WIP-Groups",
         "request_header -X-WIP-Auth-Method",
         'request_header Cookie "(^|;\\s*)wip_session=[^;]*" ""',
@@ -202,6 +203,17 @@ def test_tls_verify_off_and_plain_http():
     # A plain-http upstream gets the dial timeout, but no TLS.
     assert "dial_timeout 2s" in plain and "\t\t\t\t\ttls\n" not in plain
     assert "203.0.113.10:3000" in plain
+
+
+def test_the_gateway_is_handed_the_forwarded_for_wip_caddy_wrote():
+    """forward_auth would append the edge's peer, wip-caddy, to the header.
+    Off k8s the gateway trusts no proxy, so its rate limit would key every
+    user of every protected app on wip-caddy's address. The edge passes the
+    header on unchanged instead, and toward the app it keeps the default."""
+    body = block(es.caddyfile(es.plan([rec()], []), SETTINGS), "@t0")
+    auth = body[body.index("forward_auth"):body.index("copy_headers")]
+    assert "header_up X-Forwarded-For {http.request.header.X-Forwarded-For}" in auth
+    assert "X-Forwarded-For" not in body[body.index("reverse_proxy"):]
 
 
 def test_the_front_doors_forwarded_for_is_kept():

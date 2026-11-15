@@ -169,8 +169,11 @@ def test_client_address(monkeypatch, forwarded, trusted, expected):
     assert client_address(forwarded, trusted_proxies()) == expected
 
 
-def test_a_trusted_range_that_is_not_one_fails_the_start(monkeypatch):
-    monkeypatch.setenv("WIP_RATE_LIMIT", "3/minute")
+@pytest.mark.parametrize("limit", ["3/minute", ""], ids=["limit-on", "limit-off"])
+def test_a_trusted_range_that_is_not_one_fails_the_start(monkeypatch, limit):
+    # Off as well as on: a broken setting is found at start, not the day
+    # someone turns the limit on.
+    monkeypatch.setenv("WIP_RATE_LIMIT", limit)
     monkeypatch.setenv("WIP_TRUSTED_PROXIES", "10.42.0.0/16,pods")
     with pytest.raises(ValueError, match="'pods'"):
         setup_rate_limiting(FastAPI())
