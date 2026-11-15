@@ -18,7 +18,7 @@ naming each variable that is unset:
 |---|---|
 | def-store | `REGISTRY_API_KEY`, `TEMPLATE_STORE_API_KEY` (each else `API_KEY`); `WIP_AUTH_LEGACY_API_KEY` |
 | template-store | `REGISTRY_API_KEY`, `DEF_STORE_API_KEY`, `DOCUMENT_STORE_API_KEY` (each else `API_KEY`); `WIP_AUTH_LEGACY_API_KEY` |
-| document-store | `REGISTRY_API_KEY`, `TEMPLATE_STORE_API_KEY`, `DEF_STORE_API_KEY` (each else `API_KEY`); `WIP_AUTH_LEGACY_API_KEY` |
+| document-store | `REGISTRY_API_KEY`, `TEMPLATE_STORE_API_KEY`, `DEF_STORE_API_KEY` (each else `API_KEY`); `WIP_AUTH_LEGACY_API_KEY`; for reporting-sync, `REGISTRY_API_KEY` (else `WIP_AUTH_LEGACY_API_KEY`, `API_KEY`) |
 | reporting-sync | `API_KEY`; `REGISTRY_API_KEY` (else `API_KEY`); `WIP_AUTH_LEGACY_API_KEY` |
 | ingest-gateway | `REGISTRY_API_KEY` (else `WIP_AUTH_LEGACY_API_KEY`, `API_KEY`, `MASTER_API_KEY`) |
 | registry | `WIP_AUTH_LEGACY_API_KEY` (else `MASTER_API_KEY`, `API_KEY`, `REGISTRY_API_KEY`) |

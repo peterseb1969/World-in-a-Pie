@@ -413,6 +413,26 @@ def operator_key_in(value: Any) -> str | None:
     return None
 
 
+def nul_key_in(value: Any) -> str | None:
+    """The first key holding a NUL byte in a filter value, at any depth
+    (inside nested objects and list elements), or None. No BSON key can carry
+    one: the encoder fails, a 500 instead of a refusal. A NUL inside a string
+    value is fine, since BSON strings carry their length."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and "\x00" in key:
+                return key
+            found = nul_key_in(item)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = nul_key_in(item)
+            if found is not None:
+                return found
+    return None
+
+
 class QueryFilter(StrictModel):
     """A filter condition for document queries.
 
@@ -420,10 +440,13 @@ class QueryFilter(StrictModel):
     on a template or not. What it cannot be is a MongoDB operator. A segment
     starting with ``$`` (``$where``, ``$expr``, ``data.$x``) would put an
     operator, and with ``$expr`` and ``$function`` server-side JavaScript,
-    where a field path goes. A value cannot carry operators either: ``operator`` names the only
+    where a field path goes. An empty segment (``a..b``, a leading or trailing
+    dot) and one holding a NUL byte are refused too: neither is a path. A
+    value cannot carry operators either: ``operator`` names the only
     comparison applied, so a ``$``-prefixed key anywhere in the value is
-    refused. A plain object value (``{"city": "Berlin"}``) still matches a
-    sub-document exactly.
+    refused, as is a key holding a NUL byte, which no stored key can match. A
+    plain object value (``{"city": "Berlin"}``) still matches a sub-document
+    exactly.
     """
 
     field: str = Field(
@@ -431,7 +454,7 @@ class QueryFilter(StrictModel):
         min_length=1,
         description=(
             "Field path to filter on (e.g., 'data.status', 'template_id'). "
-            "No segment may start with '$'."
+            "No segment may be empty, start with '$' or hold a NUL byte."
         ),
     )
     operator: str = Field(
@@ -442,7 +465,7 @@ class QueryFilter(StrictModel):
         ...,
         description=(
             "Value to compare against. An object or list may not contain a key "
-            "starting with '$'."
+            "starting with '$' or holding a NUL byte."
         ),
     )
 
@@ -465,6 +488,12 @@ class QueryFilter(StrictModel):
             raise ValueError(
                 f"filter value contains the key {key!r}: a value may not carry "
                 "MongoDB operators; use the filter's operator instead"
+            )
+        key = nul_key_in(value)
+        if key is not None:
+            raise ValueError(
+                f"filter value contains the key {key!r}: a key may not hold a "
+                "NUL byte"
             )
         return value
 

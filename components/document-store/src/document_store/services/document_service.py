@@ -46,6 +46,7 @@ from ..models.api_models import (
     TraverseResponse,
     ValidationError,
     ValidationResponse,
+    nul_key_in,
     operator_key_in,
     operator_path_segment,
 )
@@ -3670,12 +3671,13 @@ class DocumentService:
             if (
                 operator_path_segment(field) is not None
                 or operator_key_in(value) is not None
+                or nul_key_in(value) is not None
             ):
                 raise ValueError(
                     f"Filter on {field!r} carries a MongoDB operator or an "
                     "unusable path in its field or value; field segments may "
                     "not be empty, start with '$' or hold a NUL byte, and "
-                    "value keys may not start with '$'."
+                    "value keys may not start with '$' or hold a NUL byte."
                 )
 
             if (

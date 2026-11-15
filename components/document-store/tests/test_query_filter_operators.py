@@ -129,3 +129,41 @@ def test_the_model_refuses_operators_at_construction():
         QueryFilter(field="data.x", operator="in", value=[{"$gt": 0}])
     with pytest.raises(ValidationError):
         QueryFilter(field="", operator="eq", value=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"a\u0000b": 1},
+        {"outer": {"in\u0000ner": 1}},
+        [{"ok": 1}, {"x\u0000": 2}],
+    ],
+)
+async def test_a_value_key_no_stored_key_can_match_is_refused(client, auth_headers, value):
+    """No BSON key can carry a NUL byte: a value object with one reached the
+    encoder and the caller got a 500. It is refused, at any depth, with its
+    own message."""
+    response = await _query(
+        client, auth_headers, {"field": "data.address", "operator": "eq", "value": value}
+    )
+    assert response.status_code == 422, response.text
+    assert "may not hold a NUL byte" in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_nul_inside_a_string_value_is_data(client, auth_headers):
+    """BSON strings carry their length, so a NUL in a string value is plain
+    data: the filter runs (and matches nothing here)."""
+    response = await _query(
+        client, auth_headers, {"field": "data.first_name", "operator": "eq", "value": "a\u0000b"}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
+
+
+def test_the_builder_refuses_an_unvalidated_nul_key():
+    bad = QueryFilter.model_construct(field="data.x", operator="eq", value={"k\u0000": 1})
+    request = DocumentQueryRequest.model_construct(filters=[bad], template_id=None, status=None)
+    with pytest.raises(ValueError, match="hold a NUL byte"):
+        DocumentService()._build_query(request)

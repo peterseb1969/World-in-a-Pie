@@ -26,9 +26,12 @@ from wip_auth import service_api_key
 logger = logging.getLogger(__name__)
 
 # The key this service presents to reporting-sync: the Registry key, else its
-# own service key. Read through service_api_key, so neither set is reported as
-# missing rather than sent as an empty X-API-Key.
-REPORTING_SYNC_KEY: tuple[str, ...] = ("REGISTRY_API_KEY", "WIP_AUTH_LEGACY_API_KEY")
+# own service key, else API_KEY, the last link of every outbound chain (an
+# empty WIP_AUTH_LEGACY_API_KEY is not filled from API_KEY by wip-auth's
+# config, so without it API_KEY alone could not satisfy this chain). Read
+# through service_api_key, so none set is reported as missing rather than
+# sent as an empty X-API-Key.
+REPORTING_SYNC_KEY: tuple[str, ...] = ("REGISTRY_API_KEY", "WIP_AUTH_LEGACY_API_KEY", "API_KEY")
 
 
 class ReportingSyncClient:
