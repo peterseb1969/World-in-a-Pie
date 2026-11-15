@@ -1657,9 +1657,15 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 namespace, template_value, template_version, fields, config,
                 usage=usage, identity_fields=identity_fields,
             )
-            # A new version table changes the entity's union membership —
-            # rebuild the views so the bare name and __entities stay honest.
-            await self.ensure_views_for_template(namespace, template_value, config)
+            # The new table lands at today's types while its older siblings can
+            # predate them (integer fields mapped to int4 before), and a view
+            # keeps a column only at the one type every version table shares:
+            # widening first keeps the column instead of dropping it. Widening
+            # rebuilt the views itself when it changed anything, and a new
+            # version table changes the entity's union membership either way, so
+            # the views are rebuilt once per branch.
+            if not await self._widen_integer_columns(namespace, template_value, fields, config, usage):
+                await self.ensure_views_for_template(namespace, template_value, config)
 
         # Return the schema-qualified reference to this VERSION's table
         # ("<ns>"."doc_<value>__v<N>") so callers build SQL against it
