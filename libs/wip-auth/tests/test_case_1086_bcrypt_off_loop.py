@@ -14,10 +14,12 @@ and real hashes at cost 12 would make the test slow.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import bcrypt
+import httpx
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -346,7 +348,9 @@ async def test_a_refused_check_caches_nothing(slow_checks, monkeypatch):
 
     monkeypatch.setattr(api_key_module, "_SLOW_PATH_WAITERS", 8)
     assert await _attempt(provider, "secret-a") == "a"
-    assert "secret-a" not in provider._rejected
+    # `_rejected` is keyed by the SHA-256 fingerprint of the value, never by
+    # the plaintext, so the plaintext test would pass either way.
+    assert hashlib.sha256(b"secret-a").hexdigest() not in provider._rejected
 
 
 # --- Its own threads (the review of c8990623) ----------------------------
@@ -366,3 +370,118 @@ async def test_a_slow_check_does_not_wait_behind_other_blocking_work(slow_checks
     assert await _attempt(provider, "random-0") == "401"
     took = time.monotonic() - started
     assert took < 0.15, f"the check waited {took * 1000:.0f} ms behind the shared pool"
+
+
+# --- An identity assertion the key check cannot answer is refused ---------
+#
+# Passing such a request on to the API-key provider was safe while the only
+# reason a key could not be verified was the runtime-key deadline: that state
+# holds every key, so the next provider answered 503 too. The queue bound is
+# judged per call and the caches fill as requests land, so a second pass can
+# succeed where the first was refused — and then the request is served as the
+# privileged key itself, the asserted identity silently dropped.
+
+
+def _asserted_identity_request(api_key: str) -> Request:
+    """A proxy's request: a user identity, and the privileged key that vouches
+    for it."""
+    return Request({
+        "type": "http", "method": "GET", "path": "/",
+        "headers": [
+            (b"x-wip-user", b"alice@example.org"),
+            (b"x-wip-groups", b"wip-viewers"),
+            (b"x-api-key", api_key.encode()),
+        ],
+    })
+
+
+def _privileged_key_provider() -> APIKeyProvider:
+    proxy = APIKeyRecord(
+        name="gateway", key_hash=hash_api_key("secret-gateway"), owner="system:gateway",
+        groups=["wip-services"],
+    )
+    return APIKeyProvider([proxy, _key("app")])
+
+
+@pytest.mark.asyncio
+async def test_an_overloaded_proxy_key_check_is_refused_rather_than_passed_on(
+    slow_checks, monkeypatch
+):
+    from wip_auth.providers.trusted_header import TrustedHeaderProvider
+
+    key_provider = _privileged_key_provider()
+    provider = TrustedHeaderProvider(key_provider)
+
+    monkeypatch.setattr(api_key_module, "_SLOW_PATH_WAITERS", 0)
+    blockers = [asyncio.create_task(_attempt(key_provider, f"gone-{i}")) for i in range(2)]
+    await asyncio.sleep(0.01)  # both threads taken, and the line holds nobody
+
+    with pytest.raises(HTTPException) as refused:
+        await provider.authenticate(_asserted_identity_request("secret-gateway"))
+    assert refused.value.status_code == 503
+    assert refused.value.headers == {"Retry-After": "1"}
+    assert await asyncio.gather(*blockers) == ["401", "401"]
+
+    # The refusal is about the queue, not about the key: once there is room
+    # again the same request asserts the identity it carried.
+    monkeypatch.setattr(api_key_module, "_SLOW_PATH_WAITERS", 8)
+    identity = await provider.authenticate(_asserted_identity_request("secret-gateway"))
+    assert identity is not None
+    assert identity.user_id == "alice@example.org"
+    assert identity.groups == ["wip-viewers"]
+
+
+@pytest.mark.asyncio
+async def test_the_chain_never_answers_a_refused_identity_request_as_the_key(
+    slow_checks, monkeypatch
+):
+    """The chain as the Registry builds it: the trusted-header provider first,
+    then the API-key provider for the same X-API-Key header.
+
+    The bound is judged per call, so one refusal and room again is what a burst
+    looks like: here the slow path declines the proxy-key check and then
+    verifies the very next call for the same value. Waiting on real queue state
+    to flip between two calls microseconds apart would be a coin toss, so the
+    flip is what the seam injects — one refusal, then the normal path.
+
+    Falling through on that refusal authenticates the request as the privileged
+    key, with alice and her wip-viewers group dropped."""
+    from fastapi import FastAPI
+
+    from wip_auth import create_auth_middleware, get_current_identity
+    from wip_auth.providers.trusted_header import TrustedHeaderProvider
+
+    real_run = api_key_module._SlowPath.run
+    declined = False
+
+    async def decline_the_first_check(self, check):
+        nonlocal declined
+        if not declined:
+            declined = True
+            raise api_key_module._overloaded()
+        return await real_run(self, check)
+
+    monkeypatch.setattr(api_key_module._SlowPath, "run", decline_the_first_check)
+
+    key_provider = _privileged_key_provider()
+    app = FastAPI()
+    app.add_middleware(create_auth_middleware([TrustedHeaderProvider(key_provider), key_provider]))
+
+    @app.get("/whoami")
+    async def whoami() -> dict:
+        identity = get_current_identity()
+        return {"user_id": identity.user_id if identity else None}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
+        response = await client.get("/whoami", headers={
+            "X-WIP-User": "alice@example.org",
+            "X-WIP-Groups": "wip-viewers",
+            "X-API-Key": "secret-gateway",
+        })
+
+    assert response.status_code == 503, (
+        f"answered {response.status_code} as {response.json()}: the identity "
+        "assertion was dropped and the request served as the key"
+    )
+    assert response.headers.get("retry-after") == "1"
