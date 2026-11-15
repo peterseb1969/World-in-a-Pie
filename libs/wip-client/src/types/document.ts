@@ -355,11 +355,19 @@ export interface ImportDocumentError {
   data: Record<string, string>
 }
 
-export interface ImportDocumentsResponse {
+/**
+ * What an import job did, on its record's `result` once the run reaches a
+ * terminal status (`getBackupJob`). Rows are attempted and reported per row;
+ * a job that failed on an outage carries the same report of what it wrote
+ * before it.
+ */
+export interface ImportJobResult {
   total_rows: number
   succeeded: number
   failed: number
   skipped: number
+  /** Discriminator shared with a validation's findings: always 'import_report'. */
+  result_kind: 'import_report'
   /** The first 100 created rows; results_truncated says when there were more. */
   results: ImportDocumentResult[]
   results_truncated: boolean

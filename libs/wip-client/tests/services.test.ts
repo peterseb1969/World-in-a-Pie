@@ -1256,18 +1256,30 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('extend_terminologies')).toBe('true')
     })
 
-    it('importDocuments sends skip_errors whenever it is set, false included', async () => {
-      const body = { total_rows: 0, succeeded: 0, failed: 0, skipped: 0, results: [],
-        results_truncated: false, errors: [], errors_truncated: false }
+    it('importDocuments answers with the job and sends skip_errors whenever it is set, false included', async () => {
+      // The route no longer waits for the rows: it starts a job. The report
+      // comes back on that job's `result` once it is terminal.
+      const job = {
+        job_id: 'imp-abc123', kind: 'import', namespace: 'ns', namespaces: ['ns'],
+        status: 'pending', phase: null, percent: null, message: null, error: null,
+        created_at: '2026-11-15T09:00:00Z', started_at: null, completed_at: null,
+        archive_size: null, options: { total_rows: 0 },
+        result: {
+          result_kind: 'import_report', total_rows: 0, succeeded: 0, failed: 0,
+          skipped: 0, results: [], results_truncated: false, errors: [],
+          errors_truncated: false,
+        },
+      }
       const file = new Blob(['a,b\n'], { type: 'text/csv' })
       const base = { template_id: 'T', column_mapping: { a: 'a' }, namespace: 'ns' }
       const sent: (string | null)[] = []
       for (const skip_errors of [false, true, undefined]) {
         fetchMock.mockClear()
-        mockJsonResponse(body)
-        await client.documents.importDocuments(file, 'data.csv', { ...base, skip_errors })
-        const [, options] = fetchMock.mock.calls[0]
-        sent.push((options.body as FormData).get('skip_errors') as string | null)
+        mockJsonResponse(job)
+        const res = await client.documents.importDocuments(file, 'data.csv', { ...base, skip_errors })
+        expect(res.kind).toBe('import')
+        expect(res.status).toBe('pending')
+        sent.push((fetchMock.mock.calls[0][1].body as FormData).get('skip_errors') as string | null)
       }
       // undefined leaves it out, so the server's default (go on) applies.
       expect(sent).toEqual(['false', 'true', null])

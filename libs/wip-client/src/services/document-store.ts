@@ -17,7 +17,6 @@ import type {
   TableViewResponse,
   TableViewParams,
   ImportPreviewResponse,
-  ImportDocumentsResponse,
   ImportDocumentsOptions,
   ReplayRequest,
   ReplaySessionResponse,
@@ -398,11 +397,26 @@ export class DocumentStoreService extends BaseService {
     return refuseErrorBody(await this.postFormData('/import/preview', form))
   }
 
+  /**
+   * Import documents from a CSV/XLSX file, as a job.
+   *
+   * The rows are written in the background, each through the ordinary create
+   * path — minutes for a large file — so this answers with the job record
+   * (HTTP 202) rather than a report that arrives when the last row is done.
+   * Poll `getBackupJob(jobId)`: while it runs the record carries progress and
+   * the counts written so far, and once `status` is `'complete'` or
+   * `'failed'` its `result` is the report (`ImportJobResult`). The rows it
+   * wrote stand either way; leaving never stopped the import.
+   *
+   * What the caller gets wrong before any row is written — an unreadable file,
+   * a mapping naming columns the file has not got, a template that cannot be
+   * used, an oversized upload — is refused by this call, and no job starts.
+   */
   async importDocuments(
     file: Blob,
     filename: string,
     options: ImportDocumentsOptions,
-  ): Promise<ImportDocumentsResponse> {
+  ): Promise<BackupJobSnapshot> {
     const form = new FormData()
     form.append('file', file, filename)
     form.append('template_id', options.template_id)

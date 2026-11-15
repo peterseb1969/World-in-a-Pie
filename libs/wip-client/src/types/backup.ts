@@ -9,7 +9,12 @@
  * so a future implementation can replace the toolkit without breaking clients.
  */
 
-export type BackupJobKind = 'backup' | 'restore' | 'validate'
+/**
+ * What long-running operation a job record is running. `import` is a
+ * CSV/XLSX document import (`documents.importDocuments`); its row report is
+ * on the job's `result`.
+ */
+export type BackupJobKind = 'backup' | 'restore' | 'validate' | 'import'
 
 export type BackupJobStatus = 'pending' | 'running' | 'complete' | 'failed'
 
@@ -59,8 +64,9 @@ export type OlderVersionsPolicy = 'retire' | 'keep'
 
 
 /**
- * Persistent snapshot of a backup or restore job. Returned by every backup
- * REST endpoint that hands back a job (start, get, list).
+ * Persistent snapshot of a long-running job — backup, restore, validation or
+ * CSV/XLSX import. Returned by every document-store endpoint that hands back a
+ * job (start, get, list).
  */
 export interface BackupJobSnapshot {
   job_id: string
@@ -96,7 +102,9 @@ export interface BackupJobSnapshot {
   warnings?: string[]
   /**
    * Present on `validate` jobs once they complete. A restore job carries its
-   * own result here: read it as `RestoreJobResult`.
+   * own result here: read it as `RestoreJobResult`. An `import` job carries its
+   * row report: read it as `ImportJobResult` (and while the run is still going,
+   * the counts written so far).
    */
   result?: NamespaceIntegrityResult | null
   /**
