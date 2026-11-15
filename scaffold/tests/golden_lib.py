@@ -79,7 +79,7 @@ HOST_ISOLATION_ENV = {
 
 # The modules setup-backend-agent.sh installs when missing; the real venv
 # must already have them, since a golden run installs nothing.
-VENV_MODULES = ("pytest", "ruff", "mypy", "build", "wip_mcp", "wip_toolkit", "wip_archive")
+VENV_MODULES = ("pytest", "ruff", "mypy", "build", "radon", "wip_mcp", "wip_toolkit", "wip_archive")
 
 
 def missing_venv_modules() -> list[str]:
