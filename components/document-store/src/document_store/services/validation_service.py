@@ -2993,7 +2993,11 @@ class ValidationService:
                     "target_templates": field.get("target_templates", []),
                     "include_subtypes": field.get("include_subtypes", False),
                     "target_terminologies": field.get("target_terminologies", []),
-                    "version_strategy": field.get("version_strategy", "latest"),
+                    # A stored field row carries the key with null when the
+                    # template declared no strategy, so the .get default would
+                    # never fire and the reference would record null while
+                    # latest was applied: `or` states the strategy in effect.
+                    "version_strategy": field.get("version_strategy") or "latest",
                     "value": value
                 })
 
@@ -3010,7 +3014,7 @@ class ValidationService:
                         "target_templates": field.get("target_templates", []),
                         "include_subtypes": field.get("include_subtypes", False),
                         "target_terminologies": field.get("target_terminologies", []),
-                        "version_strategy": field.get("version_strategy", "latest"),
+                        "version_strategy": field.get("version_strategy") or "latest",
                         "value": item
                     })
 

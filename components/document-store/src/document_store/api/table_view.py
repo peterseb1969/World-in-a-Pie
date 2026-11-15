@@ -87,8 +87,10 @@ class TableViewResponse(BaseModel):
     array_handling: Literal["flattened", "json", "none"] = Field(
         ...,
         description=(
-            "How arrays were handled on this page: 'flattened', 'json' (at "
-            "least one document's arrays exceeded max_cross_product), or "
+            "How arrays were handled on this page: 'json' (at least one "
+            "document's arrays exceeded max_cross_product, so some array cells "
+            "hold JSON — other documents on the page may still be expanded), "
+            "'flattened' (every array on the page was expanded into rows), or "
             "'none' (no arrays on this page)"
         )
     )
@@ -235,6 +237,23 @@ def _count_array_cross_product(data: dict[str, Any], array_fields: list[str]) ->
     for size in sizes:
         result *= size
     return result
+
+
+def _page_array_handling(handlings: set[str]) -> Literal["flattened", "json", "none"]:
+    """One label for the whole page, from what each of its documents did.
+
+    The label has to hold for every row on the page, so 'json' outranks
+    'flattened': a page with any JSON array cell is not a flattened page,
+    however many of its documents were expanded. Taking the last document's
+    handling instead — which a plain overwrite does — let a page whose first
+    document overflowed max_cross_product report 'flattened' while its cells
+    held JSON.
+    """
+    if "json" in handlings:
+        return "json"
+    if "flattened" in handlings:
+        return "flattened"
+    return "none"
 
 
 def _flatten_document(
@@ -445,7 +464,7 @@ async def get_table_view(
     documents = await Document.find(query_filter).skip(skip).limit(page_size).to_list()
 
     all_rows = []
-    array_handling: Literal["flattened", "json", "none"] = "none"
+    handlings: set[str] = set()
 
     for doc in documents:
         rows, handling = _flatten_document(doc, columns, array_fields, max_cross_product)
@@ -459,8 +478,11 @@ async def get_table_view(
                     "cells; the CSV export streams any size."
                 ),
             )
-        if handling != "none":
-            array_handling = handling
+        handlings.add(handling)
+
+    # One label for a page of documents, and it must hold for every row on it
+    # (see _page_array_handling).
+    array_handling = _page_array_handling(handlings)
 
     # Update column metadata based on actual handling
     if array_handling == "flattened":

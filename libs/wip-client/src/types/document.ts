@@ -256,6 +256,10 @@ export interface TableViewResponse {
   page: number
   page_size: number
   pages: number
+  /** How arrays were handled on this page: 'json' when at least one document's
+   * arrays exceeded max_cross_product (some array cells hold JSON, while other
+   * documents on the page may still be expanded), 'flattened' when every array
+   * on the page became rows, 'none' when the page has no arrays. */
   array_handling: 'none' | 'flattened' | 'json'
 }
 

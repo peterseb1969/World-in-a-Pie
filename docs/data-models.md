@@ -504,9 +504,9 @@ class FieldDefinition(BaseModel):
         None,
         description="How to resolve reference versions: latest (default) or pinned"
     )
-    # Unset (null) means latest: a document's references[].version_strategy
-    # records the declaration as is, so it is null rather than "latest" when
-    # the field declares none.
+    # Unset (null) means latest on the field declaration. A document's
+    # references[].version_strategy records the strategy that was applied, so it
+    # reads "latest" there — including when the field declared none.
 
     # For type=file
     file_config: FileFieldConfig | None = None
@@ -1386,7 +1386,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 |------|-------------|
 | `invalid_file` | File reference failed validation (type/size/etc.) |
 | `file_validation_error` | The file field could not be validated |
-| `max_files` | A multi-file field holds more files than its `file_config.max_files` |
+| `max_files` | A multi-file field holds more files than its `file_config.max_files`, or an array-of-files field more than its `array_file_config.max_files` |
 
 **Cross-field rules**
 

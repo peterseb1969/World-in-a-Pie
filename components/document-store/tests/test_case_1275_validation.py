@@ -193,3 +193,25 @@ async def test_a_missed_terminology_ref_names_the_namespace_it_searched(monkeypa
         ". A bare value"
     )[0]
     assert ("A bare value resolves in 'acme' only" in message) is (ref == "COUNTRY")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared, expected", [(None, "latest"), ("pinned", "pinned")])
+async def test_a_reference_records_the_strategy_in_effect(declared, expected):
+    """A stored field row carries `version_strategy: null` rather than omitting
+    the key, so the `.get` default never fires: the reference used to record
+    null while latest was in fact applied, which is not what the response
+    contract shows."""
+    from document_store.services.validation_service import ValidationService
+
+    plain = {"name": "ref", "label": "Ref", "type": "reference",
+             "reference_type": "document", "target_templates": ["PERSON"],
+             "version_strategy": declared}
+    array = {"name": "refs", "label": "Refs", "type": "array",
+             "array_item_type": "reference", "reference_type": "document",
+             "target_templates": ["PERSON"], "version_strategy": declared}
+    id_ = "0192abc1-aaaa-7abc-8def-111111111111"
+
+    for fields, data in (([plain], {"ref": id_}), ([array], {"refs": [id_]})):
+        collected = await ValidationService()._collect_reference_values(data, fields, "")
+        assert [c["version_strategy"] for c in collected] == [expected]
