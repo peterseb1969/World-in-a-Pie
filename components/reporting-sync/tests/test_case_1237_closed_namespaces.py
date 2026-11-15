@@ -228,3 +228,27 @@ async def test_privileged_sql_waits_for_the_startup_check(app_on_reader, monkeyp
     async with _client(ADMIN) as c:
         r = await c.post("/api/reporting-sync/query", json={"sql": "SELECT 1"})
     assert r.status_code == 503 and "being deleted" in r.text
+
+
+async def test_scoped_reads_never_grant_a_closed_schema(pg_pool, scoped_reads):
+    """A scoped key's readable list comes from the Registry, which does not
+    list a namespace being deleted. The grant step does not rely on that: it
+    leaves a closed schema out whatever list it is handed."""
+    from reporting_sync.scoped_reads import namespace_role
+
+    live = "ns-still-open"
+    async with pg_pool.acquire() as conn:
+        for schema in (NS, live):
+            await conn.execute(f'CREATE SCHEMA "{schema}"')
+            await conn.execute(f'CREATE ROLE "{namespace_role(schema)}" NOLOGIN')
+    try:
+        await SchemaManager(pg_pool).close_namespace(NS)
+        await scoped_reads._apply_grants([NS, live])
+        async with pg_pool.acquire() as conn:
+            usage = "SELECT has_schema_privilege($1, $2, 'USAGE')"
+            assert not await conn.fetchval(usage, namespace_role(NS), NS)
+            assert await conn.fetchval(usage, namespace_role(live), live)
+    finally:
+        async with pg_pool.acquire() as conn:
+            for schema in (NS, live):
+                await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

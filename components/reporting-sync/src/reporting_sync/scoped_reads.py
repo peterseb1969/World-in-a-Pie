@@ -39,6 +39,8 @@ from dataclasses import dataclass
 
 import asyncpg
 
+from .schema_manager import CLOSED_SCHEMA_COMMENT
+
 logger = logging.getLogger(__name__)
 
 _SCOPE_PREFIX = "wip_scope_"
@@ -147,9 +149,16 @@ class ScopedReads:
     async def _apply_grants(self, schemas: list[str]) -> None:
         async with self.owner_pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCOPE_LOCK_KEY)
+            # A schema closed for its namespace's deletion is never granted
+            # again, whatever list the caller's permissions produced.
             existing = {
                 r["nspname"] for r in await conn.fetch(
-                    "SELECT nspname FROM pg_namespace WHERE nspname = ANY($1::text[])", schemas,
+                    """
+                    SELECT nspname FROM pg_namespace
+                    WHERE nspname = ANY($1::text[])
+                      AND obj_description(oid, 'pg_namespace') IS DISTINCT FROM $2
+                    """,
+                    schemas, CLOSED_SCHEMA_COMMENT,
                 )
             }
             for schema in schemas:
