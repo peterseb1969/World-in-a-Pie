@@ -13,10 +13,11 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from bson import ObjectId
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, ServerSelectionTimeoutError
 
 import registry.api.namespace_deletion as api_mod
 import registry.services.namespace_deletion as mod
@@ -56,6 +57,40 @@ def _step(prefix: str, order: int = 1, **kw) -> DeletionStep:
 async def _namespace(client, headers, prefix: str) -> None:
     r = await client.put(f"{BASE}/{prefix}", headers=headers, json={"deletion_mode": "full"})
     assert r.status_code == 200, r.text
+
+
+class _FlakyHeartbeats:
+    """The journals collection with its Nth bare heartbeat write failing, which
+    is what a network timeout or a primary stepdown looks like to a run. Only
+    _keep_claim writes exactly {run_heartbeat}, so the journal writes a step or
+    a status makes are left alone."""
+
+    def __init__(self, real, fail_at: int) -> None:
+        self.real = real
+        self.fail_at = fail_at
+        self.heartbeats = 0
+
+    async def update_one(self, flt, update, **kw):
+        if list(update.get("$set", {})) == ["run_heartbeat"]:
+            self.heartbeats += 1
+            if self.heartbeats == self.fail_at:
+                raise ServerSelectionTimeoutError("transient: server selection timeout")
+        return await self.real.update_one(flt, update, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+def _stub_build(monkeypatch, svc, journal) -> None:
+    """A journal build that returns ``journal`` as if it had counted the
+    namespace, and inbound references that need no force."""
+    async def build(prefix_, force, requested_by, inbound_refs, batches):
+        return journal
+
+    monkeypatch.setattr(svc, "_build_journal", build)
+    monkeypatch.setattr(
+        svc, "_check_inbound_references", lambda p: asyncio.sleep(0, []),
+    )
 
 
 @pytest.mark.asyncio
@@ -231,3 +266,133 @@ async def test_existing_duplicates_leave_the_index_unbuilt_and_are_logged(client
         await DeletionJournal.find({"namespace": prefix}).delete()
         assert await ensure_one_open_journal_index() == []
     assert name in await collection.index_information()
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_that_fails_is_retried_and_the_run_still_cleans_up(
+    client, monkeypatch,
+):
+    """A transient MongoDB error on a heartbeat refresh must not end the run's
+    cleanup: the claim gets refreshed again, and the run that finishes gives
+    it up and flushes the caches. Skipped cleanup would leave the deletion
+    reading as running here until the process restarts."""
+    prefix = _prefix()
+    journal = DeletionJournal(namespace=prefix, status="in_progress", steps=[_step(prefix)])
+    await journal.insert()
+    svc = _svc(monkeypatch)
+    monkeypatch.setattr(mod, "_HEARTBEAT_INTERVAL", timedelta(milliseconds=20))
+    flaky = _FlakyHeartbeats(DeletionJournal.get_motor_collection(), fail_at=1)
+    monkeypatch.setattr(DeletionJournal, "get_motor_collection", staticmethod(lambda: flaky))
+    announced = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod, "announce_namespace_deleted", announced)
+
+    async def long_step(step, namespace):
+        # Bounded, so a run whose heartbeat died reports a failed assertion
+        # here rather than waiting forever.
+        for _ in range(50):
+            if flaky.heartbeats >= 2:
+                break
+            await asyncio.sleep(0.01)
+        return 3
+
+    monkeypatch.setattr(svc, "_execute_step", long_step)
+    await svc.resume_deletion(prefix)
+
+    stored = await flaky.real.find_one({"_id": journal.id})
+    assert stored["status"] == "completed"
+    assert stored["run_token"] is None
+    assert svc._running == set()
+    assert announced.await_args.args[1] == prefix
+
+
+@pytest.mark.asyncio
+async def test_a_claim_that_cannot_be_released_still_flushes_the_caches(
+    client, monkeypatch,
+):
+    """Each part of the run's cleanup stands on its own: a release the store
+    refuses must not be the reason other services keep a deleted namespace."""
+    prefix = _prefix()
+    journal = DeletionJournal(namespace=prefix, status="in_progress", steps=[_step(prefix)])
+    await journal.insert()
+    svc = _svc(monkeypatch)
+
+    async def release_fails(journal_):
+        raise ServerSelectionTimeoutError("transient: server selection timeout")
+
+    announced = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod, "_release", release_fails)
+    monkeypatch.setattr(mod, "announce_namespace_deleted", announced)
+
+    await svc.resume_deletion(prefix)
+
+    assert svc._running == set()
+    assert announced.await_args.args[1] == prefix
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_that_loses_to_this_namespace_s_stopped_deletion_keeps_it_locked(
+    client, auth_headers, monkeypatch,
+):
+    """The other journal the store held against this deletion is the deletion of
+    the namespace in hand, and it took a step's worth of data before it failed.
+    Unlocking would open a half-deleted namespace, so the lock stays with that
+    deletion and the answer names resume-delete."""
+    prefix = _prefix()
+    await _namespace(client, auth_headers, prefix)
+    ns = await Namespace.find_one({"prefix": prefix})
+    await DeletionJournal(
+        namespace=prefix, namespace_id=ns.namespace_id, status="failed",
+        steps=[_step(prefix, status="failed", error="boom")],
+    ).insert()
+    _stub_build(monkeypatch, api_mod._deletion_service, DeletionJournal(namespace=prefix))
+
+    r = await client.delete(f"{BASE}/{prefix}", headers=auth_headers)
+
+    assert r.status_code == 409, r.text
+    assert "resume-delete" in r.json()["detail"]
+    assert (await Namespace.find_one({"prefix": prefix})).status == "locked"
+    assert await DeletionJournal.find({"namespace": prefix}).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_that_loses_to_a_live_run_on_this_namespace_keeps_it_locked(
+    client, auth_headers, monkeypatch,
+):
+    """A resume that stored its journal first is deleting the namespace now; the
+    losing deletion leaves the lock to it, whatever the journal's status reads
+    by the time the loser looks again."""
+    prefix = _prefix()
+    await _namespace(client, auth_headers, prefix)
+    ns = await Namespace.find_one({"prefix": prefix})
+    await DeletionJournal(
+        namespace=prefix, namespace_id=ns.namespace_id, status="failed",
+        run_token="the-other-run", run_heartbeat=datetime.now(UTC),
+        steps=[_step(prefix, status="failed", error="boom")],
+    ).insert()
+    _stub_build(monkeypatch, api_mod._deletion_service, DeletionJournal(namespace=prefix))
+
+    r = await client.delete(f"{BASE}/{prefix}", headers=auth_headers)
+
+    assert r.status_code == 409, r.text
+    assert (await Namespace.find_one({"prefix": prefix})).status == "locked"
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_that_loses_to_an_earlier_namespace_of_the_name_gives_it_back(
+    client, auth_headers, monkeypatch,
+):
+    """The open journal names another namespace that held the name before: the
+    namespace in hand was never touched by it, so the loser unlocks it again."""
+    prefix = _prefix()
+    await _namespace(client, auth_headers, prefix)
+    await DeletionJournal(
+        namespace=prefix, namespace_id="NS-the-previous-one", status="failed",
+        steps=[_step(prefix, status="failed", error="boom")],
+    ).insert()
+    _stub_build(monkeypatch, api_mod._deletion_service, DeletionJournal(namespace=prefix))
+
+    r = await client.delete(f"{BASE}/{prefix}", headers=auth_headers)
+
+    assert r.status_code == 409, r.text
+    assert "resume-delete" in r.json()["detail"]
+    assert (await Namespace.find_one({"prefix": prefix})).status == "active"

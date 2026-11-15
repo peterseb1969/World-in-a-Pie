@@ -61,9 +61,10 @@ async def _start_deletion(prefix: str, force: bool, deleted_by: str | None):
         400: {"description": "Refused: inbound references need force, or the namespace may not be deleted"},
         404: {"description": "No such namespace"},
         409: {"description": "A deletion of the namespace is in progress (it is locked, "
-              "or another run holds or took over its deletion), or an earlier "
-              "deletion of the name stopped on a failed step and must be finished "
-              "with resume-delete first"},
+              "or another run holds or took over its deletion), or a deletion of it "
+              "stopped on a failed step and must be finished with resume-delete first "
+              "(the namespace stays locked for that one), or the deletion that held "
+              "the name finished while this one was being stored"},
         503: {"description": "The deletion could not be started (its journal could not be "
               "stored); nothing was deleted and the namespace is unlocked again"},
     },

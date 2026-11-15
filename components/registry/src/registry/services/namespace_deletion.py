@@ -535,13 +535,25 @@ _HEARTBEAT_INTERVAL = _CLAIM_LEASE / 5
 async def _keep_claim(journal: DeletionJournal) -> None:
     """Refresh the run's heartbeat until cancelled, while the run still holds
     the claim; a lost claim ends the refreshing (the run learns at its next
-    write)."""
+    write).
+
+    A refresh that fails is logged and retried at the next tick: one network
+    timeout or primary stepdown must not cost the run its claim, and this task
+    never ends with an exception — its caller awaits it in the run's cleanup,
+    and an exception there would leave that cleanup half done."""
     while True:
         await asyncio.sleep(_HEARTBEAT_INTERVAL.total_seconds())
-        result = await DeletionJournal.get_motor_collection().update_one(
-            {"_id": journal.id, "run_token": journal.run_token},
-            {"$set": {"run_heartbeat": datetime.now(UTC)}},
-        )
+        try:
+            result = await DeletionJournal.get_motor_collection().update_one(
+                {"_id": journal.id, "run_token": journal.run_token},
+                {"$set": {"run_heartbeat": datetime.now(UTC)}},
+            )
+        except Exception:
+            logger.warning(
+                "Deletion of namespace '%s': heartbeat not written; the next one is retried",
+                journal.namespace, exc_info=True,
+            )
+            continue
         if result.matched_count == 0:
             return
 
@@ -566,6 +578,17 @@ async def _release(journal: DeletionJournal) -> None:
         {"_id": journal.id, "run_token": journal.run_token},
         {"$set": {"run_token": None, "run_heartbeat": None}},
     )
+
+
+async def _run_holds_the_claim(journal: DeletionJournal) -> bool:
+    """Whether a run still holds ``journal``: a token with a heartbeat inside
+    the lease. The lease is compared in the store, as in _claim — a stored
+    timestamp reads back naive here."""
+    return await DeletionJournal.find_one({
+        "_id": journal.id,
+        "run_token": {"$ne": None},
+        "run_heartbeat": {"$gt": datetime.now(UTC) - _CLAIM_LEASE},
+    }) is not None
 
 
 def _count_step(summary: dict[str, int], step: DeletionStep) -> None:
@@ -1029,18 +1052,43 @@ class NamespaceDeletionService:
     async def _lost_to_open_journal(
         self, prefix: str, ns: Namespace, prior_status: str,
     ) -> Exception:
-        """The refusal of a deletion whose journal the store refused because
-        another of the prefix is open. A running one (a resume that built it
-        while this deletion was building its own) holds the lock this
-        deletion took, so the lock stays. One stopped on a failed step is an
-        earlier deletion of the name: the namespace is given back as it was,
-        and that deletion is the one to finish."""
+        """The refusal of a deletion whose journal the store would not take
+        because another journal of the prefix is open.
+
+        The lock this deletion took is given back only when the other journal
+        cannot be the deletion of the namespace in hand: none is open any more
+        (the one that refused it finished), or its recorded namespace id is
+        another one (an earlier namespace that held the name). A journal a run
+        holds, or that deletes this same namespace, owns the lock: giving the
+        name back would open a namespace another run is deleting, or has
+        already taken data from. That deletion is the one to finish, with
+        resume-delete. A journal from before ids were recorded cannot be placed
+        by id, and is left as it was read."""
         other = await DeletionJournal.find_one(
             {"namespace": prefix, "status": {"$in": list(OPEN_STATUSES)}}
         )
-        if other is not None and other.status == "in_progress":
+        if other is None:
+            await _undo_start(prefix, [], ns, prior_status)
+            return DeletionRefused(
+                f"The deletion of namespace '{prefix}' that holds the name finished "
+                "while this one was being stored; nothing was deleted here. See "
+                f"GET /api/registry/namespaces/{prefix}/deletion-status.",
+                409,
+            )
+        same_namespace = bool(other.namespace_id) and other.namespace_id == ns.namespace_id
+        if other.status == "in_progress" or (
+            same_namespace and await _run_holds_the_claim(other)
+        ):
             return DeletionAlreadyRunning(
                 f"The deletion of namespace '{prefix}' is running already"
+            )
+        if same_namespace:
+            return DeletionRefused(
+                f"The deletion of namespace '{prefix}' stopped on a failed step and is "
+                "not finished; finish it first (POST "
+                f"/api/registry/namespaces/{prefix}/resume-delete). This request deleted "
+                "nothing, and the namespace stays locked for that deletion.",
+                409,
             )
         await _undo_start(prefix, [], ns, prior_status)
         return DeletionRefused(
@@ -1495,11 +1543,27 @@ class NamespaceDeletionService:
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
             self._running.discard(journal_id)
-            await _release(journal)
-            # After every run, finished or not: whatever it removed may sit in
-            # other services' caches, and reads during the run may have cached
-            # the namespace's ids again. A repeated flush costs nothing.
-            await announce_namespace_deleted(get_event_bus(), journal.namespace)
+            # Each of these runs on its own: one that cannot be done must not
+            # leave the others undone. A claim that stays held reads as a
+            # running deletion until this process restarts, and a skipped flush
+            # leaves other services holding what this run deleted.
+            try:
+                await _release(journal)
+            except Exception:
+                logger.warning(
+                    "Deletion of namespace '%s': its claim was not released; it ages out "
+                    "with the lease", journal.namespace, exc_info=True,
+                )
+            try:
+                # After every run, finished or not: whatever it removed may sit in
+                # other services' caches, and reads during the run may have cached
+                # the namespace's ids again. A repeated flush costs nothing.
+                await announce_namespace_deleted(get_event_bus(), journal.namespace)
+            except Exception:
+                logger.warning(
+                    "Deletion of namespace '%s': the cache flush was not announced",
+                    journal.namespace, exc_info=True,
+                )
 
     async def _run_steps(self, journal: DeletionJournal):
         summary: dict[str, int] = {}
