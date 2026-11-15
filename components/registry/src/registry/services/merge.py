@@ -134,11 +134,23 @@ class _ClaimMove:
 
 
 def _absorb(keys: list[Synonym], now: datetime, actor: EntryActor):
+    """P takes D's keys. A key P already holds actively stays as it is. A key P
+    holds only as a released (inactive) copy is replaced by D's active one:
+    the merge confirms that key's claim for P, so P's copy must resolve too,
+    or the key would be claimed by P and resolve to nothing."""
     def mutate(entry: RegistryEntry):
-        present = {_scope(s) for s in entry.synonyms}
-        new = [s for s in keys if _scope(s) not in present]
+        held = {_scope(s) for s in entry.active_synonyms()}
+        released = {_scope(s) for s in entry.synonyms if s.status == "inactive"}
+        new = []
+        for s in keys:
+            scope = _scope(s)
+            if scope in held or (scope in released and s.status == "inactive"):
+                continue
+            new.append(s)
         if not new:
             return UNCHANGED
+        revived = {_scope(s) for s in new} & released
+        entry.synonyms = [s for s in entry.synonyms if _scope(s) not in revived]
         entry.synonyms.extend(new)
         entry.rebuild_search_values()
         actor.stamp(entry, now)
@@ -182,16 +194,20 @@ async def merge_into(
     try:
         for syn in claimable:
             await move.take(syn)
+        # A fresh read limited to an active P, never the caller's copy: P may
+        # have been retired or deleted since the caller read it, and a merge
+        # into a retired entry would strand D's identity on an entry nothing
+        # resolves to.
         absorbed, _ = await apply_to_entry(
             preferred.entry_id, _absorb(keys, now, actor),
-            ("synonyms", "search_values", *STAMP_FIELDS), first=preferred,
+            ("synonyms", "search_values", *STAMP_FIELDS), read_filter={"status": "active"},
         )
         if absorbed is None:
-            # Deleted between the read and the write: nothing absorbed the
-            # keys, so the claims moved to it go back.
+            # Retired or deleted between the read and the write: nothing
+            # absorbed the keys, so the claims moved to it go back.
             raise MergedEntryChanged(
-                f"Entry {preferred.entry_id} was deleted while {deprecated.entry_id} "
-                "was being merged into it"
+                f"Entry {preferred.entry_id} was retired or deleted while "
+                f"{deprecated.entry_id} was being merged into it; nothing was merged"
             )
     except BaseException:
         await move.undo()

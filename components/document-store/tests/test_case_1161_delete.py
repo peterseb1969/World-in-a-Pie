@@ -4,8 +4,8 @@ Provenance: CASE-1161. These branches of DocumentService.delete_document had
 no test: hard-deleting an unknown document or a version that does not exist,
 the Registry entry's removal failing (logged, not fatal) on the version and
 the all-versions paths, a forced delete without warning or broken-reference
-collectors, and a soft delete of a document with no active version or
-without a warnings collector. Documents are written to the test MongoDB
+collectors, and a soft delete of a document with no active version (an
+idempotent success) or without a warnings collector. Documents are written to the test MongoDB
 directly; the Registry is a stand-in answering deletion_mode 'full'.
 """
 
@@ -88,12 +88,32 @@ async def test_a_forced_delete_needs_no_collectors(clean):
 
 
 @pytest.mark.asyncio
-async def test_a_soft_delete_needs_an_active_version_and_no_collector(clean):
+async def test_a_soft_delete_is_idempotent_and_needs_no_collector(clean):
+    # A document with no active version is already deleted: deleting it again
+    # answers True, like the delete that retired it, and records nothing a
+    # second time. Only a document with no version at all is not there
+    # (CASE-1271, finding e93d63c6 R1).
     await _doc("GONE", 1, active=False)
     await _doc("LIVE", 2)
     service = DocumentService()
-    with patch.object(DocumentService, "_record_lifecycle", AsyncMock(return_value=["w"])):
-        assert await service.delete_document("GONE") is False
+    record = AsyncMock(return_value=["w"])
+    with patch.object(DocumentService, "_record_lifecycle", record):
+        assert await service.delete_document("GONE") is True
+        record.assert_not_awaited()
+        assert await service.delete_document("NOPE") is False
         assert await service.delete_document("LIVE") is True
+        assert await service.delete_document("LIVE") is True
+    assert record.await_count == 1
     rows = await Document.find({"document_id": "LIVE"}).to_list()
     assert all(r.status == DocumentStatus.INACTIVE for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_a_soft_delete_that_loses_to_a_concurrent_one_answers_deleted(clean):
+    # The other request retired the active version between this one's read
+    # and its write: the document is deleted, which is what was asked.
+    await _doc("RACED", 1)
+    service = DocumentService()
+    with patch.object(DocumentService, "_record_lifecycle", AsyncMock(return_value=[])), \
+            patch.object(DocumentService, "_retire_latest", AsyncMock(return_value=None)):
+        assert await service.delete_document("RACED") is True

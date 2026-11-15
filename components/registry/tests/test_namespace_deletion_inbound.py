@@ -247,6 +247,57 @@ class TestDocumentsUsingTheDoomedNamespace:
         assert report["requires_force"] is True
 
     @pytest.mark.asyncio
+    async def test_a_version_holding_a_term_in_both_term_fields_counts_once(
+        self, client, auth_headers, spaces
+    ):
+        # The database groups the matches; a version matched by two fields of
+        # one kind is one version.
+        doomed, survivor, i = spaces
+        await _coll("wip_def_store", "terms").insert_one(
+            {"namespace": doomed, "term_id": i("TERM-DOOMED"), "value": "red"}
+        )
+        await _template(survivor, i("TPL-USER"), "USER")
+        for n in range(2):
+            await _document(
+                survivor, i(f"D-{n}"), i("TPL-USER"),
+                term_references=[{"field_path": "colour", "term_id": i("TERM-DOOMED")}],
+                references=[{"field_path": "colour", "reference_type": "term",
+                             "resolved": {"term_id": i("TERM-DOOMED")}}],
+            )
+
+        report = await _dry_run(client, auth_headers, doomed)
+
+        (ref,) = report["inbound_references"]
+        assert ref["source_entity"] == "2 document version(s) of USER", ref
+
+    @pytest.mark.asyncio
+    async def test_a_count_over_several_batches_of_ids_says_it_is_an_upper_bound(
+        self, client, auth_headers, spaces, monkeypatch
+    ):
+        # One version holding terms from two batches is counted in each; the
+        # report must not present that sum as exact (CASE-1271, finding
+        # bc483b3b R1).
+        from registry.services import namespace_deletion
+
+        monkeypatch.setattr(namespace_deletion, "_INBOUND_DOCUMENT_BATCH", 1)
+        doomed, survivor, i = spaces
+        for name in ("TERM-A", "TERM-B"):
+            await _coll("wip_def_store", "terms").insert_one(
+                {"namespace": doomed, "term_id": i(name), "value": name}
+            )
+        await _template(survivor, i("TPL-USER"), "USER")
+        await _document(survivor, i("D-1"), i("TPL-USER"), term_references=[
+            {"field_path": "a", "term_id": i("TERM-A")},
+            {"field_path": "b", "term_id": i("TERM-B")},
+        ])
+
+        report = await _dry_run(client, auth_headers, doomed)
+
+        (ref,) = report["inbound_references"]
+        assert ref["source_entity"] == "up to 2 document version(s) of USER", ref
+        assert report["requires_force"] is True
+
+    @pytest.mark.asyncio
     async def test_documents_referencing_a_doomed_template_or_terminology(
         self, client, auth_headers, spaces
     ):

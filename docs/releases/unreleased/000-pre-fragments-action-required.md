@@ -1570,10 +1570,14 @@ and document-store now follow it too, through one shared rule in wip-auth.
   /entries/resolve` (the path every service resolves through) answered
   `not_found` for D; only by-id lookup and search found P. D now records
   `merged_into = P` and resolving D answers P, through any chain of merges,
-  so references already stored as D keep resolving. The redirect is the
-  merge's own record: an `{"entry_id": X}` synonym someone adds does not
-  make X resolve to its holder. Entries merged before this release carry no
-  `merged_into` and keep the old behaviour.
+  so references already stored as D keep resolving. The redirect
+  `/entries/resolve` follows is the merge's own record: an
+  `{"entry_id": X}` synonym someone adds does not make `/entries/resolve`
+  answer its holder for X. The lookups that also match the values of
+  entries' keys do: by-id lookup (`/entries/lookup/by-id`), candidates
+  by value and search answer the holder for an X that is not an active
+  entry, as they would for any other value of its keys. Entries merged
+  before this release carry no `merged_into` and keep the old behaviour.
 - **D's keys belong to P.** D's primary key now moves to P along with its
   synonyms; D keeps a record of them, all inactive, and its primary key hash
   is cleared. Re-registering D's identity answers P — it answered D, an

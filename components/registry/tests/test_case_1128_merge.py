@@ -278,3 +278,70 @@ async def test_a_merge_into_an_entry_deleted_meanwhile_changes_nothing(client, a
     assert entry_d.status == "active" and not entry_d.merged_into
     claim = await CompositeKeyClaim.find_existing(NS, TYPE, _hash(vendor))
     assert claim.owner_entry_id == d
+
+
+@pytest.mark.asyncio
+async def test_a_merge_into_an_entry_retired_meanwhile_changes_nothing(client, auth_headers, monkeypatch):
+    """The survivor was retired between the merge's read and its write. A
+    merge into it would strand D's identity on an entry nothing resolves to,
+    so the merge is refused and D keeps its keys, claims included
+    (CASE-1271, finding 99359548 R2)."""
+    p = await _register(client, auth_headers, {"value": "M-P10"})
+    d = await _register(client, auth_headers, {"value": "M-D10"})
+    vendor = {"vendor": "M-D10-SYN"}
+    assert (await _add_synonym(client, auth_headers, d, vendor))["status"] == "added"
+    real = merge_service.apply_to_entry
+
+    async def survivor_retired(entry_id, *args, **kwargs):
+        if entry_id == p:
+            await RegistryEntry.get_motor_collection().update_one(
+                {"entry_id": p}, {"$set": {"status": "inactive"}, "$inc": {"revision": 1}},
+            )
+        return await real(entry_id, *args, **kwargs)
+
+    monkeypatch.setattr(merge_service, "apply_to_entry", survivor_retired)
+    result = await _merge(client, auth_headers, p, d)
+    assert result["status"] == "error", result
+    assert "retired or deleted" in result["error"]
+
+    entry_d = await RegistryEntry.find_one(RegistryEntry.entry_id == d)
+    assert entry_d.status == "active" and not entry_d.merged_into
+    claim = await CompositeKeyClaim.find_existing(NS, TYPE, _hash(vendor))
+    assert claim.owner_entry_id == d
+    entry_p = await RegistryEntry.find_one(RegistryEntry.entry_id == p)
+    assert all(s.composite_key != vendor for s in entry_p.synonyms)
+
+
+@pytest.mark.asyncio
+async def test_a_key_the_survivor_released_resolves_to_it_after_the_merge(client, auth_headers):
+    """P released a key (/entries/deactivate retires an entry's synonyms and
+    keeps the entry active) and D took it, so P keeps only an inactive copy of
+    it. The merge confirms the key's claim for P; P's copy must become active
+    too, or the key is claimed by P and resolves to nothing (CASE-1271,
+    finding 99359548 R1)."""
+    p = await _register(client, auth_headers, {"value": "M-P11"})
+    d = await _register(client, auth_headers, {"value": "M-D11"})
+    vendor = {"vendor": "M-SHARED-11"}
+    assert (await _add_synonym(client, auth_headers, p, vendor))["status"] == "added"
+
+    r = await client.post("/api/registry/entries/deactivate", json=[{"entry_id": p}], headers=auth_headers)
+    assert r.json()["results"][0]["status"] == "deactivated", r.text
+    assert (await _add_synonym(client, auth_headers, d, vendor))["status"] == "added"
+    entry_p = await RegistryEntry.find_one(RegistryEntry.entry_id == p)
+    assert entry_p.status == "active"
+    held = [s for s in entry_p.synonyms if s.composite_key == vendor]
+    assert [s.status for s in held] == ["inactive"], "precondition: P holds the key released"
+
+    assert (await _merge(client, auth_headers, p, d))["status"] == "merged"
+
+    entry_p = await RegistryEntry.find_one(RegistryEntry.entry_id == p)
+    held = [s for s in entry_p.synonyms if s.composite_key == vendor]
+    assert [s.status for s in held] == ["active"], held
+    assert "M-SHARED-11" in entry_p.search_values
+    claim = await CompositeKeyClaim.find_existing(NS, TYPE, _hash(vendor))
+    assert claim.owner_entry_id == p
+    r = await client.post("/api/registry/entries/lookup/by-key", json=[{
+        "namespace": NS, "entity_type": TYPE, "composite_key": vendor, "search_synonyms": True,
+    }], headers=auth_headers)
+    found = r.json()["results"][0]
+    assert found["status"] == "found" and found["entry_id"] == p, found

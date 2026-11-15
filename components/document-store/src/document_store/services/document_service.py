@@ -3127,12 +3127,15 @@ class DocumentService:
     async def _soft_delete_document(
         self, document_id: str, actor: str, warnings: list[str] | None,
     ) -> bool:
-        """Retire the document's active version; False when it has none."""
+        """Retire the document's active version. Idempotent: a document with
+        no active version is already deleted, and answers True like the
+        delete that retired it (a repeat, or a concurrent delete). False only
+        when no version of the document exists."""
         results = await Document.find(
             {"document_id": document_id, "status": DocumentStatus.ACTIVE.value}
         ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         if not results:
-            return False
+            return await Document.find_one({"document_id": document_id}) is not None
         document = results[0]
 
         # The retirement is recorded in the Registry first: one it cannot
@@ -3147,8 +3150,9 @@ class DocumentService:
             raise
         if retired is None:
             # No active version is left: a concurrent delete retired it, and
-            # the Registry entry is retired either way.
-            return False
+            # the Registry entry is retired either way. The document is
+            # deleted, which is what this request asked for.
+            return True
         document = retired
         if warnings is not None:
             warnings.extend(lifecycle_warnings)

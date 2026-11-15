@@ -32,7 +32,7 @@ from typing import cast
 from bson.decimal128 import Decimal128
 
 from ..models.entry import RegistryEntry
-from ..models.id_algorithm import IdAlgorithmConfig, IdGenerator
+from ..models.id_algorithm import GENERATING_ALGORITHMS, IdAlgorithmConfig, IdGenerator
 from ..models.id_counter import IdCounter
 from ..models.namespace import Namespace
 
@@ -105,7 +105,19 @@ class IdGeneratorService:
 
     @staticmethod
     def check_config(config: IdAlgorithmConfig, namespace: str, entity_type: str) -> None:
-        """Raise ValueError when ``config`` cannot mint an ID."""
+        """Raise ValueError when ``config`` cannot mint an ID: a validation-only
+        algorithm (``pattern``, ``any``), which accepts IDs a caller supplies
+        and generates none, or ``prefixed`` without a prefix. Every minting
+        path calls this before it mints, so such a namespace's request gets a
+        per-item error or a 422, never the generator's own ValueError as a
+        500."""
+        if config.algorithm not in GENERATING_ALGORITHMS:
+            raise ValueError(
+                f"id_config.{entity_type} of namespace '{namespace}' uses the "
+                f"validation-only algorithm '{config.algorithm}', which generates no "
+                "IDs; supply an explicit entry_id, or configure a generating "
+                f"algorithm ({', '.join(sorted(GENERATING_ALGORITHMS))})"
+            )
         if config.algorithm == "prefixed" and not config.prefix:
             # Stored before writes refused it: bare numbers would be minted
             # by every such sequence alike.

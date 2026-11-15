@@ -202,6 +202,11 @@ _DOCUMENT_ID_USES = (
 
 # Ids per $in when matching other namespaces' rows against this one's terms.
 _INBOUND_TERM_BATCH = 1000
+# Ids per $in when counting other namespaces' documents holding this one's
+# ids. Large, so a namespace's ids usually fit one batch and the count is
+# exact. A kind's $or repeats the batch once per field (twice for terms), so
+# 50 000 canonical ids make a pipeline of about 5 MB, inside the 16 MB limit.
+_INBOUND_DOCUMENT_BATCH = 50_000
 
 
 def deletion_refusals(ns: Namespace) -> list[tuple[str, str, int]]:
@@ -709,26 +714,62 @@ async def _inbound_from_documents(
     return refs
 
 
+def _document_use_fields() -> dict[str, tuple[str, list[str]]]:
+    """Each kind of document use with the owned-entity source it matches and
+    every field holding such an id."""
+    by_kind: dict[str, tuple[str, list[str]]] = {}
+    for kind, field, source, _impact in _DOCUMENT_ID_USES:
+        by_kind.setdefault(kind, (source, []))[1].append(field)
+    return by_kind
+
+
+async def _count_by_template(
+    documents: Any, prefix: str, fields: list[str], ids: list[str],
+) -> dict[tuple[str, str | None], int]:
+    """Other namespaces' document versions holding any of ``ids`` in any of
+    ``fields``, counted by the database per (namespace, template_id). A
+    version matched by two fields counts once."""
+    pipeline = [
+        {"$match": {
+            "namespace": {"$ne": prefix},
+            "$or": [{field: {"$in": ids}} for field in fields],
+        }},
+        {"$group": {
+            "_id": {"namespace": "$namespace", "template_id": "$template_id"},
+            "count": {"$sum": 1},
+        }},
+    ]
+    return {
+        (group["_id"]["namespace"], group["_id"].get("template_id")): group["count"]
+        async for group in documents.aggregate(pipeline)
+    }
+
+
 async def _documents_using(
     documents: Any, prefix: str, owned: dict[str, dict[str, str]],
-) -> dict[tuple[str, str, str | None], int]:
+) -> dict[tuple[str, str, str | None], tuple[int, bool]]:
     """Count other namespaces' document versions holding this namespace's
-    ids, per (type, namespace, template_id). A row matched by two fields of
-    one kind, or in two batches, counts once."""
-    rows: dict[tuple[str, Any], tuple[str, str | None]] = {}
-    for kind, field, source, _impact in _DOCUMENT_ID_USES:
+    ids, per (type, namespace, template_id), as (count, exact).
+
+    The database counts: one aggregation per kind and batch of ids, so the
+    scan holds one row per group, never one per matching document. A version
+    holding ids from two batches is counted in each, so a count summed over
+    more than one batch is an upper bound: ``exact`` is False then."""
+    counts: dict[tuple[str, str, str | None], tuple[int, bool]] = {}
+    for kind, (source, fields) in _document_use_fields().items():
         ids = list(owned.get(source) or {})
-        for start in range(0, len(ids), _INBOUND_TERM_BATCH):
-            async for row in documents.find(
-                {"namespace": {"$ne": prefix},
-                 field: {"$in": ids[start : start + _INBOUND_TERM_BATCH]}},
-                {"namespace": 1, "template_id": 1},
-            ):
-                rows[(kind, row["_id"])] = (row["namespace"], row.get("template_id"))
-    counts: dict[tuple[str, str, str | None], int] = {}
-    for (kind, _), (ns, template_id) in rows.items():
-        counts[(kind, ns, template_id)] = counts.get((kind, ns, template_id), 0) + 1
+        exact = len(ids) <= _INBOUND_DOCUMENT_BATCH
+        for start in range(0, len(ids), _INBOUND_DOCUMENT_BATCH):
+            chunk = ids[start : start + _INBOUND_DOCUMENT_BATCH]
+            for (ns, template_id), n in (await _count_by_template(documents, prefix, fields, chunk)).items():
+                total, _ = counts.get((kind, ns, template_id), (0, exact))
+                counts[(kind, ns, template_id)] = (total + n, exact)
     return counts
+
+
+def _version_count(n: int, exact: bool) -> str:
+    """How many document versions a report counts; an upper bound says so."""
+    return f"{n} document version(s)" if exact else f"up to {n} document version(s)"
 
 
 async def _inbound_from_document_uses(
@@ -746,7 +787,9 @@ async def _inbound_from_document_uses(
     impacts = {kind: impact for kind, _f, _s, impact in _DOCUMENT_ID_USES}
     labels: dict[str | None, str] = dict(owned["templates"].items())
     refs: list[InboundReference] = []
-    for (kind, ns, template_id), n in sorted(counts.items(), key=lambda kv: [x or "" for x in kv[0]]):
+    for (kind, ns, template_id), (n, exact) in sorted(
+        counts.items(), key=lambda kv: [x or "" for x in kv[0]],
+    ):
         if template_id not in labels:
             tpl = await templates.find_one({"template_id": template_id}, {"value": 1})
             labels[template_id] = (tpl or {}).get("value") or template_id or "?"
@@ -754,7 +797,7 @@ async def _inbound_from_document_uses(
         target = f"{label} (template)" if kind == "template_use" else f"{kind} targets in {prefix}"
         refs.append(InboundReference(
             type=kind, source_namespace=ns,
-            source_entity=f"{n} document version(s) of {label}",
+            source_entity=f"{_version_count(n, exact)} of {label}",
             target_entity=target, impact=impacts[kind],
         ))
     return refs

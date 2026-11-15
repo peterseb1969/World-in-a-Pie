@@ -214,6 +214,11 @@ class IdFormatValidator:
         return False
 
 
+#: The algorithms IdGenerator.generate mints with. "pattern" and "any" are
+#: validation-only: they check an ID a caller supplies and generate none.
+GENERATING_ALGORITHMS = frozenset({"uuid7", "uuid4", "prefixed", "nanoid"})
+
+
 class IdGenerator:
     """Generates IDs based on algorithm configuration.
 
