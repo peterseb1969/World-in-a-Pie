@@ -3694,7 +3694,8 @@ def _key_readers(
     components: list[Component],
     apps_list: list[App],
 ) -> list[str]:
-    """Active, storage-free services that read `secret_name` at start.
+    """Active services that read `secret_name` at start, storage-bearing
+    components excepted (config_hash.restarts_on_config_change).
 
     These are the services the rotation's apply restarts: their rendered
     definition carries a hash of the secrets they take from the environment —
@@ -3704,6 +3705,7 @@ def _key_readers(
     re-imports it while running, and every other service learns the change by
     key sync, so a declared key needs no restart.
     """
+    from wip_deploy.config_gen.config_hash import restarts_on_config_change
     from wip_deploy.config_gen.env import owner_env_vars
 
     enabled_apps = {ref.name for ref in deployment.spec.apps if ref.enabled}
@@ -3712,7 +3714,7 @@ def _key_readers(
     ] + [a for a in apps_list if a.metadata.name in enabled_apps]
     readers = set()
     for owner in owners:
-        if owner.spec.storage:
+        if not restarts_on_config_change(owner):
             continue
         required, optional = owner_env_vars(owner, deployment, components, apps_list)
         if any(ev.source.from_secret == secret_name for ev in (*required, *optional)):

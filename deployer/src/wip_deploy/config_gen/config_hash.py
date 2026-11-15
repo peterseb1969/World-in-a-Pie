@@ -17,10 +17,15 @@ annotation, compose: a service label), so a content change becomes a
 definition change and the apply restarts exactly the services whose inputs
 moved.
 
-Scope: services without storage only. Storage-bearing components render as
-StatefulSets on k8s, whose rolling replacement of a ReadWriteOnce volume can
-stall, and their secrets (database passwords) cannot be rotated by a
-restart anyway — the password lives in the data volume.
+Scope: every owner except a storage-bearing component. A storage-bearing
+component (a database, the object store) renders as a StatefulSet on k8s,
+whose rolling replacement of a ReadWriteOnce volume can stall, and its
+secrets (database passwords) cannot be rotated by a restart anyway — the
+password lives in the data volume. An app that declares storage is hashed
+like any app: its secrets are keys it reads at start, which a restart does
+rotate, and its volume holds app state, which the restart keeps. Without
+the hash, rotating such an app's key left it running on the old key, which
+the install refuses once the rotation applies.
 """
 
 from __future__ import annotations
@@ -37,6 +42,13 @@ from wip_deploy.spec.component import Component
 CONFIG_HASH_KEY = "wip.dev/config-hash"
 
 
+def restarts_on_config_change(owner: Component | App) -> bool:
+    """Whether `owner` is restarted when the secrets or start-time files it
+    reads change: every owner but a storage-bearing component (see the module
+    docstring)."""
+    return isinstance(owner, App) or not owner.spec.storage
+
+
 def config_hash(
     owner: Component | App,
     deployment: Deployment,
@@ -47,12 +59,12 @@ def config_hash(
 ) -> str | None:
     """Hash of the secrets and start-time files `owner` consumes, or None.
 
-    None for storage-bearing owners and for owners that consume none of
+    None for storage-bearing components and for owners that consume none of
     these inputs (their definition already captures everything they read).
     Inputs are rendered deterministically, so an unchanged install hashes
     identically and a no-op re-apply restarts nothing.
     """
-    if owner.spec.storage:
+    if not restarts_on_config_change(owner):
         return None
 
     inputs: dict[str, str] = {}
