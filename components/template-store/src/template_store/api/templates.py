@@ -554,13 +554,17 @@ async def get_template_dependencies(template_id: str, namespace: str | None = Qu
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
     # CASE-386 — dependency metadata leaks existence + dependent names;
-    # gate read on the template's actual namespace.
+    # gate read on the template's actual namespace. A template that is not
+    # there is answered here rather than by the service's ValueError, so the
+    # gate stands on every path that reads.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    if existing:
-        await check_readable(identity, existing.namespace, await miss_detail(
-            raw_id, "template", namespace, f"Template {template_id} not found", "template_id",
-        ))
+    not_found = await miss_detail(
+        raw_id, "template", namespace, f"Template {template_id} not found", "template_id",
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_readable(identity, existing.namespace, not_found)
 
     try:
         return await DependencyService.check_template_dependencies(template_id)
@@ -881,13 +885,17 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
     # CASE-386 — cascade mutates child templates; gate write on the
-    # parent template's actual namespace.
+    # parent template's actual namespace. A parent that is not there is
+    # answered here rather than by the service's ValueError, so the gate
+    # stands on every path that writes.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    if existing:
-        await check_entity_permission(identity, existing.namespace, "write", await miss_detail(
-            raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
-        ))
+    not_found = await miss_detail(
+        raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_entity_permission(identity, existing.namespace, "write", not_found)
 
     try:
         return await TemplateService.cascade_to_children(template_id)

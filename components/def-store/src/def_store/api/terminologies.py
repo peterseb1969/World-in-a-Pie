@@ -281,12 +281,16 @@ async def get_terminology_dependencies(
     # CASE-384 — even dependency metadata leaks information (it confirms
     # the terminology exists in the namespace and lists template names
     # referencing it). Gate by read permission on the entity's namespace.
+    # A terminology that is not there is answered here rather than by the
+    # service's ValueError, so the gate stands on every path that reads.
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
-    if existing:
-        await check_readable(identity, existing.namespace, await miss_detail(
-            raw_id, "terminology", None, f"Terminology {terminology_id} not found", "terminology_id",
-        ))
+    not_found = await miss_detail(
+        raw_id, "terminology", None, f"Terminology {terminology_id} not found", "terminology_id",
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_readable(identity, existing.namespace, not_found)
 
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
@@ -313,14 +317,16 @@ async def restore_terminology(
     )
 
     # CASE-384 — restore is a mutation; require write on the terminology's
-    # namespace. Lookup the entity first to resolve the namespace, then
-    # check before restoring.
+    # namespace. Lookup the entity first to resolve the namespace, answer a
+    # missing one here, and gate on the path that can restore.
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
-    if existing:
-        await check_entity_permission(identity, existing.namespace, "write", await miss_detail(
-            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
-        ))
+    not_found = await miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_entity_permission(identity, existing.namespace, "write", not_found)
 
     try:
         result = await TerminologyService.restore_terminology(

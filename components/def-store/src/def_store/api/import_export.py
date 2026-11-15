@@ -47,13 +47,18 @@ async def export_terminology(
 
     # CASE-384 — gate export by read permission on the terminology's
     # namespace. Without this, any authenticated key could exfiltrate
-    # any terminology by ID.
+    # any terminology by ID. A terminology that is not there is answered
+    # here, with the text of an id that names nothing, so the gate below
+    # stands on every path that can reach the export — not only on the one
+    # where the lookup found the row.
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
-    if existing:
-        await check_readable(identity, existing.namespace, await miss_detail(
-            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
-        ))
+    not_found = await miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_readable(identity, existing.namespace, not_found)
 
     try:
         language_list = languages.split(",") if languages else None
