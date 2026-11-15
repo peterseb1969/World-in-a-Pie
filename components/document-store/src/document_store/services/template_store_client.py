@@ -3,6 +3,7 @@
 import os
 import time
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -226,12 +227,17 @@ class TemplateStoreClient:
         self, template_id: str | None, template_value: str | None, resolve_inheritance: bool,
     ) -> str | None:
         """By id or by value; the /{id} endpoint always resolves inheritance,
-        /{id}/raw does not. None when neither is given."""
+        /{id}/raw does not. None when neither is given.
+
+        The identifier is escaped as one path segment: a '#' or '?' in it
+        would otherwise cut the path short, on the by-id door landing on a
+        different template than the one named."""
         base = f"{self.base_url}/api/template-store/templates"
         if template_id:
-            return f"{base}/{template_id}" if resolve_inheritance else f"{base}/{template_id}/raw"
+            ref = quote(template_id, safe="")
+            return f"{base}/{ref}" if resolve_inheritance else f"{base}/{ref}/raw"
         if template_value:
-            return f"{base}/by-value/{template_value}"
+            return f"{base}/by-value/{quote(template_value, safe='')}"
         return None
 
     async def _fetch_template(self, url: str, version: int | None) -> dict[str, Any] | None:
@@ -372,7 +378,10 @@ class TemplateStoreClient:
         Returns:
             List of descendant template dicts
         """
-        url = f"{self.base_url}/api/template-store/templates/{template_id}/descendants"
+        url = (
+            f"{self.base_url}/api/template-store/templates/"
+            f"{quote(template_id, safe='')}/descendants"
+        )
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
@@ -398,7 +407,10 @@ class TemplateStoreClient:
         """The version numbers the template store holds for a template, newest
         first; [] when it holds none. Raises TemplateStoreError when it
         could not answer."""
-        url = f"{self.base_url}/api/template-store/templates/{template_id}/versions"
+        url = (
+            f"{self.base_url}/api/template-store/templates/"
+            f"{quote(template_id, safe='')}/versions"
+        )
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_headers())

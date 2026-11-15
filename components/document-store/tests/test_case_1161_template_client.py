@@ -1,12 +1,12 @@
-"""TemplateStoreClient.get_template's fetch and caches, pinned before its
-refactor.
+"""TemplateStoreClient's fetch of one template, pinned before its refactor.
 
-Provenance: CASE-1161. The suite replaces the template-store client wholesale,
-so get_template's own paths never ran: the pinned-version and "latest"
-caches (and the TTL that expires the latter), the URL forms (by id, by
-value, raw), the 404 / 409 / other-status / transport-error answers, and the
-cache fill (a latest fetch also fills its version's entry). These drive the
-real method against an httpx MockTransport.
+Provenance: CASE-1161. Other tests already drive this client's failure answers
+(an error status, a transport error, a 404, a 409 with and without a body);
+what had none was the success path around them: the pinned-version and
+"latest" caches (and the TTL that expires the latter), the URL forms (by id,
+by value, raw), how an identifier is escaped into them, and the cache fill (a
+latest fetch also fills its version's entry). These drive the real methods
+against an httpx MockTransport.
 """
 
 from __future__ import annotations
@@ -105,6 +105,27 @@ async def test_the_url_follows_the_identifier_and_inheritance(store):
         "/api/template-store/templates/T1/raw",
     ]
     assert await client.get_template() is None
+
+
+@pytest.mark.asyncio
+async def test_an_identifier_is_escaped_into_one_path_segment(store):
+    # Sent raw, '#' starts a fragment — the request would address /templates/T
+    # and lose the rest — and '?' starts a query string, so the identifier
+    # reaching template-store is only the part before either character.
+    s = store({})
+    client = _client()
+    await client.get_template(template_value="PERSON#1")
+    await client.get_template(template_id="P?x")
+    await client.get_template(template_id="T#1", resolve_inheritance=False)
+    await client.get_template_descendants("A/B?c")
+    await client.get_template_version_numbers("A/B?c")
+    assert [c.url.raw_path for c in s.calls] == [
+        b"/api/template-store/templates/by-value/PERSON%231",
+        b"/api/template-store/templates/P%3Fx",
+        b"/api/template-store/templates/T%231/raw",
+        b"/api/template-store/templates/A%2FB%3Fc/descendants",
+        b"/api/template-store/templates/A%2FB%3Fc/versions",
+    ]
 
 
 @pytest.mark.asyncio
