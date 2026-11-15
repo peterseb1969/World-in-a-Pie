@@ -122,6 +122,11 @@ export interface NamespaceIntegritySummary {
   documents_with_issues: number
   orphaned_template_refs: number
   orphaned_term_refs: number
+  /**
+   * Documents whose current version is pinned to a template version that has
+   * since been retired. A superseded version keeps its pin as history and is
+   * not counted.
+   */
   inactive_template_refs: number
   orphaned_document_refs: number
   /** References whose held document id lives in another namespace than the reference names. */

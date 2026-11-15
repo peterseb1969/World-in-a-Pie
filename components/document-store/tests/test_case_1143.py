@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from document_store.models.api_models import DocumentQueryRequest, QueryFilter
+from document_store.models.document import DocumentStatus
 from document_store.services import integrity_service
 from document_store.services.def_store_client import DefStoreClient
 from document_store.services.document_service import DocumentService
@@ -179,8 +180,12 @@ async def test_integrity_reads_each_documents_pinned_template_version():
     issues: list = []
     with patch.object(integrity_service, "get_template_store_client", return_value=store):
         for version in (1, 2, 1):
+            # ACTIVE: a retired pin is only reported on a document's
+            # current version; what is under test here is which template
+            # version each read asks for.
             doc = MagicMock(document_id=f"d{version}", template_id="T",
-                            template_version=version, version=1)
+                            template_version=version, version=1,
+                            status=DocumentStatus.ACTIVE)
             await integrity_service.check_template_reference("T", doc, issues)
     assert [i.document_id for i in issues] == ["d1", "d1"]
     assert {c.kwargs["version"] for c in store.get_template.await_args_list} == {1, 2}

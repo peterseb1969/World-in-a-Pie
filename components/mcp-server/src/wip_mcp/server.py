@@ -5351,7 +5351,10 @@ async def validate_namespace(
     version declares mandatory (nested objects and array items against their
     own pinned versions). A document is
     validated only when written, so one placed on a version it does not
-    satisfy is otherwise found only when its next PATCH is refused.
+    satisfy is otherwise found only when its next PATCH is refused. A pin to a
+    template version that was retired later is a finding only on a document's
+    current version: a superseded version keeps its pin as expected history, so
+    an evolved namespace validates clean.
 
     This is the referential twin of check_reporting_parity: that one compares
     PostgreSQL against MongoDB, this one compares MongoDB against itself.
