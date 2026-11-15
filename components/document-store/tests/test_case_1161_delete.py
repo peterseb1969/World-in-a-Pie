@@ -2,11 +2,12 @@
 
 Provenance: CASE-1161. These branches of DocumentService.delete_document had
 no test: hard-deleting an unknown document or a version that does not exist,
-the Registry entry's removal failing (logged, not fatal) on the version and
-the all-versions paths, a forced delete without warning or broken-reference
-collectors, and a soft delete of a document with no active version (an
-idempotent success) or without a warnings collector. Documents are written to the test MongoDB
-directly; the Registry is a stand-in answering deletion_mode 'full'.
+the Registry entry's removal failing (the delete stands and the caller is
+warned) on the version and the all-versions paths, a forced delete without
+warning or broken-reference collectors, and a soft delete of a document with no
+active version (an idempotent success) or without a warnings collector.
+Documents are written to the test MongoDB directly; the Registry is a stand-in
+answering deletion_mode 'full'.
 """
 
 from __future__ import annotations
@@ -71,10 +72,17 @@ async def test_hard_deleting_what_does_not_exist_answers_false(clean):
 async def test_a_failed_registry_removal_does_not_fail_the_delete(clean, version):
     await _doc("D1", 1)
     patched, registry = _registry(entry_removal_fails=True)
+    warnings: list[str] = []
     with patched:
-        assert await DocumentService().delete_document("D1", hard_delete=True, version=version) is True
+        assert await DocumentService().delete_document(
+            "D1", hard_delete=True, version=version, warnings=warnings,
+        ) is True
     assert await _versions("D1") == []
     registry.hard_delete_entry.assert_awaited_once()
+    # A half-applied delete is not reported as a clean one: the entry the
+    # Registry kept is named on the item the route answers with.
+    assert len(warnings) == 1, warnings
+    assert "D1" in warnings[0] and "registry down" in warnings[0]
 
 
 @pytest.mark.asyncio
@@ -95,6 +103,7 @@ async def test_a_soft_delete_is_idempotent_and_needs_no_collector(clean):
     # (CASE-1271, finding e93d63c6 R1).
     await _doc("GONE", 1, active=False)
     await _doc("LIVE", 2)
+    untouched_v1 = await Document.find_one({"document_id": "LIVE", "version": 1})
     service = DocumentService()
     record = AsyncMock(return_value=["w"])
     with patch.object(DocumentService, "_record_lifecycle", record):
@@ -106,6 +115,14 @@ async def test_a_soft_delete_is_idempotent_and_needs_no_collector(clean):
     assert record.await_count == 1
     rows = await Document.find({"document_id": "LIVE"}).to_list()
     assert all(r.status == DocumentStatus.INACTIVE for r in rows)
+    # Which rows those are matters: a delete retires the active version only,
+    # so v1 — inactive before either delete — keeps the audit fields it was
+    # written with, and the repeat writes nothing. An implementation that
+    # retired every version would restamp v1 here.
+    v1 = next(r for r in rows if r.version == 1)
+    v2 = next(r for r in rows if r.version == 2)
+    assert (v1.updated_at, v1.updated_by) == (untouched_v1.updated_at, untouched_v1.updated_by)
+    assert v2.updated_by is not None
 
 
 @pytest.mark.asyncio

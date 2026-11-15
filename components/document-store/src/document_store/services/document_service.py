@@ -815,13 +815,20 @@ def _patch_result(
     )
 
 
-async def _remove_registry_entry(client: Any, document_id: str, actor: str) -> None:
-    """Remove a hard-deleted document's Registry entry; a failure is logged,
-    the delete stands."""
+async def _remove_registry_entry(
+    client: Any, document_id: str, actor: str, warnings: list[str] | None,
+) -> None:
+    """Remove a hard-deleted document's Registry entry; a failure is logged and
+    named in ``warnings``, and the delete stands."""
     try:
         await client.hard_delete_entry(document_id, updated_by=actor)
     except Exception as e:
         logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
+        if warnings is not None:
+            warnings.append(
+                f"Registry entry for {document_id} was not removed ({e}): the "
+                "document is deleted, but its entry is still on the Registry"
+            )
 
 
 def _add_validation_timing(validation_results: list[Any], timing: dict[str, float]) -> None:
@@ -3106,9 +3113,10 @@ class DocumentService:
             version: Specific version to hard-delete (None = all). Ignored for soft-delete.
             warnings: When given, receives the warnings of a soft delete whose
                 retirement did not fully reach the Registry, of a forced
-                hard delete that broke references, and of a hard delete that
+                hard delete that broke references, of a hard delete that
                 left a file it released inactive because its bytes could not
-                be deleted.
+                be deleted, and of a hard delete whose Registry entry the
+                Registry refused to remove.
             force: Hard-delete even while other documents reference it.
             deleted_with: Documents hard-deleted (all versions) in the same
                 request; their references do not block this delete.
@@ -3342,7 +3350,7 @@ class DocumentService:
         # Check if any versions remain
         remaining = await Document.find({"document_id": document_id}).count()
         if remaining == 0:
-            await _remove_registry_entry(client, document_id, actor)
+            await _remove_registry_entry(client, document_id, actor, warnings)
         return event_payload
 
     async def _hard_delete_all_versions(
@@ -3378,7 +3386,7 @@ class DocumentService:
         )
 
         await Document.find({"document_id": document_id}).delete()
-        await _remove_registry_entry(client, document_id, actor)
+        await _remove_registry_entry(client, document_id, actor, warnings)
         return event_payload
 
     async def hard_delete_exemptions(self, candidates: dict[str, bool]) -> frozenset[str]:
