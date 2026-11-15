@@ -24,12 +24,15 @@ the same four guarantees, and they live here, once:
   carries a ``Nats-Msg-Id`` header that stays the same across retries, so
   JetStream discards the duplicate when a publish that timed out had in
   fact been stored. JetStream remembers ids for the stream's duplicate
-  window, which the bus raises to the queue's max age (capped at the
-  stream's own max age), so every retry the queue can still make is inside
-  it.
+  window, which the bus raises to the queue's max age, capped at the
+  stream's own max age. Every retry the queue can still make is inside it,
+  unless the stream's max age is shorter than the queue's: then a retry
+  older than the window, of an event that was in fact stored, is stored
+  again.
 * **Consumers are supervised.** ``supervise()`` runs a consumer loop and
-  restarts it, with backoff, whenever it raises or returns, after waiting
-  for a live connection.
+  restarts it, with backoff, whenever it raises, returns, is cancelled from
+  outside, or loses the client it was bound to, after waiting for a live
+  connection.
 
 ``stats()`` exposes connection state and the counters for ``/health``.
 
@@ -286,12 +289,17 @@ class EventBus:
         """
         self._stopping = True
         # A copy: each finished task's done-callback removes it from the list,
-        # and iterating the list itself would skip the task after it.
-        tasks = list(self._tasks)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        self._tasks.clear()
+        # and iterating the list itself would skip the task after it. Repeated
+        # until none is left: a callback may spawn a task (a reconnect's
+        # _on_connected) while the first ones are awaited.
+        while self._tasks:
+            tasks = list(self._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                if task in self._tasks:
+                    self._tasks.remove(task)
         if self._queue:
             self._drop(len(self._queue), DropReason.STOPPED)
             self._queue.clear()
@@ -365,11 +373,17 @@ class EventBus:
         }
 
     async def _on_connected(self) -> None:
+        if self._stopping:
+            # A reconnect that lands during stop() must not report the bus
+            # connected after it has stopped.
+            return
         self._ever_connected = True
         self._last_error = None
         # Streams first, so nothing that waits for "connected" (a publish, a
         # supervised consumer) can race a stream that does not exist yet.
         await self.ensure_streams()
+        if self._stopping:
+            return
         self._state = ConnectionState.CONNECTED
         self._connected.set()
         self._drain_wake.set()
@@ -450,8 +464,8 @@ class EventBus:
                 return PublishOutcome.PUBLISHED
             except Exception as e:
                 # A refusal counts toward max_rejections; a lost connection
-                # does not (the same rule as the drain).
-                event.attempts = 1 if self.connected else 0
+                # or a timeout does not (the same rule as the drain).
+                event.attempts = 1 if self.connected and not isinstance(e, TimeoutError) else 0
                 self._last_error = f"publish {subject} failed: {e}"
                 logger.warning("%s: publish to %s failed, queued for retry: %s", self._name, subject, e)
         self._enqueue(event)
@@ -506,6 +520,14 @@ class EventBus:
                     # Not a rejection: the connection went. Wait for the
                     # reconnect callback to wake us; the attempt does not count.
                     return
+                if isinstance(e, TimeoutError):
+                    # Not a rejection either: no answer came, so the event may
+                    # even be stored (its Nats-Msg-Id makes a retry harmless).
+                    # Back off and retry; the queue's max age bounds how long.
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 5.0)
+                    self._expire_queue()
+                    continue
                 event.attempts += 1
                 if event.attempts >= self._max_rejections:
                     self._queue.popleft()
@@ -534,8 +556,9 @@ class EventBus:
         """Run ``run(jetstream)`` for as long as the bus lives.
 
         Waits for a live connection before each run, and restarts the loop
-        (exponential backoff, capped) whenever it raises or returns. The
-        task is cancelled by ``stop()``.
+        (exponential backoff, capped) whenever it raises, returns, is
+        cancelled by anything but ``stop()``, or the client it was bound to
+        closes. The task is cancelled by ``stop()``.
         """
         consumer = self._consumers.setdefault(name, _ConsumerState())
 
@@ -625,9 +648,10 @@ async def ensure_stream(
 
     ``duplicate_window_seconds`` is how long JetStream must remember a
     ``Nats-Msg-Id`` for retries to be discarded as duplicates. It is capped at
-    the stream's max age, and an existing window is only ever raised, never
-    shortened, so services asking for different windows do not undo each
-    other.
+    the stream's max age, and an existing window is only ever raised, so
+    services asking for different windows do not undo each other — except
+    that it is shortened to the declared max age when it is longer, since
+    JetStream refuses that combination.
     """
     from nats.js.api import RetentionPolicy, StreamConfig
     from nats.js.errors import NotFoundError
@@ -666,6 +690,10 @@ async def ensure_stream(
     config.max_age = spec.max_age_seconds
     if window_short:
         config.duplicate_window = window
+    if spec.max_age_seconds and float(config.duplicate_window or 0) > spec.max_age_seconds:
+        # JetStream refuses a window longer than the max age: a window kept
+        # from before a shorter declared max age would refuse every update.
+        config.duplicate_window = float(spec.max_age_seconds)
     await js.update_stream(config)
     logger.info(
         "Converged stream %s (added subjects: %s, limits updated: %s, duplicate window: %s)",

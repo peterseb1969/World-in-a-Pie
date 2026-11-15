@@ -333,3 +333,44 @@ async def test_migrate_refuses_a_document_whose_stored_identity_hash_is_stale(cl
     # The stale document was not migrated; the healthy one was.
     assert (await _doc_in_db(item["document_id"])).template_version == 1
     assert (await _doc_in_db(healthy["document_id"])).template_version == 2
+
+
+@pytest.mark.asyncio
+async def test_a_key_reading_two_namespaces_must_name_the_one_it_migrates(client, auth_headers, monkeypatch):
+    """A key that reads 'wip' and 'xns-closed' but writes only 'wip' names
+    no namespace: it gets 422, not a migrate in the one namespace it happens
+    to be able to write. Every other door picks from the readable ones."""
+    import wip_auth.permissions as permissions
+
+    item = await _create_person(client, auth_headers)
+    tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
+    VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(tid, add_optional="phone")
+
+    async def accessible(identity):
+        return ["wip", "xns-closed"]
+
+    async def check(identity, namespace):
+        return {"wip": "write", "xns-closed": "read"}.get(namespace, "none")
+
+    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
+    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", check)
+    permissions.clear_permission_cache()
+    try:
+        resp = await client.post(
+            MIGRATE_URL,
+            json={"template_id": "PERSON", "from_version": 1, "to_version": 2, "dry_run": False},
+            headers={"X-API-Key": "test_xns_reader_key"},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "namespace is required" in resp.text
+        doc = await _doc_in_db(item["document_id"])
+        assert doc.version == 1 and doc.template_version == 1
+
+        named = await client.post(
+            MIGRATE_URL + "?namespace=wip",
+            json={"template_id": "PERSON", "from_version": 1, "to_version": 2, "dry_run": True},
+            headers={"X-API-Key": "test_xns_reader_key"},
+        )
+        assert named.status_code == 200, named.text
+    finally:
+        permissions.clear_permission_cache()

@@ -114,3 +114,27 @@ async def test_an_outage_on_one_namespace_is_503_not_a_smaller_list(monkeypatch)
     with pytest.raises(HTTPException) as exc:
         await resolve_namespace_filter(_key(["a", "b"]), None, "write")
     assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_a_write_filter_asks_every_namespace_at_once(monkeypatch):
+    """One Registry answer per accessible namespace, asked together: five
+    namespaces cost about one round trip, not five."""
+    import asyncio
+    import time
+
+    grants = {f"ns{i}": ("write" if i % 2 else "read") for i in range(5)}
+
+    async def accessible(identity):
+        return sorted(grants)
+
+    async def permission(identity, namespace):
+        await asyncio.sleep(0.1)
+        return grants[namespace]
+
+    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
+    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", permission)
+    started = time.monotonic()
+    nsf = await resolve_namespace_filter(_key(sorted(grants)), None, "write")
+    assert time.monotonic() - started < 0.3
+    assert nsf.namespaces == ["ns1", "ns3"]

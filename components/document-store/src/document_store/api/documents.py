@@ -397,12 +397,16 @@ async def migrate_documents(
     identity: UserIdentity = Depends(require_api_key),
 ):
     """Migrate a cohort of documents from one template version to another."""
-    # Resolve to a single concrete namespace + enforce write permission.
-    nsf = await resolve_namespace_filter(identity, namespace, "write")
+    # The cohort's namespace: the one named, else the one the key implies, as
+    # every other door picks it — from the namespaces the key can READ. A key
+    # that can read several (and write only some) must name it: picking the
+    # only writable one would act on a namespace the caller never named.
+    # Write is then required on the namespace chosen.
+    nsf = await resolve_namespace_filter(identity, namespace, "read")
     if namespace:
         ns = namespace
     elif len(nsf.namespaces) == 1 and not is_superadmin(identity):
-    # A key that can read one namespace has it implied; an administrator names it.
+        # A key that can read one namespace has it implied; an administrator names it.
         ns = nsf.namespaces[0]
     elif not is_superadmin(identity) and (
         (implied := await implied_namespace(identity)) in nsf.namespaces
@@ -414,6 +418,7 @@ async def migrate_documents(
             status_code=422,
             detail="namespace is required (omittable only for single-namespace keys)",
         )
+    await check_namespace_permission(identity, ns, "write")
 
     # Resolve template_id synonym → canonical. strict: a non-UUID value with no
     # namespace context fails loud rather than silently matching nothing.

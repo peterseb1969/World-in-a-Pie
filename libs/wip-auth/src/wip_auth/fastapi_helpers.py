@@ -123,7 +123,9 @@ async def resolve_or_404(
     derive it from the caller's identity (single-namespace API keys) or a
     qualified identifier's prefix. If that fails, nothing is asked of the
     Registry: a UUID, and (unless ``strict``) a value, is returned as-is,
-    unverified (caller must handle value-based fallback).
+    unverified (caller must handle value-based fallback). Unverified
+    includes its type: a UUID of another entity type comes back too, and the
+    caller's own lookup in its collection is what then answers 404.
 
     Args:
         raw_id: The identifier to resolve (canonical ID or human-readable synonym).

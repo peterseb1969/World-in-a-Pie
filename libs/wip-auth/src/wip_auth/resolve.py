@@ -587,6 +587,8 @@ async def _post_resolve(
 
 
 # Registry entity_type values are plural; the resolve layer speaks singular.
+# A copy of the Registry's VALID_ENTITY_TYPES, held to it by a test against
+# the served schema (test_entity_types_match_the_registry).
 _ENTITY_TYPE_PLURAL = {
     "terminology": "terminologies",
     "term": "terms",
@@ -622,9 +624,13 @@ async def _post_lookup_by_id(
     identifier as given. A Registry that does not answer raises
     RegistryUnavailableError: the fallback must not turn an outage into a miss.
     """
+    # An entity type the Registry has no name for is a caller's error, never
+    # an untyped lookup that could match an entry of any type.
+    plural = _registry_entity_type(entity_type)
+    if plural is None:
+        raise ValueError(f"no Registry entity type for {entity_type!r}")
     registry_url = _get_registry_url()
     api_key = _get_api_key()
-    plural = _ENTITY_TYPE_PLURAL.get(entity_type, f"{entity_type}s")
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
     try:
         client = _get_resolve_client()
@@ -726,7 +732,9 @@ async def _resolve_term_at(
             "type": "term",
             "terminology": terminology_value,
             "value": value,
-        }
+        },
+        # As every other /resolve request says what it wants.
+        "entity_type": _ENTITY_TYPE_PLURAL["term"],
     }
     return await _post_resolve(
         payload, f"{terminology_value}/{value}", "term", namespace

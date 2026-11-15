@@ -485,3 +485,55 @@ async def test_the_chain_never_answers_a_refused_identity_request_as_the_key(
         "assertion was dropped and the request served as the key"
     )
     assert response.headers.get("retry-after") == "1"
+
+
+@pytest.mark.asyncio
+async def test_a_value_the_caches_stop_knowing_is_checked_on_a_thread(monkeypatch):
+    """The inline answer is the caches' own, read in one pass. A rejection
+    whose time ran out (or a sync that cleared the caches) between a "known"
+    check and the answer once sent that value into a bcrypt scan on the
+    loop; it now goes to a key-check thread."""
+    import threading
+
+    provider = APIKeyProvider(keys=[_key("a"), _key("b")])
+    threads: list[str] = []
+    original = api_key_module.verify_api_key
+
+    def recording(key, key_hash, salt="wip_auth_salt"):
+        threads.append(threading.current_thread().name)
+        return original(key, key_hash, salt)
+
+    monkeypatch.setattr(api_key_module, "verify_api_key", recording)
+    assert await _attempt(provider, "unknown-value") == "401"  # scanned once, rejected
+    assert threads and all(t.startswith("wip-keycheck") for t in threads)
+
+    threads.clear()
+    assert await _attempt(provider, "unknown-value") == "401"  # the cached rejection
+    assert threads == []
+
+    # The rejection runs out: the value is unknown again, and its check
+    # runs on a thread, never on the loop's.
+    fingerprint = hashlib.sha256(b"unknown-value").hexdigest()
+    provider._rejected[fingerprint] = time.monotonic() - 1
+    assert await _attempt(provider, "unknown-value") == "401"
+    assert threads and all(t.startswith("wip-keycheck") for t in threads)
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_expiring_between_check_and_answer_runs_no_bcrypt_on_the_loop(monkeypatch):
+    import threading
+
+    provider = APIKeyProvider(keys=[_key("a")])
+    on_loop: list[str] = []
+    original = api_key_module.verify_api_key
+
+    def recording(key, key_hash, salt="wip_auth_salt"):
+        if threading.current_thread() is threading.main_thread():
+            on_loop.append(key_hash)
+        return original(key, key_hash, salt)
+
+    monkeypatch.setattr(api_key_module, "verify_api_key", recording)
+    answers = iter([True])  # rejected at the first look, gone at every later one
+    monkeypatch.setattr(provider, "_recently_rejected", lambda _fp: next(answers, False))
+    assert await _attempt(provider, "flaky-value") == "401"
+    assert on_loop == []

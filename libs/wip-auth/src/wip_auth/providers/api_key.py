@@ -496,32 +496,13 @@ class APIKeyProvider:
         runtime key, a cached one, or no key at all — the copy cannot say
         which, and saying "invalid" would tell a valid caller its key is bad.
         """
+        answer, keys = self._cached_answer(api_key)
+        if answer is not None:
+            return answer
         expired = self.runtime_keys_expired()
         config_names = self._config_names
         config_salt, runtime_salt = self.hash_salt, self.runtime_salt
-
-        # Fast path: check cache with SHA-256 fingerprint of plaintext key.
-        # The caches are shared with the worker threads the slow path runs
-        # in, so every read and write of them holds the lock; bcrypt never
-        # does.
         fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
-        with self._lock:
-            cached = self._verified_cache.get(fingerprint)
-            if cached is not None and cached.is_expired():
-                self._verified_cache.pop(fingerprint, None)
-            rejected = cached is None and self._recently_rejected(fingerprint)
-            keys = self._keys
-        if cached is not None:
-            if expired and cached.name not in config_names:
-                raise self._unverifiable()
-            if cached.is_expired():
-                return None, "API key has expired"
-            return cached, None
-
-        if rejected:
-            if expired:
-                raise self._unverifiable()
-            return None, self._invalid_message()
 
         # Slow path: bcrypt verify against the registered keys — only the
         # config keys once the runtime copy is past its deadline.
@@ -561,6 +542,36 @@ class APIKeyProvider:
             raise self._unverifiable()
         return None, self._invalid_message()
 
+    def _cached_answer(
+        self, api_key: str,
+    ) -> tuple[tuple[APIKeyRecord | None, str | None] | None, list[APIKeyRecord]]:
+        """The answer the caches give for a value, or None when it needs
+        bcrypt; and the key list as the caches were read against it.
+
+        The fast path: a SHA-256 fingerprint of the plaintext. The caches are
+        shared with the worker threads the slow path runs in, so every read
+        and write of them holds the lock; bcrypt never does. Past the
+        runtime-key deadline a cached runtime key raises KeysUnverifiable."""
+        expired = self.runtime_keys_expired()
+        fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
+        with self._lock:
+            cached = self._verified_cache.get(fingerprint)
+            if cached is not None and cached.is_expired():
+                self._verified_cache.pop(fingerprint, None)
+            rejected = cached is None and self._recently_rejected(fingerprint)
+            keys = self._keys
+        if cached is not None:
+            if expired and cached.name not in self._config_names:
+                raise self._unverifiable()
+            if cached.is_expired():
+                return (None, "API key has expired"), keys
+            return (cached, None), keys
+        if rejected:
+            if expired:
+                raise self._unverifiable()
+            return (None, self._invalid_message()), keys
+        return None, keys
+
     def _recently_rejected(self, fingerprint: str) -> bool:
         expiry = self._rejected.get(fingerprint)
         if expiry is None:
@@ -575,13 +586,6 @@ class APIKeyProvider:
         self._rejected.move_to_end(fingerprint)
         while len(self._rejected) > _REJECTED_MAX:
             self._rejected.popitem(last=False)
-
-    def _known_to_caches(self, api_key: str) -> bool:
-        """Whether a value is answered without bcrypt: it verified before, or
-        was rejected recently."""
-        fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
-        with self._lock:
-            return fingerprint in self._verified_cache or self._recently_rejected(fingerprint)
 
     def _slow_path_gate(self, loop: asyncio.AbstractEventLoop) -> _SlowPath:
         """This loop's slow-path gate, made on first use. Its threads go with
@@ -603,11 +607,13 @@ class APIKeyProvider:
         bcrypt and caches nothing, so the same value is judged from scratch on a
         retry.
 
-        The cache check and the inline answer take the lock separately: a key
-        sync clearing the caches between them makes that one answer a full
-        scan on the loop. It is bounded by syncs, not by callers."""
-        if self._known_to_caches(api_key):
-            return self._validate_key(api_key)
+        The inline answer is the caches' own, read in one pass: a value they
+        stop knowing in between (a sync clearing them, a rejection's TTL
+        running out) goes to the threads, never to a bcrypt scan on the
+        loop."""
+        answer, _keys = self._cached_answer(api_key)
+        if answer is not None:
+            return answer
         gate = self._slow_path_gate(asyncio.get_running_loop())
         return await gate.run(functools.partial(self._validate_key, api_key))
 

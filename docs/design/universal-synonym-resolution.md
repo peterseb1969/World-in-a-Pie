@@ -205,6 +205,8 @@ Client sends request with ID "X"
 
 The resolution logic lives in `wip-auth` (shared by all services), not in each service individually. This is the same pattern used for API key verification and namespace permissions.
 
+> **As built — the sketches below predate it; `libs/wip-auth/src/wip_auth/resolve.py` is the reference.** Three differences matter: every `/resolve` item carries the Registry's plural `entity_type`, which also types canonical-id verification, so an id of another type is a miss (CASE-1088); with no namespace from the request, the key or a qualifier, a UUID is returned unverified (`resolve_or_404`) rather than sent; and term identifiers are the canonical UUID, `ns:terminology:value` or the field form — the 2-part `TERMINOLOGY:VALUE` split in the `_build_composite_key` sketch is refused (D6).
+
 ```python
 # libs/wip-auth/src/wip_auth/resolve.py
 

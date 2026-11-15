@@ -20,6 +20,7 @@ Usage:
         # ... use query for MongoDB
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -434,12 +435,15 @@ async def resolve_namespace_filter(
         # only the namespaces that meet the requirement; an outage on any of
         # them is no answer, not a smaller list.
         permitted = []
-        for ns in accessible:
-            permission = await resolve_permission(identity, ns)
-            if permission == PERMISSION_UNAVAILABLE:
-                raise HTTPException(503, _UNAVAILABLE_DETAIL)
-            if permission_sufficient(permission, required):
-                permitted.append(ns)
+        # One Registry answer per namespace, asked together rather than one
+        # after another (each is cached once asked).
+        answers = await asyncio.gather(*(resolve_permission(identity, ns) for ns in accessible))
+        if PERMISSION_UNAVAILABLE in answers:
+            raise HTTPException(503, _UNAVAILABLE_DETAIL)
+        permitted.extend(
+            ns for ns, permission in zip(accessible, answers, strict=True)
+            if permission_sufficient(permission, required)
+        )
         if not permitted:
             raise HTTPException(403, f"Requires {required} access to a namespace")
         accessible = permitted

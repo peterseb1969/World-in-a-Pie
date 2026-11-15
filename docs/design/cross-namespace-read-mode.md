@@ -69,6 +69,8 @@ elif allowed_namespaces is not None:
 
 The pattern that already works in 5 endpoints becomes the universal pattern. One helper function handles both modes:
 
+> **Superseded — the sketch below is the original design; `libs/wip-auth/src/wip_auth/permissions.py` is the reference.** As built, the filter is always a `$in` list (a platform administrator gets every namespace except one locked for deletion, never an empty "no filter" dict), and a `write` or `admin` filter keeps only the namespaces that meet the requirement, answering 503 when any of them cannot be asked. A door that names no namespace picks one from the *readable* namespaces and then checks write on it, so a key that reads several namespaces must name the one it writes.
+
 ```python
 # New helper in wip_auth/permissions.py
 async def resolve_namespace_filter(

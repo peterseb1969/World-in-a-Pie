@@ -211,3 +211,75 @@ async def test_live_duplicate_window_is_applied_and_dedups() -> None:
             await js.delete_stream(spec.name)
         finally:
             await nc.close()
+
+
+# -- CASE-1265 review of 98472787 -----------------------------------------------
+
+
+async def test_a_publish_timeout_while_connected_is_not_a_rejection(server: FakeServer) -> None:
+    """No answer is not a refusal: the event may even be stored. Timeouts
+    back off and retry; only refusals count toward max_rejections."""
+    import nats.errors
+
+    server.up.set()
+    bus = _bus(max_rejections=2)
+    await bus.start()
+    await bus.wait_connected(1)
+    real_publish = server.js.publish
+    calls: list[int] = []
+
+    async def publish(subject, payload, timeout=None, headers=None):
+        calls.append(1)
+        if len(calls) <= 3:
+            raise nats.errors.TimeoutError()
+        return await real_publish(subject, payload, timeout=timeout, headers=headers)
+
+    server.js.publish = publish
+    await bus.publish("wip.documents.t.created", b"x")
+    await _until(lambda: bus.stats()["queued"] == 0, timeout=15)
+    assert bus.stats()["dropped_by_reason"].get("rejected", 0) == 0
+    assert [p[1] for p in server.js.published] == [b"x"]
+    await bus.stop()
+
+
+async def test_a_window_longer_than_the_declared_max_age_is_shortened() -> None:
+    """JetStream refuses a duplicate window longer than the max age: an
+    existing one from before a shorter declared max age would make every
+    update invalid, so it is brought down to the max age."""
+    js = FakeJS({"T": _config(
+        name="T", subjects=["t.>"], max_msgs=-1, max_bytes=-1,
+        max_age=7200, duplicate_window=3600,
+    )})
+    short = StreamSpec(name="T", subjects=("t.>",), max_age_seconds=600)
+    await ensure_stream(js, short, duplicate_window_seconds=3600)
+    config = js.streams["T"]
+    assert (config.max_age, config.duplicate_window) == (600, 600)
+
+
+async def test_a_reconnect_during_stop_does_not_report_the_bus_connected(server: FakeServer) -> None:
+    server.up.set()
+    bus = _bus()
+    await bus.start()
+    await bus.wait_connected(1)
+
+    async def slow_unwind():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # While stop() awaits this, a reconnect callback lands.
+            await bus._on_reconnected()
+            await asyncio.sleep(0.05)
+            raise
+
+    async def slow_streams():
+        await asyncio.sleep(0.1)  # the reconnect's stream check outlasts stop()
+        return True
+
+    bus.ensure_streams = slow_streams
+    bus._spawn(slow_unwind())
+    await asyncio.sleep(0)
+    await bus.stop()
+    await asyncio.sleep(0.2)  # anything stop() left behind runs now
+    assert bus._tasks == []
+    assert bus.stats()["state"] != "connected"
+    assert not bus._connected.is_set()
