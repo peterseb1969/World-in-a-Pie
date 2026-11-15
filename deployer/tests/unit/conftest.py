@@ -60,6 +60,18 @@ def _no_live_registry_attachments() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_key_probe() -> Iterator[None]:
+    """add-app and rotate-key wait for the Registry to accept a key before they
+    report done, retrying for minutes. Unit tests must never reach a real
+    install, so the probe is answered with what a healthy install says: the key
+    is accepted. (Tests of these verbs' reporting patch this to their own
+    answer; tests of the probe itself call check_key_rotation directly, which
+    this patch does not replace.)"""
+    with patch("wip_deploy.verify_security.check_key_rotation", return_value=[]):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_live_cluster(request: pytest.FixtureRequest) -> Iterator[None]:
     """No unit test may reach a real cluster through wip_deploy.kube, not even
     to read where the shell's kubectl points. The cluster check answers with

@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
 
 import typer
 import yaml
@@ -2862,7 +2862,11 @@ def add_app(
     exist at the install's base tag.
 
     An app the install does not already run gets a new key of its own
-    (`app-<name>`), never the one an earlier enablement had.
+    (`app-<name>`), never the one an earlier enablement had. The command then
+    waits for the Registry to accept that key — up to about three minutes on
+    k8s, where the key file only reaches the Registry when the kubelet
+    refreshes its mount, and the app is refused with 401 until it does — and
+    fails if the key is still unknown once that window has passed.
 
     Examples:
 
@@ -2924,7 +2928,7 @@ def add_app(
     # An app the install does not run yet gets a key of its own made for it
     # now, never one an earlier enablement left in the store.
     fresh_key = (
-        _app_key_secret(apps_list, app_name)
+        _app_key(apps_list, app_name)
         if existing is None or not existing.enabled
         else None
     )
@@ -2953,7 +2957,7 @@ def add_app(
         # may still carry the value of an earlier removal (an apply cannot
         # drop a key from its stringData); `regenerate` lets the new value
         # replace it instead of stopping the apply as drift.
-        _forget_secret(deployment, fresh_key)
+        _forget_secret(deployment, fresh_key.secret_name)
 
     _apply_and_persist_mutation(
         deployment,
@@ -2965,8 +2969,12 @@ def add_app(
         # config changed; leave everything else genuinely untouched.
         services_scope=[app_name],
         repo_root=repo_root,
-        regenerate=frozenset({fresh_key}) if fresh_key is not None else frozenset(),
+        regenerate=(
+            frozenset({fresh_key.secret_name}) if fresh_key is not None else frozenset()
+        ),
     )
+    if fresh_key is not None:
+        _await_app_key(deployment, fresh_key)
 
 
 @app.command("remove-app")
@@ -3073,12 +3081,102 @@ def remove_app(
     )
 
 
+def _app_key(apps_list: list[App], app_name: str) -> SpecAPIKey | None:
+    """The app's own derived key, or None: no such app, or one that holds the
+    install's master key (`privileged_key`) instead."""
+    manifest = next((a for a in apps_list if a.metadata.name == app_name), None)
+    return app_api_key(manifest) if manifest is not None else None
+
+
 def _app_key_secret(apps_list: list[App], app_name: str) -> str | None:
     """The secret that holds the app's own key, or None: no such app, or one
     that holds the install's master key (`privileged_key`) instead."""
-    manifest = next((a for a in apps_list if a.metadata.name == app_name), None)
-    key = app_api_key(manifest) if manifest is not None else None
+    key = _app_key(apps_list, app_name)
     return key.secret_name if key is not None else None
+
+
+def _read_file_secret(deployment: Deployment, secret_name: str) -> str | None:
+    """A secret's plaintext from the install's file store, or None: the store is
+    not a readable file location, or holds nothing for that name."""
+    spec = deployment.spec.secrets
+    if spec.backend != "file" or spec.location is None:
+        return None
+    try:
+        return (Path(spec.location) / secret_name).read_text().rstrip("\n") or None
+    except OSError:
+        return None
+
+
+# The window `_key_arrival_note` names for k8s: about three minutes, asked
+# twice a second apart, the same one rotate-key gives a declared key.
+_KEY_ARRIVAL_ATTEMPTS = 75
+
+
+def _await_app_key(deployment: Deployment, key: SpecAPIKey) -> None:
+    """Report when an app's freshly minted key reaches the Registry, and wait.
+
+    The apply put the key into api-keys.json, but the Registry learns it only by
+    re-importing the file it mounts — on k8s once the kubelet refreshes that
+    mount. The app holds the value from the moment it starts, so inside that
+    window every request it makes is refused with a 401 it cannot fix. The
+    command therefore names the window, and calls the app done only once the
+    Registry answers for its key; a key still refused after the full window is
+    not a ready app, however applied and saved the spec is.
+
+    Asking needs the plaintext, so a store that holds none for this key gets the
+    window alone.
+    """
+    typer.echo("")
+    typer.echo(_key_arrival_note(old_key_refused=False))
+    typer.echo(f"Until it is accepted, every request {key.name} makes is refused with 401.")
+    plaintext = _read_file_secret(deployment, key.secret_name)
+    if plaintext is None:
+        _report_key_check_not_run(
+            f"the install's secret store holds no readable {key.secret_name} to send"
+        )
+        return
+    typer.echo(f"Waiting for the Registry to accept {key.name}…")
+    acceptance = _probe_key_at_registry(
+        deployment, plaintext, None, attempts=_KEY_ARRIVAL_ATTEMPTS,
+    )
+    if acceptance.not_run is not None:
+        _report_key_check_not_run(acceptance.not_run)
+        return
+    if acceptance.problems:
+        typer.echo(
+            typer.style(
+                f"✗ the Registry still refuses {key.name} after the window "
+                "above: the app is applied and saved, but it cannot reach WIP "
+                "while its key is unknown.",
+                fg=typer.colors.RED,
+                bold=True,
+            ),
+            err=True,
+        )
+        for problem in acceptance.problems:
+            typer.echo(f"  - {problem}", err=True)
+        typer.echo(
+            "  When the key is accepted, restart the app so it connects again; "
+            "`wip-deploy verify --security --live` probes it.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(typer.style(f"✓ the Registry accepts {key.name}.", fg=typer.colors.GREEN))
+
+
+def _report_key_check_not_run(why: str) -> None:
+    """A key probe that could not ask is said as such: the change is applied and
+    saved, only the confirmation is missing, and the key is never sent
+    unverified to try again."""
+    typer.echo(
+        typer.style(
+            f"⚠ key check not run: {why}. The app itself is applied and saved — "
+            "expect it to report 401 until the Registry accepts its key; "
+            "`wip-deploy verify --security --live` probes it.",
+            fg=typer.colors.YELLOW,
+        ),
+        err=True,
+    )
 
 
 def _forget_secret(deployment: Deployment, secret_name: str) -> bool:
@@ -3720,6 +3818,28 @@ def _key_readers(
     return sorted(readers)
 
 
+def _key_arrival_note(*, old_key_refused: bool) -> str:
+    """How long a key the apply declared takes to reach the Registry, which
+    rotate-key and add-app both say before they wait for it.
+
+    A declared key restarts nothing: the key file is deliberately out of the
+    config hash (see config_gen/config_hash.py), the Registry re-imports it
+    while running every 10 s, and the other services learn the change by key
+    sync. On k8s the file the Registry reads is a mounted Secret, so the
+    kubelet's refresh comes first — the deployer plans for three minutes there,
+    which is what its probe waits.
+    """
+    accepted = "the new key is accepted"
+    if old_key_refused:
+        accepted += ", and the old one refused,"
+    return (
+        "The Registry re-imports api-keys.json while running and every service "
+        f"learns the change by key sync: {accepted} within about 40 s on compose "
+        "and dev (10 s import, 30 s key sync), and within about three minutes on "
+        "k8s, where the kubelet first refreshes the mounted file."
+    )
+
+
 def _rotation_restart_lines(target: str, readers: list[str], *, declared_key: bool) -> list[str]:
     """What rotate-key reports about restarts, from what its apply does.
 
@@ -3745,17 +3865,51 @@ def _rotation_restart_lines(target: str, readers: list[str], *, declared_key: bo
             "Restarted by this apply (they read the key at start): " + ", ".join(readers)
         )
     if declared_key:
-        sync = (
-            "The Registry re-imports api-keys.json while running and every "
-            "service learns the change by key sync: the new key is accepted, "
-            "and the old one refused, within about 40 s on compose and dev "
-            "(10 s import, 30 s key sync), and within about three minutes on "
-            "k8s, where the kubelet first refreshes the mounted file."
-        )
+        sync = _key_arrival_note(old_key_refused=True)
         if target != "dev" and not readers:
             sync += " Nothing restarts for it."
         lines.append(sync)
     return lines
+
+
+class KeyAcceptance(NamedTuple):
+    """What a post-apply probe of the install's Registry found.
+
+    `not_run` names why the question never reached the install — no trust
+    anchor, or a certificate that does not verify against it. That is not an
+    answer and never fails the caller: the install's keys are not sent
+    unverified. `problems` is what the Registry did answer that is wrong;
+    empty means the new key is accepted, and, when an old key is given, refused.
+    """
+
+    not_run: str | None = None
+    problems: tuple[str, ...] = ()
+
+
+def _probe_key_at_registry(
+    deployment: Deployment, new_key: str, old_key: str | None, *, attempts: int
+) -> KeyAcceptance:
+    """Ask the install whether its Registry accepts the key, retrying `attempts`
+    times two seconds apart — the window a declared key needs to arrive (see
+    `_key_arrival_note`), and the one restarted services need to come back.
+
+    The Registry validates every key the install knows and lists what the caller
+    may see, so any valid key gets a 200 from `/api/registry/namespaces`
+    whatever namespaces it is scoped to; a 401 there means the Registry does not
+    hold this key yet.
+    """
+    from wip_deploy.verify_security import RotationNotChecked, check_key_rotation
+
+    with _install_trust(deployment) as verify:
+        if isinstance(verify, Untrusted):
+            return KeyAcceptance(not_run=verify.why)
+        try:
+            problems = check_key_rotation(
+                deployment, new_key, old_key, attempts=attempts, verify=verify,
+            )
+        except RotationNotChecked as e:
+            return KeyAcceptance(not_run=str(e))
+    return KeyAcceptance(problems=tuple(problems))
 
 
 @app.command("rotate-key")
@@ -3939,44 +4093,36 @@ def rotate_key(
 
     if not check:
         return
-    from wip_deploy.verify_security import RotationNotChecked, check_key_rotation
 
     # A declared key arrives by the Registry re-importing api-keys.json, which
-    # on k8s waits for the kubelet to refresh the mount (about a minute
-    # measured), so its probe gets a longer window than a restart needs. The
-    # probe asks the Registry; other services follow within one key sync.
+    # on k8s waits for the kubelet to refresh the mount, so its probe gets the
+    # longer window — the three minutes `_key_arrival_note` names, rather than
+    # the one a restart needs. The probe asks the Registry; other services
+    # follow within one key sync.
     # A check that could not ask (no trust anchor, or a certificate that does
     # not verify against it) is reported as not run: the rotation is done,
     # and only an answer from the install can fail it.
-    not_run: str | None = None
-    problems: list[str] = []
-    with _install_trust(deployment) as verify:
-        if isinstance(verify, Untrusted):
-            not_run = verify.why
-        else:
-            try:
-                problems = check_key_rotation(
-                    deployment, new_plaintext, old_plaintext,
-                    attempts=75 if key_name is not None else 30, verify=verify,
-                )
-            except RotationNotChecked as e:
-                not_run = str(e)
-    if not_run is not None:
+    acceptance = _probe_key_at_registry(
+        deployment, new_plaintext, old_plaintext,
+        attempts=_KEY_ARRIVAL_ATTEMPTS if key_name is not None else 30,
+    )
+    if acceptance.not_run is not None:
         typer.echo(
             typer.style(
-                f"⚠ post-rotation check not run: {not_run}. The keys are never "
-                "sent unverified; the rotation itself completed — check it by hand.",
+                f"⚠ post-rotation check not run: {acceptance.not_run}. The keys "
+                "are never sent unverified; the rotation itself completed — "
+                "check it by hand.",
                 fg=typer.colors.YELLOW,
             ),
             err=True,
         )
         return
-    if problems:
+    if acceptance.problems:
         typer.echo(
             typer.style("✗ post-rotation check failed:", fg=typer.colors.RED, bold=True),
             err=True,
         )
-        for problem in problems:
+        for problem in acceptance.problems:
             typer.echo(f"  - {problem}", err=True)
         raise typer.Exit(1)
     typer.echo(

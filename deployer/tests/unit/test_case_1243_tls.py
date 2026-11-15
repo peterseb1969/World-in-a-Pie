@@ -23,6 +23,11 @@ from wip_deploy.discovery import discover
 from wip_deploy.export_ca import ExportCAError
 from wip_deploy.tls_trust import Untrusted, anchor_path, trust_anchor
 
+# Imported at module level, not inside the tests below: conftest answers
+# check_key_rotation for CLI tests so they reach no install, and a test that
+# imports it at call time would get that answer instead of the real probe.
+from wip_deploy.verify_security import RotationNotChecked, check_key_rotation
+
 PEM = b"-----BEGIN CERTIFICATE-----\nQUFBQQ==\n-----END CERTIFICATE-----\n"
 
 
@@ -123,10 +128,6 @@ def test_a_tls_failure_in_the_rotation_probe_is_not_an_answer() -> None:
     raises RotationNotChecked instead of reporting "no response"."""
     import ssl
 
-    import httpx
-
-    from wip_deploy.verify_security import RotationNotChecked, check_key_rotation
-
     def handler(request: httpx.Request) -> httpx.Response:
         try:
             raise ssl.SSLCertVerificationError("certificate verify failed")
@@ -141,10 +142,6 @@ def test_a_tls_failure_in_the_rotation_probe_is_not_an_answer() -> None:
 
 
 def test_an_unreachable_install_is_still_a_problem_not_a_skip() -> None:
-    import httpx
-
-    from wip_deploy.verify_security import check_key_rotation
-
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
 
