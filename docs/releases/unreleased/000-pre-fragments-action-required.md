@@ -1578,10 +1578,11 @@ and document-store now follow it too, through one shared rule in wip-auth.
   by value and search answer the holder for an X that is not an active
   entry, as they would for any other value of its keys. Entries merged
   before this release carry no `merged_into` and keep the old behaviour.
-- **D's keys belong to P.** D's primary key now moves to P along with its
-  synonyms; D keeps a record of them, all inactive, and its primary key hash
-  is cleared. Re-registering D's identity answers P — it answered D, an
-  inactive entry nothing resolved to.
+- **D's keys belong to P.** D's primary key now moves to P along with the
+  synonyms D still holds — one D had released stays D's own record, so a later
+  revival of P cannot bring it back as P's. D keeps a record of them, all
+  inactive, and its primary key hash is cleared. Re-registering D's identity
+  answers P — it answered D, an inactive entry nothing resolved to.
 - **A merge takes only keys D or P hold.** A key a third entry holds (e.g.
   `{"entry_id": D}` added to it as a synonym) refuses the merge with
   `error_code: already_exists`, `details.rule: key_held_elsewhere`,
@@ -1593,7 +1594,10 @@ and document-store now follow it too, through one shared rule in wip-auth.
 - **Retiring P keeps D's address.** `/entries/deactivate` on P released the
   `{"entry_id": D}` synonym; the keys a merge gives P in D's place now carry
   `merged_from = D` and stay claimed, like P's own id and primary key.
-- New fields: `RegistryEntry.merged_into`, `Synonym.merged_from`.
+- **New fields: `Synonym.merged_from`, which an entry's detail serves, and
+  `RegistryEntry.merged_into`, which is stored only.** No API response returns
+  `merged_into`: a client learns that D was merged by resolving D's id, which
+  answers P.
 
 ### Register answers every item with an entry that exists
 
@@ -1604,8 +1608,11 @@ and document-store now follow it too, through one shared rule in wip-auth.
   written. It is now answered from what became of the earlier item.
 - **A concurrent registration of the same new key** answers `already_exists`
   with the entry the other request wrote; it was an `error`
-  (`details.rule: key_claimed`). A key held as some other entry's synonym
-  stays a `key_claimed` error — that is a different entity.
+  (`details.rule: key_claimed`). An item whose own key another entry holds —
+  as that entry's primary key or as one of its synonyms — is the same entity
+  and is answered `already_exists` the same way. A conflict on one of the
+  item's own synonyms stays a `key_claimed` error — that is a different
+  entity.
 - **Prefixed IDs are reserved per batch:** register and provision take one
   counter round trip per prefix, however many IDs they mint (they took one
   per ID).
@@ -4722,8 +4729,9 @@ The dry run now reports, and a deletion without `force=true` refuses with
   hold a term or a file here, and `template_reference` /
   `terminology_reference` also for documents whose reference fields name a
   template or terminology here — each one entry per namespace and template.
-  These were missed when the document's own template lived in the deleted
-  namespace too, so no surviving template recorded what the document used.
+  No template check stands in for these: a document's term reference shows on
+  its template only while that template survives the deletion, and a file
+  reference is never recorded on a template at all.
 
 Synonym links stay low severity and do not require `force`.
 
