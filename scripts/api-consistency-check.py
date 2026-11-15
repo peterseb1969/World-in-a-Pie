@@ -146,12 +146,11 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     "entity_write_refusals",        # wip_auth: write_refusals for the namespaces of the entities a bulk write names
     "can_read",                     # wip_auth: resolve_permission + permission_sufficient. Generic name;
                                     # the walker matches attribute calls too, so any .can_read(...) counts.
-    # A name here counts as a gate wherever the call sits in the function —
-    # under an `if`, in a try, in a comprehension. The rule checks that the
-    # function calls a gate, NOT that every return path reaches it: a gate
-    # inside `if existing:` passes even when the other branch answers without
-    # one. Such a branch must end in not-found or an empty answer; this checker
-    # does not verify that.
+    # A name here is a gate the rule looks for. It is not yet enough: the
+    # rule also requires that the gate is reached on every path to an answer
+    # (see the gate-reachability helpers below). A gate under `if existing:`,
+    # or one that only runs after the endpoint has already answered, is found
+    # by name and still reported.
     # Local helper wrappers that delegate to the canonical helpers.
     # When a new wrapper lands, add the name here so the AST walker
     # treats the wrapper-call as a valid gate without needing to
@@ -242,6 +241,293 @@ PERMISSION_EXEMPT_FUNCTIONS = {
     # No entries yet. Add with care — the burden of proof is on the
     # exemption, not on the enforcement.
 }
+
+# Endpoints that do gate, from a branch this rule cannot prove always runs.
+# Listing here does not waive the permission rule: the endpoint must still
+# call a recognised helper, and an answer that escapes before any gate is
+# still reported. What it accepts is only the reachability finding, with the
+# reason the branch the walk skips writes nothing — said in prose, so the
+# review is on the record and can be re-evaluated.
+#
+# Most of these are the same bulk idiom: the refusal map for the namespaces
+# the request names is computed once behind `if ids:`, and each item consults
+# it before it is written. The shape a checker *can* prove is the one the
+# single-entity doors use — answer a missing entity, then gate unconditionally.
+_BATCH_GUARD = (
+    "Per-namespace gate over the whole batch, taken before any item is written: "
+    "entity_write_refusals is asked about every namespace the request's ids "
+    "resolve to, and the item loop consults the map at its head and answers a "
+    "refused item without touching it. The branch the walk cannot follow is "
+    "`if ids:` — an empty id list is nothing to gate, and an item that names no "
+    "id misses its own lookup, so it comes back not_found."
+)
+
+PERMISSION_CONDITIONAL_GATE_FUNCTIONS = {
+    "update_terminologies": _BATCH_GUARD,
+    "delete_terminologies": _BATCH_GUARD,
+    "update_terms": _BATCH_GUARD,
+    "deprecate_terms": _BATCH_GUARD,
+    "delete_terms": _BATCH_GUARD,
+    "merge_terms": (
+        "Both endpoints of every merge are gated: entity_write_refusals is asked "
+        "about the namespaces of all survivor and absorbed ids the items name, "
+        "and _merge_refusal refuses an item whose either end is refused before "
+        "the merge runs. The branch the walk cannot follow is `if ids:` — an "
+        "empty id list is nothing to gate, and such an item names no term to "
+        "merge, so it is reported as a miss."
+    ),
+    "update_templates": _BATCH_GUARD,
+    "delete_templates": _BATCH_GUARD,
+    "create_terms": (
+        "check_entity_permission asks write on the terminology's own namespace, "
+        "behind the lookup that found it. The branch the walk cannot follow is "
+        "`if term_parent:` — no terminology row, so no term can be added to it: "
+        "the service misses and the single-item path turns that into the 404 of "
+        "an id that names nothing (terms.py, _create_one_term), the bulk path "
+        "into a per-item not_found."
+    ),
+    "start_restore": (
+        "The gate splits by mode and the two halves together cover every "
+        "namespace written. Every mode but one admin-checks effective_target "
+        "here; the exception is a fresh restore given only namespace_map, where "
+        "the URL namespace gates nothing and _parse_namespace_map admin-checks "
+        "every target the map names before the job is queued."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Gate reachability (CASE-1322).
+#
+# A named gate is only a gate if every path to an answer passes it. The scan
+# walks an endpoint body and says, for the path a request takes, which of
+# these comes first:
+#
+#   _GATE    a recognised helper ran
+#   _ESCAPE  the endpoint answered the caller with data on a path where no
+#            gate ran — the finding this rule exists to catch
+#   _OPEN    neither, yet — the next statement decides
+#
+# Accepted gate positions:
+#   - in the expression of a statement the path reaches: an assignment, a bare
+#     call, a raise, or a return;
+#   - in the *test* of an `if` or `while`, which runs whenever the statement
+#     does — the shape of `if not is_superadmin(identity): raise ...`;
+#   - in every branch of an `if`/`else`: one branch skipping the gate is
+#     exactly the fall-through that must not pass;
+#   - first in the body of a `for` over the items or namespaces a request
+#     names, or after statements that only abort the iteration — the bulk
+#     idiom, where each item is gated before anything of it is written;
+#   - in a `with` body, a `try` body or a `finally`, all of which run when the
+#     statement runs. A gate only in an `except` handler does NOT count: the
+#     try body can finish without ever reaching it.
+#
+# Before a gate, a path may only abort or answer emptily: `raise`, `continue`,
+# or a `return` of a literal or an empty structure. That is what keeps
+# "read the row to learn its namespace, then gate, then answer" legal, while an
+# early `return <the data>` is not — the lookup is not the answer, and a door
+# that answers nothing leaked nothing.
+#
+# What the scan will not try to prove, and so reports for review:
+#   - that a branch skipped by a condition writes nothing (`if ids:`); see
+#     PERMISSION_CONDITIONAL_GATE_FUNCTIONS;
+#   - that a service call behind the gate would have failed anyway.
+# ---------------------------------------------------------------------------
+
+_GATE, _ESCAPE, _OPEN = "gate", "escape", "open"
+
+
+def _callee_name(call: ast.Call) -> str | None:
+    """The helper name a call reads as — `can_read(...)` and `auth.can_read(...)`
+    alike, so an attribute call counts like the plain one."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _gate_in_expr(expr: ast.expr | None) -> bool:
+    """Whether an expression calls a recognised gate anywhere in it: a gate in a
+    comprehension counts as much as a direct call."""
+    if expr is None:
+        return False
+    return any(
+        _callee_name(inner) in PERMISSION_ENFORCEMENT_NAMES
+        for inner in ast.walk(expr) if isinstance(inner, ast.Call)
+    )
+
+
+def _calls_a_gate(node: ast.AST) -> bool:
+    """Whether this subtree calls a recognised gate, looking past the endpoint's
+    own statements but not into a helper defined inside it — one of those runs
+    only if the endpoint calls it, which the scan itself decides."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(child, ast.Call) and _callee_name(child) in PERMISSION_ENFORCEMENT_NAMES:
+            return True
+        if _calls_a_gate(child):
+            return True
+    return False
+
+
+def _empty_answer(node: ast.expr | None) -> bool:
+    """Whether a returned value carries no data: a literal (None, "", 0), a
+    container of empties, or a model built from empties. `return
+    BulkResponse(results=[], total=0, succeeded=0, failed=0)` is the empty bulk
+    answer; `return JSONResponse(content=result)` is not."""
+    if node is None or isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_empty_answer(elt) for elt in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            key is not None and _empty_answer(key) and _empty_answer(value)
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
+    if isinstance(node, ast.Call):
+        return all(
+            _empty_answer(part)
+            for part in [*node.args, *(kw.value for kw in node.keywords)]
+        )
+    return False
+
+
+def _answers_here(st: ast.stmt) -> bool:
+    """Whether this statement may return data to the caller, wherever in it
+    that return sits. A helper defined inside the endpoint is not the
+    endpoint answering."""
+    if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return False
+    if isinstance(st, ast.Return):
+        return not _empty_answer(st.value)
+    return any(_answers_here(child) for child in ast.iter_child_nodes(st))
+
+
+def _gates_before_answering(stmts: list) -> bool:
+    """The lenient twin of `_scan_seq`: a gate on any branch of a statement
+    counts as reached. Used only to judge a reviewed waiver, where the strict
+    walk has already said the branch is not provably taken. What the waiver
+    still requires is that the endpoint gates somewhere ahead of its answer,
+    so a listing can never hide a function that stopped gating, or one that
+    answers first and checks after."""
+    for st in stmts:
+        if _calls_a_gate(st):
+            return True
+        if _answers_here(st):
+            return False
+    return True
+
+
+def _aborts(stmts: list) -> bool:
+    """Whether these statements only end the iteration or the call: `raise`,
+    `continue`, or an `if` whose branches both abort. `break` is not one of
+    them — it leaves a loop whose remaining items were never gated, and the
+    code after the loop runs with no gate passed."""
+    for st in stmts:
+        if isinstance(st, (ast.Raise, ast.Continue)):
+            continue
+        if isinstance(st, ast.If) and _aborts(st.body) and _aborts(st.orelse):
+            continue
+        return False
+    return True
+
+
+def _combine(*paths: str) -> str:
+    """Merge alternative paths. One escape makes it an escape; the gate counts
+    only when every path reaches it; a path that neither gates nor answers —
+    the fall-through of an `if` with no `else` — leaves it open."""
+    if _ESCAPE in paths:
+        return _ESCAPE
+    if paths and all(path == _GATE for path in paths):
+        return _GATE
+    return _OPEN
+
+
+def _scan_loop_body(body: list) -> bool:
+    """Whether a loop body passes its gate before it can touch the item: gate
+    first, or preceded only by guards that abort the iteration. A write placed
+    before the gate inside the loop is what this catches."""
+    if not body:
+        return False
+    head, *rest = body
+    if _scan_stmt(head) == _GATE:
+        return True
+    return _aborts([head]) and _scan_loop_body(rest)
+
+
+def _scan_loop(body: list) -> str:
+    """A loop gates when its body gates before touching the item. Otherwise a
+    gate inside is only conditional — the body may not run at all — while an
+    ungated answer inside stays an answer."""
+    if _scan_loop_body(body):
+        return _GATE
+    verdict = _scan_seq(body)
+    return _OPEN if verdict == _GATE else verdict
+
+
+def _scan_seq(stmts: list) -> str:
+    """Walk a statement list in order; the first verdict that is not _OPEN is
+    the verdict of the sequence, because the statements before it neither
+    gated nor answered."""
+    for st in stmts:
+        verdict = _scan_stmt(st)
+        if verdict != _OPEN:
+            return verdict
+    return _OPEN
+
+
+def _scan_try(st: ast.Try) -> str:
+    head = _scan_seq(st.body)
+    if head != _OPEN:
+        return head
+    others = [_scan_seq(handler.body) for handler in st.handlers]
+    others.append(_scan_seq(st.orelse))
+    if _ESCAPE in others:
+        return _ESCAPE
+    # A `finally` runs whatever the body and the handlers did — its gate is
+    # passed on every path out of the statement.
+    if st.finalbody and _scan_seq(st.finalbody) == _GATE:
+        return _GATE
+    return _OPEN
+
+
+def _scan_stmt(st: ast.stmt) -> str:
+    """Verdict for one statement, for the path that runs it."""
+    if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        # A helper defined inside an endpoint is not run by the request.
+        return _OPEN
+    if isinstance(st, ast.Return):
+        if _gate_in_expr(st.value):
+            return _GATE
+        return _OPEN if _empty_answer(st.value) else _ESCAPE
+    if isinstance(st, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr)):
+        return _GATE if _gate_in_expr(st.value) else _OPEN
+    if isinstance(st, ast.Raise):
+        return _GATE if _gate_in_expr(st.exc) else _OPEN
+    if isinstance(st, ast.If):
+        if _gate_in_expr(st.test):
+            return _GATE
+        return _combine(_scan_seq(st.body), _scan_seq(st.orelse))
+    if isinstance(st, ast.While):
+        if _gate_in_expr(st.test):
+            return _GATE
+        return _scan_loop(st.body)
+    if isinstance(st, (ast.For, ast.AsyncFor)):
+        return _scan_loop(st.body)
+    if isinstance(st, (ast.With, ast.AsyncWith)):
+        return _scan_seq(st.body)
+    if isinstance(st, ast.Try):
+        return _scan_try(st)
+    if isinstance(st, ast.Match):
+        # st.orelse is empty unless there is a `case _`, so a subject matching
+        # no case leaves the statement open.
+        paths = [_scan_seq(case.body) for case in st.cases]
+        paths.append(_scan_seq(st.orelse))
+        return _combine(*paths)
+    return _OPEN
 
 
 # CASE-395 follow-up — bulk-result-item-canonical rule.
@@ -677,19 +963,23 @@ class EndpointVisitor(ast.NodeVisitor):
         """CASE-384 follow-up — every endpoint must call into the auth
         layer (or be explicitly exempt).
 
-        Looks for any Call node in the function body whose function name
-        matches PERMISSION_ENFORCEMENT_NAMES, or a Depends(...) on a
-        function in PERMISSION_DEPENDS_NAMES. Walks the full subtree, so
-        a helper nested inside a conditional, try block or comprehension
-        counts. The match is by name only: it does not check that every
-        return path reaches the helper, so a gate under an `if` passes
-        even when another branch answers ungated.
+        Two parts. First, a `Depends(...)` gate on a function argument
+        (`_admin: str = Depends(require_admin_key)`) or in the route
+        decorator's dependencies=[...] gates the call before its body
+        runs. Second, the body is walked for a gate reached on every path
+        to an answer — see the gate-reachability helpers. A name match is
+        the raw material, not the verdict: a gate under `if existing:`, a
+        gate only in an `except` handler, or an answer returned before the
+        gate is reached is reported even though the helper is called.
 
         Exemption mechanisms:
           1. Component-level: PERMISSION_EXEMPT_SERVICES (e.g., registry).
           2. Path-substring against the full route — for stateless
              utilities (/preview, /health, /stats, /count, /initialize).
-          3. One-off function-name entries with literal rationale.
+          3. One-off function-name entries with literal rationale:
+             PERMISSION_EXEMPT_FUNCTIONS (no gate needed at all) and
+             PERMISSION_CONDITIONAL_GATE_FUNCTIONS (gated, on a branch the
+             walk cannot prove; the helper call is still required).
         """
         path = info.get("path", "")
         full_path = self.router_prefix + path
@@ -727,26 +1017,47 @@ class EndpointVisitor(ast.NodeVisitor):
             if _is_depends_gate(default.args[0]):
                 return  # Endpoint is gated via Depends.
 
-        # 2. Walk the function body for any Call to a recognised helper.
-        for inner in ast.walk(node):
-            if not isinstance(inner, ast.Call):
-                continue
-            called_name: str | None = None
-            if isinstance(inner.func, ast.Name):
-                called_name = inner.func.id
-            elif isinstance(inner.func, ast.Attribute):
-                called_name = inner.func.attr
-            if called_name in PERMISSION_ENFORCEMENT_NAMES:
-                return  # Endpoint is gated.
+        # 2. The body must reach a gate on every path to an answer.
+        verdict = _scan_seq(node.body)
+        if verdict == _GATE:
+            return
+
+        # 3. Gated on a reviewed branch: the helper is called, ahead of the
+        #    answer, but from where the walk cannot prove it always runs. An
+        #    endpoint listed here that stopped gating is still reported.
+        if (
+            func_name in PERMISSION_CONDITIONAL_GATE_FUNCTIONS
+            and _calls_a_gate(node)
+            and _gates_before_answering(node.body)
+        ):
+            return
+
+        gated_somewhere = _calls_a_gate(node)
+        if verdict == _ESCAPE:
+            reason = (
+                "answers the caller with data on a path that reaches no "
+                "permission gate"
+            )
+        elif gated_somewhere:
+            reason = (
+                "calls a permission helper only conditionally, so a request can "
+                "reach the answer without passing it"
+            )
+        else:
+            reason = (
+                "does not call any namespace permission helper "
+                f"({sorted(PERMISSION_ENFORCEMENT_NAMES)})"
+            )
 
         self.violations.append({
             **info,
             "rule": "permission-enforcement",
             "message": (
-                f"{info['method'].upper()} {path}: endpoint does not call any "
-                f"namespace permission helper "
-                f"({sorted(PERMISSION_ENFORCEMENT_NAMES)}). "
-                f"Add a check or extend the exemption list with rationale."
+                f"{info['method'].upper()} {path}: {reason}. "
+                f"Gate every path, or list the function in "
+                f"PERMISSION_CONDITIONAL_GATE_FUNCTIONS (gated on a branch, "
+                f"with the reason that branch is safe) or "
+                f"PERMISSION_EXEMPT_FUNCTIONS (no gate applies) — with rationale."
             ),
         })
 
