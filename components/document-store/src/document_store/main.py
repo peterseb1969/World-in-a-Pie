@@ -682,8 +682,9 @@ async def integrity_check(
     Check the referential, identity and mandatory-field integrity of documents.
 
     Scans documents for:
-    - Template, term, document and file references that do not resolve, and
-      references to an inactive template version
+    - Template, term, document and file references that do not resolve
+    - A document's current version pinned to a template version that has since
+      been retired (a superseded or deleted version keeps its pin as history)
     - Stored identity hashes that no longer match the document's data
     - Mandatory fields of the pinned template version with no value in a
       document's current version (nested objects and array items against
