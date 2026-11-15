@@ -667,6 +667,8 @@ class APIKeyProvider:
         except KeyCheckOverloaded as exc:
             # The refusal is about the queue, so name a window to retry in: a
             # client that backs off stops feeding the queue it was refused for.
+            # Where the per-address rate limit is active it reports its own,
+            # longer window in this header instead.
             raise HTTPException(
                 status_code=503, detail=str(exc), headers={"Retry-After": "1"}
             ) from exc

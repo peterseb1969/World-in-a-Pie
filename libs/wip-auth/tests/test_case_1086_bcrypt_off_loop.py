@@ -315,15 +315,19 @@ async def test_a_flood_past_the_queue_is_refused_and_costs_no_bcrypt(slow_checks
 @pytest.mark.asyncio
 async def test_a_queued_check_that_runs_out_of_time_is_refused(slow_checks, monkeypatch):
     """A waiter is held for the bound and no longer, whatever the scan ahead of
-    it costs."""
+    it costs. The refusal names a window to retry in — a client that backs off
+    stops feeding the queue it was refused for."""
     monkeypatch.setattr(api_key_module, "_SLOW_PATH_WAIT_SECONDS", 0.05)
     provider = APIKeyProvider([_key(f"k{i}") for i in range(4)])  # a scan is 200 ms
     blockers = [asyncio.create_task(_attempt(provider, f"gone-{i}")) for i in range(2)]
     await asyncio.sleep(0.01)  # both permits are taken
 
     started = time.monotonic()
-    assert await _attempt(provider, "random-late") == "503"
+    with pytest.raises(HTTPException) as refused:
+        await provider.authenticate(_request("random-late"))
     waited = time.monotonic() - started
+    assert refused.value.status_code == 503
+    assert refused.value.headers == {"Retry-After": "1"}
     assert waited < 0.15, f"the waiter was held {waited * 1000:.0f} ms against a 50 ms bound"
     assert await asyncio.gather(*blockers) == ["401", "401"]
 
