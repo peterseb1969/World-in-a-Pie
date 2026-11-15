@@ -914,7 +914,9 @@ def _register_response(
 
 #: How long register waits for the request that holds an item's key to write
 #: its entry: attempts times pause (seconds). The holder writes right after
-#: claiming, so this only bridges that gap.
+#: claiming, so this only bridges that gap. It is a wall clock, not a promise:
+#: a holder slower than the bound is reported as a claimed key, and the retry
+#: answers from the entry it wrote by then.
 _HOLDER_WAIT_ATTEMPTS = 10
 _HOLDER_WAIT_PAUSE = 0.02
 
