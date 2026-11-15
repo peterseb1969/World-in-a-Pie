@@ -282,3 +282,34 @@ async def test_a_fresh_stack_adopts_a_pre_salt_archive_made_under_the_default(
     assert key_salt.current_salt() == CONFIGURED
     assert provider.runtime_salt == CONFIGURED
     assert await _authenticates(client, plaintext)
+
+
+@pytest.mark.asyncio
+async def test_a_stack_whose_managed_key_is_given_by_hash_refuses_another_salt(
+    client, auth_headers, provider, monkeypatch, tmp_path,
+):
+    # The import re-hashes a managed key only from the plaintext its file
+    # gives; one given by its hash alone keeps the hash it has, which the
+    # adopted salt would break. Such a stack is not fresh.
+    await StoredAPIKey.delete_all()
+    old_salt = await key_salt.ensure()
+    provider.set_runtime_salt(old_salt)
+    await _new_key(client, auth_headers)
+    archive = (await client.post(BACKUP, headers=auth_headers)).json()
+
+    await _wipe(provider)
+    await _drop_salt()
+    new_salt = await key_salt.ensure()
+    provider.set_runtime_salt(new_salt)
+    managed = _p("app")
+    _key_file(monkeypatch, tmp_path, {
+        "name": managed, "key_hash": hash_api_key("pt-" + managed, new_salt), "namespaces": [],
+    })
+    await key_import.run_pass(provider)
+    assert await _authenticates(client, "pt-" + managed)
+
+    resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error_code"] == "salt_mismatch"
+    assert key_salt.current_salt() == new_salt
+    assert await _authenticates(client, "pt-" + managed)

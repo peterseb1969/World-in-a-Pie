@@ -212,6 +212,7 @@ async def _set_grant(name: str, prefix: str, permission: Literal["read", "write"
         grant.permission = permission
         grant.orphaned = False
         grant.orphaned_at = None
+        grant.namespace_id = None  # an effective grant carries none
         await grant.save()
 
 

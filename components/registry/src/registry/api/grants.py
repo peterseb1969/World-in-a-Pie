@@ -62,8 +62,12 @@ def _build_synthetic_identity(
     CASE-351: when the calling service forwards an api-key's namespace
     scope via X-Key-Namespaces, that list must land on the synthetic
     identity's `raw_claims["namespaces"]`, where `_resolve_permission`
-    reads a key's scope (in `_grant_subjects`) and a reservation's owner
-    (in `reservation_owner`).
+    reads a key's scope (in `_grant_subjects`), a reservation's owner (in
+    `reservation_owner`) and a config key's scope (in
+    `_config_key_permission`, step 3). Step 3 also needs
+    `raw_claims["grants"]`, a config key's declared grants, which no header
+    carries: for a forwarded caller step 3 never answers, and the key's
+    grant rows decide instead.
 
     Header absent → raw_claims=None, matching today's behaviour for
     unscoped admin/services keys and for non-api_key identities.
@@ -539,11 +543,13 @@ async def revoke_grants(
 
     succeeded = sum(1 for r in results if r["status"] == "revoked")
     await _announce_grant_changes(results, ("revoked",))
+    # Every item that did not succeed failed, not_found included, so
+    # succeeded + failed is the total.
     return {
         "results": results,
         "total": len(items),
         "succeeded": succeeded,
-        "failed": sum(1 for r in results if r["status"] == "error"),
+        "failed": len(results) - succeeded,
     }
 
 
@@ -599,11 +605,13 @@ async def activate_grants(
             results.append({"index": i, "status": "activated", "subject": subject})
 
     await _announce_grant_changes(results, ("activated",))
+    succeeded = sum(1 for r in results if r["status"] in ("activated", "unchanged"))
+    # not_found counts as failed, so succeeded + failed is the total.
     return {
         "results": results,
         "total": len(items),
-        "succeeded": sum(1 for r in results if r["status"] in ("activated", "unchanged")),
-        "failed": sum(1 for r in results if r["status"] == "error"),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
     }
 
 

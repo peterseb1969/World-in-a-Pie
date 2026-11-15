@@ -2,8 +2,9 @@
 
 `served` is true when the record is active and the attach policy says an app
 edge runs; otherwise `not_served_reason` names why: `inactive`, `no_app_edge`,
-or `policy_unavailable` (the edge then serves nothing either). A read never
-fails on the policy file.
+or `policy_unavailable` (the Registry cannot use the attach policy file; the
+app edge reads the file itself, and may still serve). A read never fails on
+the policy file.
 """
 
 import ipaddress

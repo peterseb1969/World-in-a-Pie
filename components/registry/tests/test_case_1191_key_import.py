@@ -1,5 +1,6 @@
-"""Key import: an empty or vanished reservations file is a bad read and
-removes nothing; the shadow check runs one pass at a time, whoever calls it.
+"""Key import: a vanished reservations file is a bad read and removes
+nothing, an empty one means no reservations; the shadow check runs one pass
+at a time, whoever calls it.
 """
 
 import asyncio
@@ -40,8 +41,8 @@ async def _managed(prefix: str) -> RuntimeReservation | None:
 
 @pytest.mark.asyncio
 async def test_a_vanished_reservations_file_removes_nothing(client, monkeypatch, tmp_path):
-    """A file can vanish between the change check and the read: that is a
-    bad read, not "no reservations"."""
+    """A reservations file that is gone when the pass reads it is a bad
+    read, not "no reservations": what the pass managed stays."""
     prefix = _p("res")
     path = tmp_path / "namespace-reservations.json"
     path.write_text(json.dumps({"reservations": [{"prefix": prefix, "app": "cooking"}]}))
@@ -49,7 +50,6 @@ async def test_a_vanished_reservations_file_removes_nothing(client, monkeypatch,
     await key_import.run_pass()
     assert await _managed(prefix) is not None
 
-    monkeypatch.setattr(key_import.os.path, "exists", lambda _p: True)
     path.unlink()
     await key_import.run_pass()
     assert await _managed(prefix) is not None

@@ -54,6 +54,29 @@ def test_two_spellings_of_one_grant_collapse_to_the_higher_permission():
     assert [(g.subject, g.permission) for g in archive.grants] == [("ci", "write")]
 
 
+@pytest.mark.parametrize("dead", [
+    {"orphaned": True, "namespace_id": "ns-gone"},
+    {"expires_at": "2020-01-01T00:00:00Z"},
+], ids=["orphaned", "expired"])
+@pytest.mark.parametrize("order", ["dead_first", "dead_last"])
+def test_the_spelling_that_gives_access_wins_over_a_higher_dead_one(dead, order):
+    # An orphaned or expired admin spelling must not replace the read grant
+    # the key actually held: the restored key would lose its access.
+    dead_admin = _archive_grant("apikey:ci", "admin", **dead)
+    live_read = _archive_grant("ci", "read")
+    grants = [dead_admin, live_read] if order == "dead_first" else [live_read, dead_admin]
+    (g,) = _archive(grants).grants
+    assert (g.permission, g.orphaned, g.expires_at) == ("read", False, None)
+
+
+def test_between_two_dead_spellings_the_higher_permission_wins():
+    (g,) = _archive([
+        _archive_grant("ci", "read", expires_at="2020-01-01T00:00:00Z"),
+        _archive_grant("apikey:ci", "write", orphaned=True, namespace_id="ns-gone"),
+    ]).grants
+    assert g.permission == "write"
+
+
 def test_a_user_subject_keeps_its_spelling():
     archive = _archive([{**_archive_grant("apikey:someone"), "subject_type": "user"}])
     assert archive.grants[0].subject == "apikey:someone"
@@ -117,3 +140,40 @@ async def test_a_key_written_meanwhile_is_skipped_and_the_restore_goes_on(fresh,
     assert first not in keys["created"]
     assert (first, "concurrent_write") in [(s["id"], s["reason_code"]) for s in keys["skipped"]]
     assert second in keys["created"]
+
+
+@pytest.mark.asyncio
+async def test_a_record_removed_during_the_restore_is_skipped_not_replaced(fresh, auth_headers):
+    """A plain set on a record another request deleted matches nothing:
+    the restore must list it as skipped, and not hand the key to the key
+    provider as replaced."""
+    client = fresh
+    name, _ = await _key(client, auth_headers, description="before")
+    archive = await _backup(client, auth_headers)
+    next(k for k in archive["api_keys"] if k["name"] == name)["description"] = "archived"
+
+    real = system_backup._set_if_present
+
+    async def removed_first(doc, fields):
+        if getattr(doc, "name", None) == name:
+            await StoredAPIKey.find_one({"name": name}).delete()
+        return await real(doc, fields)
+
+    with patch.object(system_backup, "_set_if_present", removed_first):
+        report = await _restore(client, auth_headers, archive, dry_run=False, overwrite=True)
+    keys = report["api_keys"]
+    assert name not in keys["replaced"]
+    skipped = {s["id"]: (s["reason_code"], s["reason"]) for s in keys["skipped"]}
+    assert skipped[name][0] == "concurrent_write"
+    assert "removed by another request" in skipped[name][1]
+    assert await StoredAPIKey.find_one({"name": name}) is None
+
+
+@pytest.mark.asyncio
+async def test_set_if_present_reports_a_record_that_is_gone(fresh, auth_headers):
+    name, _ = await _key(fresh, auth_headers)
+    doc = await StoredAPIKey.find_one({"name": name})
+    assert await system_backup._set_if_present(doc, {"description": "kept"}) is True
+    assert (await StoredAPIKey.find_one({"name": name})).description == "kept"
+    await StoredAPIKey.find_one({"name": name}).delete()
+    assert await system_backup._set_if_present(doc, {"description": "lost"}) is False

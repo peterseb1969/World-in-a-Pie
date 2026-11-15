@@ -1554,16 +1554,17 @@ def system_restore_cmd(
     """Restore a system backup: API keys, grants, reservations and attachments.
 
     Reports what would change unless --apply is given. Records are upserted
-    by identity and never deleted; restored records arrive unmanaged. Records
-    the install's files manage here are never replaced. A grant on a
-    namespace that does not exist (and is not reserved by the archive's
-    owner) is written orphaned: it counts as no grant until a platform admin
-    creates the namespace (restoring
-    the namespace backup as an admin does) or a namespace admin activates it,
-    so this and the namespace restores work in either order. An archive made
-    under another API key hash salt is adopted with its salt by a stack that
-    holds no keys of its own, and refused by one that does. Needs a platform
-    admin key.
+    by identity, and only --mode mirror removes any; restored records arrive
+    unmanaged. Records the install's files manage here are never replaced. A
+    grant whose namespace id no namespace or reservation here holds is
+    written orphaned: it counts as no grant until a namespace with that id is
+    created (restoring the namespace backup does), a namespace admin
+    activates it, or it is granted again, so this and the namespace restores
+    work in either order. An archive made under another API key hash salt is
+    adopted by a stack that holds no keys of its own (each key its key file
+    manages given there by its plaintext), and refused by one that does; an
+    archive carrying only the salt's fingerprint is adopted only when it is
+    the configured salt's. Needs a platform admin key.
 
     --mode mirror also removes every record the archive does not hold (keys
     with their grants, grants, reservations; attachments are deactivated),

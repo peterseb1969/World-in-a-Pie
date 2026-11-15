@@ -13,10 +13,10 @@ A pass runs at startup before the Registry serves, every
 RECONCILE_INTERVAL_SECONDS, and when a reservation lookup finds either file
 changed. It is idempotent: it creates what the files declare and is missing,
 corrects what differs, and removes managed records the files no longer
-declare. It never deletes a key or reservation it did not import: a Console
-or restored one is only ever taken over. Grants are the exception, on two
-paths: when the file declares a key's grants, the key's API-made grants on
-namespaces the file does not declare are removed; and a managed key the
+declare. It never deletes a key it did not import: a Console or restored
+one is only ever taken over. Grants and reservations are the exceptions, on
+two paths: when the file declares a key's grants, the key's API-made grants
+on namespaces the file does not declare are removed; and a managed key the
 file drops goes as a revoke takes it, with all its grants (API-made
 included) and its API reservations of namespaces never created.
 
@@ -450,6 +450,7 @@ async def _import_grants(
             # an orphan a restore left waiting.
             canonical.orphaned = False
             canonical.orphaned_at = None
+            canonical.namespace_id = None  # an effective grant carries none
             await canonical.save()
             report.grants_changed.append(f"{ns}:{name}")
 

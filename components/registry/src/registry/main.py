@@ -23,6 +23,7 @@ from wip_auth import (
     init_beanie_with_retry,
     install_liveness,
     require_service_keys,
+    retry_mongo_step,
     setup_auth,
     setup_rate_limiting,
 )
@@ -91,13 +92,15 @@ async def lifespan(app: FastAPI):
     # One open deletion journal per prefix, enforced by the store. Built here,
     # not by Beanie, so an install already holding two still starts (and
     # logs them at CRITICAL).
+    # Each startup step retries while MongoDB does not answer, as the
+    # connection above does; each is safe to run again.
     from .models.deletion_journal import ensure_one_open_journal_index
-    await ensure_one_open_journal_index()
+    await retry_mongo_step(ensure_one_open_journal_index, description="Open-journal index")
 
     # Store client in app state
     app.state.mongodb_client = client
 
-    await _ensure_wip_namespace()
+    await retry_mongo_step(_ensure_wip_namespace, description="Ensure the wip namespace")
 
     # NATS tells other services' caches when a namespace was deleted; without
     # it they expire on their TTL. Started before recovery, but it connects in

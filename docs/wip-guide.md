@@ -818,7 +818,8 @@ in §5.5.
   - grants and reservations are deleted;
   - attachments are deactivated, never deleted.
 
-  It is stack-wide, since every system backup is. It never removes:
+  A whole-stack archive's mirror is stack-wide; a scoped archive's (`--namespace`
+  backups) removes only within its scope. It never removes:
   - records the install's files manage, or grants to a key whose grants the
     key file declares;
   - the bootstrap grants;

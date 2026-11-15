@@ -23,8 +23,10 @@ Restore rules:
   it and its fingerprint. A restore onto a stack with the same salt proceeds.
   A restore onto a *fresh* stack adopts the archive's salt: fresh means no
   stored key that the install's files do not manage (no Console or restored
-  key), so no hash on the stack depends on the old salt except the managed
-  keys, which the import re-hashes from their plaintexts. A stack that is not
+  key), and every managed key one the import re-hashes from the plaintext its
+  file gives — so no hash on the stack depends on the old salt. A managed key
+  the file gives by its hash alone, or any managed key while the key file is
+  not imported, keeps its hash and makes the stack not fresh. A stack that is not
   fresh refuses another salt (409): its own keys would die. An archive
   without the salt itself (only its fingerprint, as archives made before the
   salt travelled) is adopted only when the fingerprint is the configured
@@ -164,7 +166,7 @@ from wip_auth import PRIVILEGED_GROUPS, get_auth_config, privileged_scope_error
 from ..models.api_key import StoredAPIKey, key_name_error
 from ..models.attachment import REMOVED_FIELDS as REMOVED_ATTACHMENT_FIELDS
 from ..models.attachment import AppAttachment, AttachmentFields, AttachmentRequest
-from ..models.grant import NamespaceGrant
+from ..models.grant import NamespaceGrant, expiry_passed
 from ..models.namespace import Namespace
 from ..models.reservation import RuntimeReservation
 from .key_salt import adopt as adopt_salt
@@ -332,15 +334,20 @@ _PERMISSION_RANK: Final = {"read": 1, "write": 2, "admin": 3}
 
 def _one_grant_per_identity(grants: list[ArchiveGrant]) -> list[ArchiveGrant]:
     """One grant per (namespace, subject_type, subject), in archive order.
-    Two archived spellings of one key's grant collapse into one: the higher
-    permission, and between equals the effective (non-orphaned) one."""
+    Two archived spellings of one key's grant collapse into one: the one
+    that gives access (neither orphaned nor expired), and between two that
+    both do or both do not, the higher permission. Preferring permission
+    first would let an orphaned or expired admin spelling replace the
+    effective read grant the key actually held."""
+    def rank(g: ArchiveGrant) -> tuple[bool, int]:
+        effective = not g.orphaned and not expiry_passed(g.expires_at)
+        return effective, _PERMISSION_RANK[g.permission]
+
     kept: dict[tuple[str, str, str], ArchiveGrant] = {}
     for g in grants:
         identity = (g.namespace, g.subject_type, g.subject)
         held = kept.get(identity)
-        if held is None or (_PERMISSION_RANK[g.permission], not g.orphaned) > (
-            _PERMISSION_RANK[held.permission], not held.orphaned
-        ):
+        if held is None or rank(g) > rank(held):
             kept[identity] = g
     return list(kept.values())
 
@@ -626,8 +633,9 @@ class RecordReport(BaseModel):
     orphaned: list[str] = Field(
         default_factory=list,
         description="Grants only: those of `created` and `replaced` written orphaned, "
-        "because their namespace neither exists nor is reserved here (or they were "
-        "orphaned in the archive). They give nothing until activated.",
+        "because no namespace or reservation here holds the namespace id they were "
+        "archived with (or they were orphaned in the archive). They give nothing "
+        "until they become effective.",
     )
     unresolved: list[str] = Field(
         default_factory=list,
@@ -918,10 +926,29 @@ def _archive_attachment(a: AppAttachment) -> ArchiveAttachment:
 # --- Restore ---
 
 
-async def is_fresh() -> bool:
+async def is_fresh(config_key_names: frozenset[str] = frozenset()) -> bool:
     """Whether no stored API key depends on the stack's runtime salt except
-    the managed ones, which the key import re-hashes from their plaintexts."""
-    return await StoredAPIKey.find_one({"managed_by": None}) is None
+    managed ones the key import re-hashes from their plaintexts."""
+    if await StoredAPIKey.find_one({"managed_by": None}) is not None:
+        return False
+    return not await _managed_keys_kept_hashed(config_key_names)
+
+
+async def _managed_keys_kept_hashed(config_key_names: frozenset[str]) -> list[str]:
+    """Managed keys the key import cannot re-hash under an adopted salt: it
+    re-hashes a key only from the plaintext the last good key file gave. A
+    key the file gives by its hash alone keeps the hash it has, and with no
+    file imported (refused, missing, not configured) nothing is re-hashed;
+    adopting another salt would leave such a key unable to authenticate. A
+    dormant key (one a config key of its name stands for) is never used, so
+    it does not count."""
+    from . import key_import
+
+    prehashes = key_import.file_prehashes()
+    return [
+        doc.name for doc in await StoredAPIKey.find({"managed_by": {"$ne": None}}).to_list()
+        if doc.name not in prehashes and not key_import.is_dormant(doc, config_key_names)
+    ]
 
 
 async def _holds_own_state() -> bool:
@@ -1029,7 +1056,10 @@ async def _adopt_while_fresh(
     decision was stored under this stack's salt, and adopting would kill it.
     Nothing is written yet when this refuses."""
     async with key_salt_write_lock:
-        fresh = await is_fresh() if plan is None else await _fresh_after(plan, archive, config_key_names)
+        fresh = (
+            await is_fresh(config_key_names) if plan is None
+            else await _fresh_after(plan, archive, config_key_names)
+        )
         if not fresh:
             raise SaltMismatch(
                 "An API key of this stack's own was created while the restore was "
@@ -1137,7 +1167,10 @@ async def _salt_to_adopt(
             "and the archive does not carry the salt itself, so it cannot be "
             "adopted; restored keys could never authenticate here."
         )
-    fresh = await is_fresh() if plan is None else await _fresh_after(plan, archive, config_key_names)
+    fresh = (
+        await is_fresh(config_key_names) if plan is None
+        else await _fresh_after(plan, archive, config_key_names)
+    )
     if refused:
         # A dry run only (an apply was refused above): report the refusal,
         # which the operator must resolve first, rather than a salt error
@@ -1475,7 +1508,7 @@ async def _fresh_after(
         k = archived.get(doc.name)
         if k is None or _key_skip(archive, k, doc, config_key_names) is not None:
             return False
-    return True
+    return not await _managed_keys_kept_hashed(config_key_names)
 
 
 async def _apply_mirror(plan: MirrorPlan, removed_by: str) -> list[str]:
@@ -1784,7 +1817,12 @@ async def _restore_reservations(
         }
         try:
             if existing is not None:
-                await existing.set(fields)
+                if not await _set_if_present(existing, fields):
+                    del planned[r.prefix]
+                    _concurrent_write(out, r.prefix, _skip_reservation(
+                        r.prefix, "concurrent_write", _REMOVED_MEANWHILE,
+                    ))
+                    continue
             else:
                 await RuntimeReservation(prefix=r.prefix, **fields).insert()
         except DuplicateKeyError as exc:
@@ -1837,7 +1875,12 @@ async def _restore_keys(
         }
         if existing is not None:
             old_hash = existing.key_hash
-            await existing.set(fields)
+            if not await _set_if_present(existing, fields):
+                # Not written, so not loaded into the key provider either.
+                _concurrent_write(out, k.name, _skip_named(
+                    k.name, "concurrent_write", _REMOVED_MEANWHILE,
+                ))
+                continue
             written.append((old_hash, existing))
             continue
         doc = StoredAPIKey(name=k.name, **fields)
@@ -1850,6 +1893,22 @@ async def _restore_keys(
             continue
         written.append((None, doc))
     return written
+
+
+_REMOVED_MEANWHILE: Final = "removed by another request during the restore"
+
+
+async def _set_if_present(doc: Any, fields: dict[str, Any]) -> bool:
+    """Replace `fields` on the record `doc` was read as, and on `doc`. False
+    when the record is gone: another request removed it since it was read,
+    and a plain set would match nothing and report a replace that did not
+    happen."""
+    result = await type(doc).find_one({"_id": doc.id}).update({"$set": fields})
+    if not result.matched_count:
+        return False
+    for name, value in fields.items():
+        setattr(doc, name, value)
+    return True
 
 
 def _concurrent_write(out: RecordReport, record_id: str, skip: SkippedRecord) -> None:
@@ -2110,10 +2169,8 @@ async def _restore_grant(
         out.created.append(gid)
     if orphaned:
         out.orphaned.append(gid)
-    if not dry_run and not await _write_grant(g, existing, orphaned):
-        _concurrent_write(out, gid, _skip_grant(
-            g, "concurrent_write", "granted by another request during the restore",
-        ))
+    if not dry_run and (why := await _write_grant(g, existing, orphaned)) is not None:
+        _concurrent_write(out, gid, _skip_grant(g, "concurrent_write", why))
 
 
 def _existing_grant_outcome(
@@ -2143,9 +2200,12 @@ def _existing_grant_outcome(
     return _skip_grant(g, "differs", _DIFFERS)
 
 
-async def _write_grant(g: ArchiveGrant, existing: NamespaceGrant | None, orphaned: bool) -> bool:
-    """Write the archived grant over the one held here, or insert it. False
-    when another request created the grant since it was read."""
+async def _write_grant(
+    g: ArchiveGrant, existing: NamespaceGrant | None, orphaned: bool,
+) -> str | None:
+    """Write the archived grant over the one held here, or insert it. None
+    when written; else why not: another request created the grant, or
+    removed the one held here, since it was read."""
     fields = {
         "permission": g.permission, "granted_by": g.granted_by,
         "granted_at": g.granted_at or datetime.now(UTC), "expires_at": g.expires_at,
@@ -2155,12 +2215,11 @@ async def _write_grant(g: ArchiveGrant, existing: NamespaceGrant | None, orphane
         "namespace_id": g.namespace_id if orphaned else None,
     }
     if existing is not None:
-        await existing.set(fields)
-        return True
+        return None if await _set_if_present(existing, fields) else _REMOVED_MEANWHILE
     try:
         await NamespaceGrant(
             namespace=g.namespace, subject=g.subject, subject_type=g.subject_type, **fields,
         ).insert()
     except DuplicateKeyError:
-        return False
-    return True
+        return "granted by another request during the restore"
+    return None

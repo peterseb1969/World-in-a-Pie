@@ -666,7 +666,8 @@ export interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_t
  * refuses it. `upstream_invalid`: a record stored
  * before the Registry's upstream host rule; the app edge refuses its host.
  * `no_app_edge`: this install runs no app edge. `policy_unavailable`: the
- * attach policy file cannot be used, so the edge serves nothing.
+ * Registry cannot use the attach policy file; the app edge reads the file
+ * itself, and serves nothing only when it cannot read it either.
  */
 export type AttachmentNotServedReason =
   | 'inactive'

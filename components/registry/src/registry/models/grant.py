@@ -64,10 +64,12 @@ class NamespaceGrant(Document):
     orphaned: bool = Field(
         default=False,
         description=(
-            "Written by a system restore in one of two cases: the archive held "
-            "the grant orphaned already, or the namespace it was made for is "
-            "not here (no namespace or reservation on this install has its "
-            "identity, namespace_id). An orphaned grant counts as no grant "
+            "Written by a system restore, mainly when the archive held the "
+            "grant orphaned already, or when the namespace it was made for is "
+            "not here (no active or archived namespace, or reservation, on this "
+            "install has its identity, namespace_id); the full rules are the "
+            "system restore's. A grant archived without a namespace id is never "
+            "written orphaned. An orphaned grant counts as no grant "
             "until it becomes effective: when a namespace with its namespace_id "
             "is created, by whoever creates it, when a namespace admin "
             "activates it, or when the same grant is given again (the grant "

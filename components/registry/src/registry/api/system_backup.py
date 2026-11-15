@@ -105,8 +105,12 @@ async def system_backup(
     "/system-restore",
     response_model=SystemRestoreReport,
     summary="Restore a system backup (dry run by default)",
-    responses={409: {"description": "The archive's salt cannot be used here: "
-                                    "`{detail, error_code: \"salt_mismatch\"}`"}},
+    responses={409: {"description": (
+        "Refused, nothing written: `{detail, error_code}` with `salt_mismatch` (the "
+        "archive's salt cannot be used here, or a key of this stack's own was created "
+        "while the restore was prepared), `restore_refused` (the plan removes or "
+        "replaces the caller's key), or `plan_changed` (`expect` no longer matches)"
+    )}},
 )
 async def system_restore(
     archive: SystemArchive,
@@ -138,8 +142,11 @@ async def system_restore(
     reservation prefix; attachment name); only mode=mirror removes. Restored
     records arrive unmanaged. A record wip-deploy manages here, a grant to a key whose
     grants the key file declares, and a key named like a loaded config key are
-    never replaced. A grant on a namespace that neither exists nor is reserved
-    here is written orphaned and gives nothing until activated. A version 1
+    never replaced. A grant whose namespace id no namespace or reservation here
+    holds (a namespace of its name with another id is another namespace) is
+    written orphaned and gives nothing until it becomes effective; one
+    archived without a namespace id is written effective, or skipped where a
+    namespace of its name is here already. A version 1
     archive also gets a read grant for each namespace a runtime key's list
     named and the archive holds no grant for (scope_read_grants); one whose
     namespace the archive records no id for is written by name where the
@@ -153,8 +160,9 @@ async def system_restore(
     is written and listed as unresolved.
 
     When the archive was made under another runtime-key salt, a stack that
-    holds no API keys of its own (only keys its key file manages) adopts the
-    archive's salt and re-hashes its managed keys; services verify under it
+    holds no API keys of its own (only keys its key file manages, each given
+    there by its plaintext) adopts the archive's salt and re-hashes its
+    managed keys; services verify under it
     from their next key sync. A stack with keys of its own refuses it (409),
     as does an archive that carries only the salt's fingerprint, unless that
     fingerprint is the configured salt's (an archive made before archives
