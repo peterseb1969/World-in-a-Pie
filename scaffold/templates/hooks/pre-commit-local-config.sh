@@ -21,11 +21,23 @@ set -uo pipefail
 fail=0
 report() { echo "pre-commit: $*" >&2; fail=1; }
 
-staged="$(git diff --cached --name-only --diff-filter=ACMR)"
-[ -z "$staged" ] && exit 0
+# The staged paths, NUL-delimited: a path git would print C-quoted (any
+# non-ASCII byte, a '"', a backslash or a control character) arrives as itself.
+# Quoted, it matched no pattern below and named no file when handed back to
+# git, so all three checks passed it. Read into an array in this shell, not
+# a piped loop, which would run in a subshell where `fail` is lost; `read -d
+# ''` rather than mapfile, which bash 3.2 (macOS) lacks.
+staged=()
+while IFS= read -r -d '' f; do staged+=("$f"); done \
+  < <(git diff --cached -z --name-only --diff-filter=ACMR)
+[ "${#staged[@]}" -eq 0 ] && exit 0
+
+# A path handed back to git as a pathspec is taken literally: a name starting
+# with ':' or holding glob characters would otherwise name other files, or none.
+staged_diff() { git diff --cached -U0 -- ":(literal)$1"; }
 
 # 1. Forbidden paths
-while IFS= read -r f; do
+for f in "${staged[@]}"; do
   case "$f" in
     .env.example|*.example) ;;
     .env|.env.*|*/.env|*/.env.*) report "$f is local environment config — keep it untracked" ;;
@@ -34,7 +46,7 @@ while IFS= read -r f; do
     secrets/*|*/secrets/*) report "$f is under a secrets/ directory" ;;
     *.pem|*.key|*.p12|*.pfx|id_rsa*|id_ed25519*) report "$f looks like a private key or certificate bundle" ;;
   esac
-done <<< "$staged"
+done
 
 # 2. Literal secret values from this machine
 vals="$(mktemp)"; chmod 600 "$vals"
@@ -58,24 +70,24 @@ if [ -f .claude/kb.json ]; then
   add_val_file "$(python3 -c 'import json;print(json.load(open(".claude/kb.json")).get("kb_api_key_file",""))' 2>/dev/null)"
 fi
 if [ -s "$vals" ]; then
-  while IFS= read -r f; do
-    if git diff --cached -U0 -- "$f" | grep '^+' | grep -qF -f "$vals"; then
+  for f in "${staged[@]}"; do
+    if staged_diff "$f" | grep '^+' | grep -qF -f "$vals"; then
       report "$f contains the value of a secret from this machine (value not shown)"
     fi
-  done <<< "$staged"
+  done
 fi
 
 # 3. Known credential shapes
-while IFS= read -r f; do
+for f in "${staged[@]}"; do
   [ "$f" = ".githooks/pre-commit" ] && continue
-  added="$(git diff --cached -U0 -- "$f" | grep '^+' | grep -v '^+++')"
+  added="$(staged_diff "$f" | grep '^+' | grep -v '^+++')"
   if grep -qE 'sk-ant-[A-Za-z0-9_-]{20,}' <<< "$added"; then
     report "$f contains what looks like an Anthropic API key"
   fi
   if grep -qE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' <<< "$added"; then
     report "$f contains a private key block"
   fi
-done <<< "$staged"
+done
 
 if command -v gitleaks >/dev/null 2>&1; then
   gitleaks protect --staged --redact --no-banner >&2 || report "gitleaks found a likely secret (see above)"

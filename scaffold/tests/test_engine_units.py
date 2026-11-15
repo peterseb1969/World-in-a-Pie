@@ -293,7 +293,47 @@ def test_pre_commit_gate_keeps_an_existing_hook(tmp_path):
     ctx = _ctx(tmp_path)
     run_surfaces(_app_surface("pre-commit-gate"), ctx)
     assert (tmp_path / ".githooks/pre-commit").read_text() == "#!/bin/sh\n# app's own\n"
+    # An edited hook is kept, with the warning that the gate it may derive
+    # from let quoted paths through.
+    assert any("WARNING: .githooks/pre-commit differs" in n and "-z" in n for n in ctx.notes)
+
+
+def test_pre_commit_gate_keeps_the_current_gate_quietly(tmp_path):
+    run_surfaces(_app_surface("pre-commit-gate"), _ctx(tmp_path))
+    ctx = _ctx(tmp_path)
+    run_surfaces(_app_surface("pre-commit-gate"), ctx)
     assert any("Kept: .githooks/pre-commit" in n for n in ctx.notes)
+    assert not any("WARNING" in n for n in ctx.notes)
+
+
+def test_pre_commit_gate_replaces_an_unmodified_earlier_shipped_gate(tmp_path):
+    # The first shipped gate (969e63e2) read staged paths C-quoted; a clone
+    # that never edited it gets the current gate on refresh.
+    import hashlib
+
+    from wip_scaffold.surfaces import SUPERSEDED_PRE_COMMIT_GATES
+
+    # The shipped bytes, kept as a fixture: CI checks out too shallow to read
+    # the old commit.
+    old = (REPO_ROOT / "scaffold/tests/fixtures/pre-commit-gate-969e63e2.sh").read_bytes()
+    assert hashlib.sha256(old).hexdigest() in SUPERSEDED_PRE_COMMIT_GATES
+    (tmp_path / ".githooks").mkdir()
+    (tmp_path / ".githooks/pre-commit").write_bytes(old)
+    ctx = _ctx(tmp_path)
+    run_surfaces(_app_surface("pre-commit-gate"), ctx)
+    current = (REPO_ROOT / "scaffold/templates/hooks/pre-commit-local-config.sh").read_bytes()
+    assert (tmp_path / ".githooks/pre-commit").read_bytes() == current
+    assert os.stat(tmp_path / ".githooks/pre-commit").st_mode & stat.S_IXUSR
+    assert any("Replaced: .githooks/pre-commit" in n for n in ctx.notes)
+
+
+def test_the_current_gate_is_not_among_the_superseded():
+    import hashlib
+
+    from wip_scaffold.surfaces import SUPERSEDED_PRE_COMMIT_GATES
+
+    current = (REPO_ROOT / "scaffold/templates/hooks/pre-commit-local-config.sh").read_bytes()
+    assert hashlib.sha256(current).hexdigest() not in SUPERSEDED_PRE_COMMIT_GATES
 
 
 def test_kb_json_example_tier3_only_and_placeholder(tmp_path):

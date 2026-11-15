@@ -20,6 +20,7 @@ so "why is this here" survives refactors.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -102,11 +103,42 @@ def _post_commit_log(ctx: Context) -> dict[str, bytes]:
     return {".githooks/post-commit": _template(ctx, "hooks/post-commit-log.sh").encode()}
 
 
+# sha256 of every pre-commit gate the scaffold shipped before the current
+# one. A clone still holding one of these byte for byte never extended it,
+# so a refresh replaces it with the current gate; any other content is the
+# app's and is kept. The first shipped gate read the staged paths C-quoted,
+# so a .env or a key under a directory with a non-ASCII character, a '"' or a
+# backslash passed every check.
+SUPERSEDED_PRE_COMMIT_GATES = frozenset({
+    "353e2fb9ad99e3febff94980799dcfbb289beb79db9268cdc0fdd9113e812035",
+})
+
+
 def _pre_commit_gate(ctx: Context) -> dict[str, bytes]:
-    if (ctx.target_root / ".githooks/pre-commit").exists():
+    current = _template(ctx, "hooks/pre-commit-local-config.sh").encode()
+    target = ctx.target_root / ".githooks/pre-commit"
+    if not target.exists():
+        return {".githooks/pre-commit": current}
+    existing = target.read_bytes()
+    if existing == current:
         ctx.notes.append("Kept: .githooks/pre-commit (app-owned once present)")
         return {}
-    return {".githooks/pre-commit": _template(ctx, "hooks/pre-commit-local-config.sh").encode()}
+    if hashlib.sha256(existing).hexdigest() in SUPERSEDED_PRE_COMMIT_GATES:
+        ctx.notes.append(
+            "Replaced: .githooks/pre-commit was an earlier shipped gate, unmodified; "
+            "it let a .env or a key through under a directory whose name has a "
+            "non-ASCII character, a '\"' or a backslash"
+        )
+        return {".githooks/pre-commit": current}
+    ctx.notes.append(
+        "WARNING: .githooks/pre-commit differs from the shipped gate and was kept "
+        "(app-owned). The gate the scaffold shipped until now read staged paths "
+        "with `git diff --cached --name-only`, which quotes a path with a "
+        "non-ASCII character, a '\"' or a backslash, so such a .env or key was "
+        "committed unchecked. If yours reads paths that way, read them "
+        "NUL-delimited (`-z`) as scaffold/templates/hooks/pre-commit-local-config.sh does."
+    )
+    return {}
 
 
 KB_JSON_EXAMPLE = """{

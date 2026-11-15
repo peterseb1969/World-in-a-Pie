@@ -128,6 +128,25 @@ def test_report_only_commit_is_not_logged(tmp_path):
     assert git(root, "status", "--short", "--", "reports").strip() == ""
 
 
+def test_report_only_commit_under_a_non_ascii_directory_is_not_logged(tmp_path):
+    # git prints such a path C-quoted by default ("reports/\350…"); read
+    # quoted, it did not start with reports/ and the commit was logged.
+    root = make_repo(tmp_path)
+    git(root, "config", "core.quotePath", "true")  # git's default, whatever ~/.gitconfig says
+    work = commit(root, "feat: work", {"a.txt": "x\n"})
+    run(root)
+    notes = root / "reports" / "設計"
+    notes.mkdir(parents=True)
+    (notes / "notes.md").write_text("n\n")
+    git(root, "add", "reports")
+    git(root, "commit", "-q", "--no-verify", "-m", "docs(report): notes")
+    report_commit = git(root, "rev-parse", "--short", "HEAD").strip()
+    run(root)
+    text = log(root)
+    assert f"## {work} " in text
+    assert f"## {report_commit} " not in text
+
+
 def test_commit_mixing_reports_and_work_is_logged(tmp_path):
     root = make_repo(tmp_path)
     commit(root, "feat: one", {"a.txt": "1\n"})

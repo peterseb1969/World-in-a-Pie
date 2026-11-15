@@ -79,7 +79,10 @@ def body_without_trailers(root: Path, rev: str) -> str:
 
 
 def report_only(root: Path, rev: str) -> bool:
-    paths = [p for p in git(root, "show", "--name-only", "--format=", rev).splitlines() if p]
+    # NUL-delimited: a path git would print C-quoted (non-ASCII, '"', '\\')
+    # arrives as itself, not as '"reports/…"', which starts with no "reports/".
+    out = git(root, "show", "-z", "--name-only", "--format=", rev)
+    paths = [p.strip("\n") for p in out.split("\0") if p.strip("\n")]
     return bool(paths) and all(p.startswith("reports/") for p in paths)
 
 
