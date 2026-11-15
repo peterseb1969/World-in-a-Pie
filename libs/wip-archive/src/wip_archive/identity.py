@@ -2,10 +2,10 @@
 
 `wip-archive` checks archives without a running platform and depends on
 pydantic alone, so it cannot import `wip_auth`: that package's `__init__`
-pulls in FastAPI and httpx. The functions below are therefore COPIED from
-`wip_auth.document_identity` (the identity feed and value hash) and
-`wip_auth.composite_key` (the hash the Registry stores as a document's
-`identity_hash`), with their bodies unchanged.
+pulls in FastAPI and httpx. The functions below, and the ``UnclassifiableIdentityPath`` exception the feed
+raises, are therefore COPIED from `wip_auth.document_identity` (the identity
+feed and value hash) and `wip_auth.composite_key` (the hash the Registry stores
+as a document's `identity_hash`), with their bodies unchanged.
 
 A copy is how this algorithm has drifted before, so the copy is guarded:
 `components/document-store/tests/test_archive_identity_parity.py` fails if
@@ -17,6 +17,27 @@ one side.
 import hashlib
 import json
 from typing import Any
+
+
+class UnclassifiableIdentityPath(ValueError):
+    """An identity path that is neither known to be a referent nor known not
+    to be one — a dotted path into a nested template on a version that carries
+    no ``referent_identity_paths``.
+
+    It is not a statement about the document's identity, so a caller checking
+    an identity must report it as "could not tell" rather than as an identity
+    that changed. It subclasses ``ValueError`` so every caller that already
+    refuses on ``ValueError`` keeps refusing.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            f"Identity field '{path}' is a path into a nested template and "
+            "the template carries no referent_identity_paths; it cannot be "
+            "classified (the template store fills the field in when it "
+            "starts, and on every version it writes)"
+        )
+        self.path = path
 
 
 def _get_nested_value(data: dict[str, Any], field_path: str) -> Any | None:
@@ -176,8 +197,8 @@ def referent_identity_fields(
     old archive), a path is classified by the top-level field alone, which
     is exact for every path without a dot. A dotted path into a nested
     template cannot be classified from these fields, so it raises
-    ``ValueError`` rather than guess: hashing a referent's spelling would
-    fork the document on its next write.
+    ``UnclassifiableIdentityPath`` (a ``ValueError``) rather than guess:
+    hashing a referent's spelling would fork the document on its next write.
     """
     if referent_paths is not None:
         declared = set(referent_paths)
@@ -190,12 +211,7 @@ def referent_identity_fields(
         if field is None:
             continue
         if rest and field.get("type") == "object" and field.get("template_ref"):
-            raise ValueError(
-                f"Identity field '{path}' is a path into a nested template and "
-                "the template carries no referent_identity_paths; it cannot be "
-                "classified (the template store fills the field in when it "
-                "starts, and on every version it writes)"
-            )
+            raise UnclassifiableIdentityPath(path)
         if not rest and _is_referent_field(field):
             referent.add(path)
     return referent
@@ -288,9 +304,11 @@ def resolved_identity_values(
     document plus its stored resolution arrays (integrity checks, restore
     rehash, migration tooling, external loaders). ``referent_paths`` is the
     template's ``referent_identity_paths`` (see ``referent_identity_fields``).
-    Raises ``ValueError`` for a missing identity field (extraction), an
-    unresolved referent identity field (fail-closed substitution), or a nested
-    identity path on a template without ``referent_identity_paths``.
+    Raises ``ValueError`` for a missing identity field (extraction) or an
+    unresolved referent identity field (fail-closed substitution); a nested
+    identity path on a template without ``referent_identity_paths`` raises
+    ``UnclassifiableIdentityPath``, which is not a statement about the
+    document's identity.
     """
     values = extract_identity_values(data, identity_fields)
     referent = referent_identity_fields(identity_fields, template_fields, referent_paths)

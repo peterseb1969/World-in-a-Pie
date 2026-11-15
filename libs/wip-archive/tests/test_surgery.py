@@ -6,6 +6,7 @@ from test_transform import DOC_M, MONSTER_FIELDS, NS, _build, _keep_all, _run
 from wip_archive.archive import ArchiveReader
 from wip_archive.surgery import (
     IdentityChangeError,
+    SurgeryError,
     identity_hash,
     rename_paths,
     require_same_identity,
@@ -62,6 +63,23 @@ class TestHelpers:
         require_same_identity(row, {**data, "colour": "gold"}, TEMPLATE, [], [])
         with pytest.raises(IdentityChangeError, match="fork"):
             require_same_identity(row, {**data, "name": "Glaurung"}, TEMPLATE, [], [])
+
+    def test_an_unclassifiable_identity_path_is_not_reported_as_a_fork(self):
+        """A nested identity path on a template that carries no
+        referent_identity_paths cannot be recomputed, so nothing was learned
+        about the identity. The refusal says the edit could not be checked and
+        names the path, instead of claiming a fork."""
+        template = {
+            "identity_fields": ["lair.name"],
+            "fields": [{"name": "lair", "type": "object", "template_ref": "LAIR",
+                       "template_ref_version": 1}],
+        }
+        row = {"document_id": "d", "version": 1, "identity_hash": "f" * 64}
+        with pytest.raises(SurgeryError) as excinfo:
+            require_same_identity(row, {"lair": {"name": "Erebor"}}, template, [], [])
+        assert not isinstance(excinfo.value, IdentityChangeError)
+        assert "lair.name" in str(excinfo.value)
+        assert "referent_identity_paths" in str(excinfo.value)
 
     def test_an_identity_less_template_has_nothing_to_keep(self):
         assert identity_hash({"a": 1}, {"identity_fields": [], "fields": []}, [], []) is None
