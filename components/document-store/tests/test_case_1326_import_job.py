@@ -90,6 +90,7 @@ async def test_the_record_carries_the_counts_while_the_rows_go_in(
         # record read here says what is already committed.
         if calls["n"] == import_api._IMPORT_BATCH_SIZE + 1:
             midrun = await BackupJob.find_one({"kind": BackupJobKind.IMPORT})
+            assert midrun is not None
             seen["status"] = midrun.status
             seen["result"] = midrun.result
         return await real(self, req, **kwargs)
@@ -162,6 +163,7 @@ async def test_a_terminated_import_reports_the_rows_it_had_written(client: Async
     assert await backup_service.reconcile_orphaned_jobs() == 1
 
     job = await BackupJob.find_one(BackupJob.job_id == "imp-1326terminated")
+    assert job is not None
     assert job.status == BackupJobStatus.FAILED
     assert "12000 of 30000 row(s)" in job.error
     assert "not attempted" in job.error
