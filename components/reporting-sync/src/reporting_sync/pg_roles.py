@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 
 import asyncpg
 
+from .schema_manager import CLOSED_SCHEMA_COMMENT
+
 logger = logging.getLogger(__name__)
 
 _ROLE_ATTRIBUTES = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
@@ -184,15 +186,18 @@ async def provision_roles(conn: asyncpg.Connection, spec: RoleSpec) -> Provision
                 ))
                 report.relations_reowned += 1
 
-    # The reader can read everything the owner owns, now and later.
+    # The reader can read everything the owner owns, now and later — except
+    # the schema of a namespace whose deletion has begun (close_namespace
+    # revoked its USAGE; re-granting it here on a restart would reopen it).
     async with conn.transaction():
         owned = await conn.fetch(
             f"""
             SELECT n.nspname FROM pg_namespace n
             WHERE {_SYSTEM_SCHEMA_FILTER}
               AND (pg_get_userbyid(n.nspowner) = $1 OR n.nspname = 'public')
+              AND obj_description(n.oid, 'pg_namespace') IS DISTINCT FROM $2
             """,  # nosec B608  # SQL fragments are code constants, values bound
-            spec.owner,
+            spec.owner, CLOSED_SCHEMA_COMMENT,
         )
         for row in owned:
             await conn.execute(await _quoted(conn, "GRANT USAGE ON SCHEMA %I TO %I", row["nspname"], spec.reader))

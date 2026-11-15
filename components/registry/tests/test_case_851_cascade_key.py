@@ -16,6 +16,7 @@ from registry.models.deletion_journal import DeletionStep
 from registry.services.namespace_deletion import (
     SERVICE_KEY_VARS,
     NamespaceDeletionService,
+    _ReportingRefused,
 )
 
 
@@ -76,13 +77,14 @@ async def test_cascade_without_any_key_sends_nothing_and_says_why(monkeypatch):
     step = DeletionStep(order=1, store="postgresql", detail="postgres rows")
     patcher, instance = _patched_client(_response(200, {"total_deleted": 1}))
     try:
-        deleted = await _service()._exec_postgresql_step(step, "ns-a")
+        # A cascade that cannot authenticate leaves the data: the step fails
+        # (CASE-1237), naming the cause.
+        with pytest.raises(_ReportingRefused, match="no service API key configured"):
+            await _service()._exec_postgresql_step(step, "ns-a")
     finally:
         patcher.stop()
 
-    assert deleted == 0
     instance.delete.assert_not_called()
-    assert step.error and "no service API key configured" in step.error
 
 
 @pytest.mark.asyncio
@@ -91,9 +93,7 @@ async def test_refused_cascade_is_recorded_not_silent(monkeypatch):
     step = DeletionStep(order=1, store="postgresql", detail="postgres rows")
     patcher, _ = _patched_client(_response(401))
     try:
-        deleted = await _service()._exec_postgresql_step(step, "ns-a")
+        with pytest.raises(_ReportingRefused, match="401"):
+            await _service()._exec_postgresql_step(step, "ns-a")
     finally:
         patcher.stop()
-
-    assert deleted == 0
-    assert step.error and "401" in step.error

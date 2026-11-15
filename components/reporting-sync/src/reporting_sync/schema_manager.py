@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS public._wip_deleted_namespaces (
 """
 
 
+# The comment close_namespace sets on a namespace's schema when its deletion
+# begins. It is read from the catalog with the schema itself, so the check
+# costs ensure_schema's fast path nothing, and the startup grant loop
+# (pg_roles) can leave a closed schema out without reading any table.
+CLOSED_SCHEMA_COMMENT = "wip:closed — namespace deletion in progress"
+
+
 # Tables ensure_table_for_template has already ensured, per connection pool:
 # (namespace, template_id, template_version) -> schema-qualified table name.
 # Shared across SchemaManager instances on the same pool, because the worker,
@@ -792,8 +799,16 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             # Fast path: an existing schema costs one catalog read, as the
             # plain CREATE SCHEMA IF NOT EXISTS did. If a drop lands right
             # after this, the caller's next statement fails on the missing
-            # schema and the retry comes back through the guarded path.
-            if await conn.fetchval("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema):
+            # schema and the retry comes back through the guarded path. A
+            # schema whose namespace is closed (its deletion has begun, see
+            # close_namespace) is not handed out: nothing may write into it.
+            row = await conn.fetchrow(
+                "SELECT obj_description(oid, 'pg_namespace') AS note FROM pg_namespace WHERE nspname = $1",
+                schema,
+            )
+            if row is not None:
+                if row["note"] == CLOSED_SCHEMA_COMMENT:
+                    raise NamespaceDeletedError(namespace)
                 return schema
 
             await self._ensure_tombstone_table(conn)
@@ -843,6 +858,67 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             async with conn.transaction():
                 await conn.execute(_TOMBSTONES_DDL)
         self._tombstones_ready = True
+
+    async def close_namespace(self, namespace: str) -> bool:
+        """Close a namespace whose deletion has begun: no role but the owner
+        may read its schema any more, and nothing may create or reuse it.
+
+        Records the tombstone that drop_namespace_schema writes, now, under
+        the same advisory lock, and marks the schema closed
+        (CLOSED_SCHEMA_COMMENT), so ensure_schema refuses it from here on and
+        the startup grant loop leaves it out. Then revokes USAGE on
+        the schema from every role holding it directly: the reader the
+        privileged SQL runs as, and the per-namespace roles scoped reads
+        inherit. Without USAGE nothing in the schema can be read — not by a
+        query naming it, nor by a function reading whatever its argument
+        names — which no check on SQL text could promise.
+
+        Idempotent. Returns whether the schema existed.
+        """
+        schema = self.schema_for(namespace)
+        async with self.pool.acquire() as conn, conn.transaction():
+            await self._ensure_tombstone_table(conn)
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{schema}"
+            )
+            await conn.execute(
+                """
+                INSERT INTO public._wip_deleted_namespaces (namespace) VALUES ($1)
+                ON CONFLICT (namespace) DO NOTHING
+                """,
+                namespace,
+            )
+            grantees = await conn.fetch(
+                """
+                SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS role
+                FROM pg_namespace n, aclexplode(n.nspacl) a
+                WHERE n.nspname = $1 AND a.privilege_type = 'USAGE' AND a.grantee <> n.nspowner
+                """,
+                schema,
+            )
+            if not await conn.fetchval("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema):
+                return False
+            await conn.execute(f"COMMENT ON SCHEMA \"{schema}\" IS '{CLOSED_SCHEMA_COMMENT}'")
+            for row in grantees:
+                # regrole::text quotes a name that needs it; PUBLIC is a keyword.
+                await conn.execute(f'REVOKE USAGE ON SCHEMA "{schema}" FROM {row["role"]}')
+        logger.info(f"Namespace {namespace!r} closed: {len(grantees)} role(s) lost USAGE on its schema")
+        return True
+
+    async def open_namespace_schemas(self) -> list[str]:
+        """The namespace schemas this pool's role owns that are not closed."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT nspname FROM pg_namespace
+                WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+                  AND nspname NOT IN ('public', 'information_schema') AND nspname NOT LIKE 'pg\\_%'
+                  AND obj_description(oid, 'pg_namespace') IS DISTINCT FROM $1
+                ORDER BY nspname
+                """,
+                CLOSED_SCHEMA_COMMENT,
+            )
+        return [r["nspname"] for r in rows]
 
     async def drop_namespace_schema(self, namespace: str) -> int:
         """Drop the namespace's schema and return how many rows went with it.

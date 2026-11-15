@@ -2,11 +2,18 @@
 
 Builds and executes a persistent delete journal for namespace deletion.
 Crash-safety is a MongoDB guarantee: Mongo steps fail the journal loudly
-and resume idempotently. File-storage and PostgreSQL cleanup is
-best-effort by design — a dead secondary store must not make a namespace undeletable —
-but a degraded step records its error and the journal terminates as
+and resume idempotently. File-storage cleanup is best-effort by design — a
+dead secondary store must not make a namespace undeletable — but a degraded
+step records its error and the journal terminates as
 "completed_with_warnings" instead of a bare "completed", so the outcome
 is visible in the journal itself, not only in service logs.
+
+PostgreSQL is not best-effort. The first step closes the namespace in
+reporting-sync, so no SQL reads its reporting data while the deletion runs,
+and a later step drops it. Reporting data left behind stays readable to
+administrators and would be inherited by a namespace created again under the
+prefix, so a close or drop that reporting-sync refuses fails the journal,
+which holds the prefix until resume-delete finishes it.
 
 A best-effort step whose service could not be REACHED (connection refused,
 timeout, 5xx) is different from one that was refused: the service may simply
@@ -160,6 +167,14 @@ class _Unreachable(Exception):
 # Journal store values for the stored-objects step. "minio" is the name
 # older journals carry; it executes the same way so they stay resumable.
 _FILE_STORAGE_STORES = ("file_storage", "minio")
+
+# The journal step that closes a namespace in reporting-sync before anything
+# is deleted (see _build_journal).
+_CLOSE_REPORTING = "close_namespace_reads"
+
+
+class _ReportingRefused(RuntimeError):
+    """reporting-sync answered, and not with a success: the step fails."""
 # document-store accepts at most this many keys per request.
 _STORAGE_DELETE_BATCH = 1000
 
@@ -1325,6 +1340,23 @@ class NamespaceDeletionService:
             detail="Delete namespace record",
         ))
 
+        # First step: close the namespace in reporting-sync, so no SQL reads
+        # its reporting data while the rest of the deletion runs. The data
+        # stays in PostgreSQL until the drop step above, and a deferred step
+        # does not hold the later ones back — without this, privileged SQL
+        # read it for the whole deletion, and after the namespace record was
+        # gone while the drop waited for reporting-sync.
+        if self._postgres_url:
+            steps.insert(0, DeletionStep(
+                order=1,
+                store="postgresql",
+                action=_CLOSE_REPORTING,
+                detail=f"Close namespace '{prefix}' in reporting (no reads, no writes)",
+                filter={"namespace": prefix},
+            ))
+            for position, step in enumerate(steps, start=1):
+                step.order = position
+
         return DeletionJournal(
             namespace=prefix,
             force=force,
@@ -1718,79 +1750,58 @@ class NamespaceDeletionService:
         return deleted
 
     async def _exec_postgresql_step(self, step: DeletionStep, namespace: str) -> int:
-        """Delete namespace rows from PostgreSQL via reporting-sync API."""
+        """Close the namespace in reporting-sync, or drop its reporting data
+        (``step.action``), through reporting-sync's API.
+
+        A reporting-sync that cannot be reached, or answers 5xx, defers the
+        step. Any other answer that is not a success fails it, and with it the
+        journal: the namespace's reporting data would remain, readable to
+        administrators, and the prefix free to be created again over it. A
+        failed journal keeps the prefix until resume-delete finishes it."""
         if not self._postgres_url:
             return 0
         # A re-run must not inherit the error of an earlier attempt.
         step.error = None
+        closing = step.action == _CLOSE_REPORTING
+        what = "closing the namespace in reporting" if closing else "PostgreSQL cleanup"
 
         api_key = _service_api_key()
         if not api_key:
-            # Sending an empty key would be refused by reporting-sync and
-            # degrade to the generic "rows may remain" below; name the real
-            # cause instead so the journal points at the misconfiguration.
-            logger.error(
-                "No service API key configured for the reporting-sync cleanup "
-                "(checked %s)", ", ".join(SERVICE_KEY_VARS),
+            # Sending an empty key would be refused by reporting-sync; name
+            # the real cause so the journal points at the misconfiguration.
+            raise _ReportingRefused(
+                f"no service API key configured for {what} "
+                f"(checked {', '.join(SERVICE_KEY_VARS)})"
             )
-            step.error = (
-                "no service API key configured for reporting-sync cleanup; "
-                "PostgreSQL rows may remain"
-            )
-            return 0
 
+        url = f"{self._postgres_url}/api/reporting-sync/namespace/{namespace}"
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.delete(
-                    f"{self._postgres_url}/api/reporting-sync/namespace/{namespace}",
-                    headers={"X-API-Key": api_key},
+                headers = {"X-API-Key": api_key}
+                resp = await (
+                    client.post(f"{url}/close", headers=headers) if closing
+                    else client.delete(url, headers=headers)
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    total = data.get("total_deleted")
-                    if total is None:
-                        # A present-but-null count (the reporting-sync
-                        # schema-per-namespace rewrite shipped one) must not
-                        # reach the int-typed journal fields — it poisons the
-                        # journal document and the DELETE reports failure
-                        # after the deletion already succeeded. Record the
-                        # degraded audit instead of inventing a count.
-                        step.error = (
-                            "postgres row count unavailable (upstream "
-                            "returned null total_deleted)"
-                        )
-                        return 0
-                    return int(total)
-                elif resp.status_code == 404:
-                    # Endpoint doesn't exist yet — best-effort skip, but the
-                    # rows remain, so record the degraded outcome.
-                    logger.warning(
-                        "Reporting-sync namespace delete endpoint not available (404)"
-                    )
-                    step.error = (
-                        "reporting-sync namespace-delete endpoint unavailable "
-                        "(404); PostgreSQL rows may remain"
-                    )
-                    return 0
-                elif resp.status_code >= 500:
-                    raise _Unreachable(
-                        f"reporting-sync answered {resp.status_code}: {resp.text[:200]}"
-                    )
-                else:
-                    logger.warning(
-                        "PostgreSQL cleanup returned %d: %s",
-                        resp.status_code, resp.text,
-                    )
-                    step.error = (
-                        f"PostgreSQL cleanup returned {resp.status_code}; "
-                        "rows may remain"
-                    )
-                    return 0
         except httpx.TransportError as e:
             raise _Unreachable(f"could not reach reporting-sync: {e}") from e
-        except _Unreachable:
-            raise
-        except Exception as e:
-            logger.error("PostgreSQL deletion failed: %s", e)
-            step.error = f"PostgreSQL cleanup failed: {e}; rows may remain"
+
+        if resp.status_code >= 500:
+            raise _Unreachable(f"reporting-sync answered {resp.status_code}: {resp.text[:200]}")
+        if resp.status_code != 200:
+            # 404 included: a reporting-sync without the endpoint keeps the
+            # data all the same.
+            raise _ReportingRefused(
+                f"{what} answered {resp.status_code}: {resp.text[:200]}; "
+                "the namespace's reporting data remains"
+            )
+        if closing:
             return 0
+        total = resp.json().get("total_deleted")
+        if total is None:
+            # The schema is gone; only the audit count is missing. A
+            # present-but-null count must not reach the int-typed journal
+            # fields — it poisons the journal document and the DELETE reports
+            # failure after the deletion already succeeded.
+            step.error = "postgres row count unavailable (upstream returned null total_deleted)"
+            return 0
+        return int(total)

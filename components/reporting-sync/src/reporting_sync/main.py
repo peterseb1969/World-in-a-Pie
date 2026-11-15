@@ -74,6 +74,7 @@ from .pg_roles import RoleSpec, is_privileged, provision_roles
 from .schema_manager import (
     REGISTERED_VIEW_OPTIONS,
     NamespaceDeletedError,
+    NamespaceStatusLookup,
     SchemaManager,
     registry_namespace_status,
 )
@@ -113,6 +114,12 @@ class AppState:
     postgres_pool: asyncpg.Pool | None = None
     read_pool: asyncpg.Pool | None = None
     scoped_reads: ScopedReads | None = None
+    # Whether the namespaces whose deletion began while this process was not
+    # running are closed (see _close_namespaces_being_deleted). Until they
+    # are, the reader pool may still read one, so privileged SQL answers 503.
+    # True until _start_postgres_work sets the pools up and starts the check.
+    deletions_closed: bool = True
+    closing_task: asyncio.Task | None = None
     sync_task: asyncio.Task | None = None
     alert_check_task: asyncio.Task | None = None
     initial_sync_task: asyncio.Task | None = None
@@ -410,6 +417,51 @@ async def _recreate_registered_views(pool: asyncpg.Pool) -> None:
         )
 
 
+async def _close_namespaces_being_deleted(
+    pool: asyncpg.Pool,
+    status_lookup: NamespaceStatusLookup = registry_namespace_status,
+) -> None:
+    """Close every open namespace schema whose namespace the Registry no
+    longer has, or has locked for deletion, then let privileged SQL in.
+
+    A deletion closes the namespace in reporting-sync as its first step. When
+    reporting-sync is down, that step waits for the Registry's next retry,
+    while the deletion goes on and removes the namespace record; until the
+    retry, a restarted reporting-sync would serve the schema to privileged
+    SQL. So the check runs before privileged SQL is answered (503 until then)
+    and retries without a deadline while the Registry cannot answer.
+
+    A lookup whose answer for 'wip', which always exists, is not 'active'
+    cannot tell a live namespace from a gone one: it closes nothing.
+    """
+    sm = SchemaManager(pool, namespace_status=status_lookup)
+
+    async def attempt() -> bool:
+        if await status_lookup("wip") != "active":
+            logger.error(
+                "The Registry does not show the 'wip' namespace to reporting-sync's key; "
+                "cannot tell which namespaces are being deleted (privileged SQL answers 503)"
+            )
+            return False
+        closed = []
+        for schema in await sm.open_namespace_schemas():
+            try:
+                sm.schema_for(schema)
+            except ValueError:
+                continue
+            if await status_lookup(schema) in (None, "locked"):
+                await sm.close_namespace(schema)
+                closed.append(schema)
+        if closed:
+            logger.info(f"Closed the schemas of namespaces being deleted: {closed}")
+        state.deletions_closed = True
+        return True
+
+    await retry_until_done(
+        attempt, description="Closing namespaces being deleted", sleep=_postgres_sleep,
+    )
+
+
 async def _retire_archived_status(pool: asyncpg.Pool) -> None:
     """Rewrite reporting rows of the removed `archived` document status.
 
@@ -570,8 +622,10 @@ async def _bring_up_postgres() -> None:
 
 def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
     """Record the pools and start the work that needs PostgreSQL."""
+    state.deletions_closed = False
     state.postgres_pool = pool
     state.read_pool = read_pool
+    state.closing_task = asyncio.create_task(_close_namespaces_being_deleted(pool))
     state.sync_status.connected_to_postgres = True
     state.sync_status.postgres_service_roles_ok = True
     state.search_service = SearchService(read_pool)
@@ -811,6 +865,17 @@ async def _unreadable_view_dependencies(
     return unreadable
 
 
+def _require_deletions_closed() -> None:
+    """503 while the reader pool may still read a namespace being deleted
+    (the startup check has not finished; see _close_namespaces_being_deleted)."""
+    if not state.deletions_closed:
+        raise HTTPException(
+            status_code=503,
+            detail="Reporting SQL is not available yet: reporting-sync has not "
+            "confirmed with the Registry which namespaces are being deleted",
+        )
+
+
 @contextlib.asynccontextmanager
 async def _caller_read_connection(identity: UserIdentity) -> AsyncIterator[asyncpg.Connection]:
     """The connection a caller's SQL runs on.
@@ -824,6 +889,7 @@ async def _caller_read_connection(identity: UserIdentity) -> AsyncIterator[async
     if _is_privileged(identity):
         if not state.read_pool:
             raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+        _require_deletions_closed()
         async with state.read_pool.acquire() as conn:
             yield conn
         return
@@ -2763,6 +2829,7 @@ async def export_table_csv(
     schema.
     """
     await check_namespace_permission(identity, namespace, "read")
+    _require_deletions_closed()
     if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2844,6 +2911,28 @@ async def export_query_csv(
 # =============================================================================
 # NAMESPACE DELETION
 # =============================================================================
+
+
+@router.post("/namespace/{prefix}/close", dependencies=[_PRIVILEGED])
+async def close_namespace(prefix: str):
+    """Close a namespace whose deletion has begun.
+
+    The Registry calls this as the first step of a namespace deletion, right
+    after it locks the namespace, so no SQL — privileged or scoped, naming the
+    schema or reading it through a function — reads its data from then on,
+    and nothing writes into it or creates it again. The schema itself goes
+    with the deletion's later drop step (DELETE /namespace/{prefix}).
+    Idempotent.
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+    sm = SchemaManager(state.postgres_pool)
+    try:
+        schema = sm.schema_for(prefix)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    existed = await sm.close_namespace(prefix)
+    return {"namespace": prefix, "schema": schema, "closed": True, "schema_existed": existed}
 
 
 @router.delete("/namespace/{prefix}", dependencies=[_PRIVILEGED])

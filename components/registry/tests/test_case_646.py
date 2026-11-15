@@ -6,10 +6,13 @@ Two findings:
 1. The module claimed "crash-safe across MongoDB, MinIO, and PostgreSQL",
    but MinIO/Postgres step failures were caught and returned 0-deleted
    *successes* — a journal could reach "completed" while data survived in
-   those stores. Now a degraded best-effort step records `step.error` and
-   is marked `completed_with_errors`, rolling up to a terminal journal
-   status of `completed_with_warnings`. Deletion still never blocks on the
-   secondary stores (Mongo is the system of record).
+   those stores. A degraded best-effort step records `step.error` and is
+   marked `completed_with_errors`, rolling up to a terminal journal status
+   of `completed_with_warnings`. PostgreSQL no longer degrades (CASE-1237):
+   reporting data that stays behind is readable to administrators and would
+   be inherited by a namespace created again under the prefix, so a refused
+   cleanup fails the step and the journal, which keeps the prefix until
+   resume-delete finishes it.
 
 2. `dry_run`'s `_count_entities` hand-enumerated collections and omitted
    `composite_key_claims`, which the real deletion *does* remove. It now
@@ -34,12 +37,12 @@ from registry.services.namespace_deletion import (
 
 
 @pytest.mark.asyncio
-async def test_postgres_step_failure_flags_journal(client, monkeypatch):
-    """A PostgreSQL cleanup that reporting-sync refuses degrades the step and
-    rolls the journal up to completed_with_warnings — not a bare completed —
-    without raising. (An UNREACHABLE reporting-sync defers the step instead;
-    see test_case_862_s5_deletion_recovery. The client fixture initializes
-    Beanie so the journal can persist.)"""
+async def test_postgres_step_refusal_fails_the_journal(client, monkeypatch):
+    """A PostgreSQL cleanup that reporting-sync refuses fails the step and the
+    journal: the data remains, so the deletion is not done. (An UNREACHABLE
+    reporting-sync defers the step instead; see
+    test_case_862_s5_deletion_recovery. The client fixture initializes Beanie
+    so the journal can persist.)"""
     import httpx as _httpx
 
     svc = NamespaceDeletionService()
@@ -59,12 +62,13 @@ async def test_postgres_step_failure_flags_journal(client, monkeypatch):
             return_value=_httpx.Response(403, text="forbidden",
                                          request=_httpx.Request("DELETE", "http://x"))
         )
-        await svc._execute_journal(journal)
+        with pytest.raises(Exception, match="403"):
+            await svc._execute_journal(journal)
 
     step = journal.steps[0]
-    assert step.status == "completed_with_errors"
-    assert step.error and "rows may remain" in step.error
-    assert journal.status == "completed_with_warnings"
+    assert step.status == "failed"
+    assert step.error and "reporting data remains" in step.error
+    assert journal.status == "failed"
 
 
 @pytest.mark.asyncio

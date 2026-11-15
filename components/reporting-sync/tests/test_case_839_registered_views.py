@@ -38,6 +38,8 @@ def _mock_conn():
     txn.__aexit__ = AsyncMock(return_value=False)
     conn.transaction = MagicMock(return_value=txn)
     conn.fetch = AsyncMock(return_value=[])
+    # ensure_schema's fast path: the namespace schema exists and is not closed.
+    conn.fetchrow = AsyncMock(return_value={"note": None})
     conn.execute = AsyncMock()
     return conn
 
@@ -127,8 +129,8 @@ async def test_register_rejects_occupied_unregistered_name(http_client, mock_sta
     """A relation that exists but is not in the bookkeeping is not ours to
     replace — registering over it must 409, not hijack it."""
     _pool, conn = mock_state
-    # fetchvals: the namespace schema exists; not in _wip_views; pg_class has the name.
-    conn.fetchval = AsyncMock(side_effect=[True, None, True])
+    # fetchvals: not in _wip_views; pg_class has the name (the schema check is a fetchrow).
+    conn.fetchval = AsyncMock(side_effect=[None, True])
     async with http_client:
         resp = await http_client.post(
             "/api/reporting-sync/namespace/clintrial/views",
@@ -140,7 +142,7 @@ async def test_register_rejects_occupied_unregistered_name(http_client, mock_sta
 @pytest.mark.asyncio
 async def test_register_invalid_sql_is_400_and_creates_nothing(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[True, None, None])
+    conn.fetchval = AsyncMock(side_effect=[None, None])
     conn.fetch = AsyncMock(side_effect=asyncpg.PostgresError("relation does not exist"))
     async with http_client:
         resp = await http_client.post(
@@ -160,7 +162,7 @@ async def test_register_invalid_sql_is_400_and_creates_nothing(http_client, mock
 @pytest.mark.asyncio
 async def test_register_new_view(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[True, None, None])  # not registered, name free
+    conn.fetchval = AsyncMock(side_effect=[None, None])  # not registered, name free
     async with http_client:
         resp = await http_client.post(
             "/api/reporting-sync/namespace/clintrial/views",
@@ -195,7 +197,7 @@ async def test_register_new_view(http_client, mock_state):
 @pytest.mark.asyncio
 async def test_reregister_replaces_via_drop_create(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[True, True])  # already registered
+    conn.fetchval = AsyncMock(side_effect=[True])  # already registered
     async with http_client:
         resp = await http_client.post(
             "/api/reporting-sync/namespace/clintrial/views",
@@ -216,7 +218,7 @@ async def test_reregister_replaces_via_drop_create(http_client, mock_state):
 @pytest.mark.asyncio
 async def test_register_dependency_failure_is_409(http_client, mock_state):
     _pool, conn = mock_state
-    conn.fetchval = AsyncMock(side_effect=[True, True])
+    conn.fetchval = AsyncMock(side_effect=[True])
     # The DROP of the replaced view hits a dependent (2BP01).
     async def _execute(sql, *args):
         if sql.startswith("DROP VIEW"):
