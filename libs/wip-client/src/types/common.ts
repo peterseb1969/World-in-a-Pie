@@ -3,7 +3,11 @@ export interface BulkResultItem {
   status: string
   id?: string
   error?: string
-  /** Machine-readable error code, set when status === "error". See per-endpoint docs for the code matrix. */
+  /**
+   * Machine-readable code: why an item failed (status "error"), and on some
+   * endpoints why one was skipped (status "skipped", e.g. `already_exists`;
+   * a skip is a success). See per-endpoint docs for the code matrix.
+   */
   error_code?: string
   /** Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate). */
   details?: Record<string, unknown>

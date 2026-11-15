@@ -60,14 +60,22 @@ export interface Document {
   is_latest_version?: boolean
   latest_version?: number
   /**
-   * Compact projection of a related entity, attached when the
-   * relationships endpoint is called with `?include=peers` (CASE-303 /
-   * CASE-343 / CASE-348). Absent on documents returned by other
-   * endpoints. `null` when no related entity could be projected (e.g.,
-   * the target template has no `header_fields`, no `identity_fields`,
-   * and no legacy fallback).
+   * Compact projection of the entity at the other end of the edge, attached
+   * when the relationships endpoint is called with `?include=peers`. Absent
+   * on documents returned by other endpoints. `null` with `peer_error_code`
+   * set when the peer is missing or in a namespace the caller cannot read;
+   * `null` with no code when the edge carries no peer id. An inactive peer
+   * is projected (status `inactive`), not an error.
    */
   peer?: PeerProjection | null
+  /**
+   * `?include=peers` only — set when `peer` is null because the peer could
+   * not be shown: `not_found` (missing, or in a namespace the caller cannot
+   * read; the two read alike).
+   */
+  peer_error_code?: string | null
+  /** Human-readable message for `peer_error_code`. */
+  peer_error?: string | null
 }
 
 export interface CreateDocumentRequest {
@@ -80,8 +88,22 @@ export interface CreateDocumentRequest {
   created_by?: string
   metadata?: Record<string, unknown>
   synonyms?: Array<Record<string, unknown>>
+  /**
+   * An inline synonym the Registry refuses (one another entry owns): `'fail'`
+   * (default) fails the create and rolls back what was allocated for it;
+   * `'warn'` creates the document and reports the refused synonyms in
+   * `warnings`. A Registry that cannot answer fails the create either way
+   * (`registry_error`).
+   */
+  on_synonym_conflict?: 'fail' | 'warn'
 }
 
+/**
+ * @deprecated No endpoint answers with this shape: every document write
+ * answers a `BulkResponse`, one `BulkResultItem` per item (`document_id`,
+ * `version`, `revision`, `is_new`, `warnings` …). It mirrors a
+ * document-store internal and will be removed.
+ */
 export interface DocumentCreateResponse {
   document_id: string
   namespace: string
@@ -410,22 +432,21 @@ export interface DocumentRelationshipsParams {
 
 /**
  * Compact projection of a peer entity document, returned on relationship
- * items when `?include=peers` is set (CASE-303, extended CASE-343).
+ * items when `?include=peers` is set: the peer's latest version.
  *
- * The fields surfaced in `data` and `metadata` are determined by the peer
- * template's `header_fields` (or `identity_fields` fallback). Legacy
- * templates with neither declared fall back to `{title, doc_status}`.
+ * The fields surfaced in `data` and `metadata` are the peer template's
+ * `header_fields` when it declares any; otherwise its `identity_fields`,
+ * plus `title` and `doc_status` where the template declares them; and
+ * `{title, doc_status}` for a template with neither (or one template-store
+ * could not serve).
  */
 export interface PeerProjection {
   document_id: string
   namespace: string
   template_id: string
   template_value?: string | null
-  status: 'active' | 'inactive' | 'deleted'
-  /**
-   * Projected data fields per the peer template's `header_fields`
-   * (or `identity_fields` fallback).
-   */
+  status: 'active' | 'inactive'
+  /** Projected data fields, per the rule above. */
   data: Record<string, unknown>
   /**
    * Projected metadata fields. Only populated when the peer template's
@@ -442,9 +463,9 @@ export interface DocumentTraverseNode {
   template_id: string
   template_value?: string | null
   namespace: string
-  /** Hops from the seed (0 = seed itself). */
+  /** Hops from the seed, 1 or more: the seed itself is never a node. */
   depth: number
-  /** Document_id of the relationship doc traversed to reach this node; null for the seed. */
+  /** Document_id of the relationship doc traversed to reach this node. */
   via_relationship?: string | null
   /** Chain of document_ids from seed (exclusive) to this node (inclusive). */
   path: string[]

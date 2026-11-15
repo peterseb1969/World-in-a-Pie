@@ -1,6 +1,6 @@
 import type { FetchTransport } from '../http.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
-import { WipBulkItemError } from '../errors.js'
+import { WipBulkItemError, WipError } from '../errors.js'
 
 export abstract class BaseService {
   constructor(
@@ -95,7 +95,17 @@ export abstract class BaseService {
     params?: Record<string, unknown>,
   ): Promise<BulkResultItem> {
     const resp = await this.bulkWrite(path, [item], method, params)
-    const result = resp.results[0]
+    // A 204, an empty body (some proxies answer 200 with none) or a body
+    // without results carries no outcome for the item: say so, rather than
+    // failing on a property of undefined.
+    const result = Array.isArray(resp?.results) ? resp.results[0] : undefined
+    if (result === undefined) {
+      throw new WipError(
+        `${method} ${this.basePath}${path} answered without a result for the item`,
+        undefined,
+        resp,
+      )
+    }
     if (result.status === 'error') {
       throw new WipBulkItemError(
         result.error || 'Operation failed',

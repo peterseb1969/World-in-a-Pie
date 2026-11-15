@@ -40,12 +40,14 @@ describe('bulkImport', () => {
       total: 20,
       succeeded: 10,
       failed: 0,
+      rejected: [],
     })
     expect(onProgress.mock.calls[1][0]).toEqual({
       processed: 20,
       total: 20,
       succeeded: 20,
       failed: 0,
+      rejected: [],
     })
   })
 

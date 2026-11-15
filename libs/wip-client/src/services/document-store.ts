@@ -1,6 +1,6 @@
 import { seg } from '../utils/path.js'
 import { BaseService } from './base.js'
-import { WipValidationError } from '../errors.js'
+import { WipNotFoundError, WipValidationError } from '../errors.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
   Document,
@@ -117,8 +117,20 @@ export class DocumentStoreService extends BaseService {
     return this.bulkWriteOne('/documents', data)
   }
 
-  async createDocuments(data: CreateDocumentRequest[]): Promise<BulkResponse> {
-    return this.bulkWrite('/documents', data)
+  /**
+   * Create or update documents in bulk. `continueOnError: false` stops at the
+   * first item that fails; the items after it answer `skipped`. Default true.
+   */
+  async createDocuments(
+    data: CreateDocumentRequest[],
+    options?: { continueOnError?: boolean },
+  ): Promise<BulkResponse> {
+    return this.bulkWrite(
+      '/documents',
+      data,
+      'POST',
+      options?.continueOnError !== undefined ? { continue_on_error: options.continueOnError } : undefined,
+    )
   }
 
   /**
@@ -560,7 +572,9 @@ export class DocumentStoreService extends BaseService {
    * Yields a `BackupProgressMessage` for every change in the job's status,
    * phase, percent or message. Terminates when the job reaches a terminal
    * state (`complete` or `failed`) or when the consumer aborts via
-   * `signal`.
+   * `signal`. Throws `WipNotFoundError` when the job disappears mid-stream
+   * (the server sends an `error` event and closes), so that end is never
+   * read as a normal one.
    *
    * Example:
    * ```ts
@@ -600,6 +614,19 @@ export class DocumentStoreService extends BaseService {
           const raw = buffer.slice(0, sepIdx)
           buffer = buffer.slice(sepIdx + 2)
           const parsed = parseSseMessage(raw)
+          if (parsed && parsed.event === 'error') {
+            let detail: unknown = parsed.data
+            try {
+              detail = JSON.parse(parsed.data)
+            } catch {
+              // keep the raw text
+            }
+            const message =
+              detail && typeof detail === 'object' && typeof (detail as { error?: unknown }).error === 'string'
+                ? (detail as { error: string }).error
+                : `Backup job ${jobId} event stream failed`
+            throw new WipNotFoundError(message, detail)
+          }
           if (parsed && parsed.event === 'progress' && parsed.data) {
             try {
               yield JSON.parse(parsed.data) as BackupProgressMessage

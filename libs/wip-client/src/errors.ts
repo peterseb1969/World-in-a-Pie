@@ -15,9 +15,10 @@ export class WipError extends Error {
   }
 }
 
+/** A request the service refused as invalid: statusCode is the response's, 400 or 422. */
 export class WipValidationError extends WipError {
-  constructor(message: string, detail?: unknown) {
-    super(message, 422, detail)
+  constructor(message: string, detail?: unknown, statusCode: number = 422) {
+    super(message, statusCode, detail)
     this.name = 'WipValidationError'
   }
 }

@@ -180,13 +180,9 @@ export class FetchTransport {
           return undefined as T
         }
       } catch (err) {
-        if (err instanceof WipError) {
-          if (isRetryable && attempt < maxAttempts - 1 && err instanceof WipServerError) {
-            lastError = err
-            continue
-          }
-          throw err
-        }
+        // An error mapped from a response was retried above when its status
+        // allows (502/503/504); a 500 and every other status is final.
+        if (err instanceof WipError) throw err
         if (isAbort(err)) {
           lastError = new WipNetworkError(`Request timed out after ${timeoutMs}ms`)
           if (attempt < maxAttempts - 1) continue
@@ -293,7 +289,7 @@ export class FetchTransport {
 
     switch (response.status) {
       case 400:
-        return new WipValidationError(message, detail)
+        return new WipValidationError(message, detail, 400)
       case 401:
       case 403:
         return new WipAuthError(message, response.status, detail)

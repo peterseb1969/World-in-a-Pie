@@ -66,8 +66,11 @@ export interface BackupJobSnapshot {
   job_id: string
   kind: BackupJobKind
   namespace: string
-  /** Every namespace the job exports (backup) or writes (restore). */
-  namespaces?: string[]
+  /**
+   * Every namespace the job exports (backup) or writes (restore); always
+   * sent. `namespace` is the first of them.
+   */
+  namespaces: string[]
   /**
    * An uploaded restore or merge: the archive's own namespaces, whose data its
    * retained input carries. Seeing, downloading or deleting the job needs the
@@ -83,6 +86,12 @@ export interface BackupJobSnapshot {
   started_at: string | null
   completed_at: string | null
   archive_size: number | null
+  /**
+   * Where the archive lives: `'local'` (scratch filesystem, no durability
+   * promise) or `'minio'` (the object-store bucket; the backend's historical
+   * name — Garage serves it).
+   */
+  archive_backend: 'local' | 'minio' | string
   options: Record<string, unknown>
   warnings?: string[]
   /**
@@ -243,8 +252,9 @@ export interface RestoreOptions {
    * unmapped namespace restored to its old name would collide with the live
    * original. Several sources may share one target (Registry-key collisions
    * between them refuse at plan time); a target may equal its source name
-   * only when that namespace is absent. Pass exactly one of this or
-   * `target_namespace` for `'fresh'`.
+   * only when that namespace is empty or absent. `'fresh'` needs this or
+   * `target_namespace`; when both are sent, the map decides where each
+   * namespace goes.
    */
   namespace_map?: Record<string, string>
   /** Merge only — resolution for a document identity the target already holds. */

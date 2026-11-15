@@ -117,10 +117,12 @@ export class ReportingSyncService extends BaseService {
    * (`doc_*`, `*__v<N>`, `*__entities`, metadata tables, `_wip_*`) are
    * reserved — use a distinct name, e.g. a `v_` prefix.
    *
-   * Authorization: a key with ADMIN on the namespace registers views
-   * CONTAINED in the namespace's own schema (a dependency on any other
-   * schema is refused with 403 and rolled back); wip-admins / wip-services
-   * keys may register cross-schema views deliberately.
+   * Authorization: wip-admins / wip-services keys register freely. A key
+   * with ADMIN on the namespace registers a view that draws only on this
+   * namespace and namespaces the key can read; a dependency in a namespace
+   * it cannot read, in `public` bookkeeping or in `pg_catalog` is refused
+   * with 403 and rolled back. Reading the rows later needs read on every
+   * namespace the view draws from (see readViewRows).
    */
   async registerView(
     namespace: string,
@@ -141,7 +143,9 @@ export class ReportingSyncService extends BaseService {
    * parameters; `limit`/`offset` page through; the result is shaped exactly
    * like runQuery's (columns, rows as objects keyed by column, row_count,
    * truncated). Only registered views answer here — a plain reporting
-   * table is a 404.
+   * table is a 404. So is a view that draws on a namespace the caller
+   * cannot read (a key without wip-admins / wip-services): the view stays
+   * invisible to it rather than failing on the other namespace.
    */
   async readViewRows(
     namespace: string,
@@ -470,7 +474,10 @@ export class ReportingSyncService extends BaseService {
     page?: number
     /** Items per type. Default 50, cap 100. (CASE-329) */
     page_size?: number
-    /** DEPRECATED (CASE-329): alias for page_size when page=1. */
+    /**
+     * DEPRECATED (CASE-329): used as `page_size` when `page_size` is not sent
+     * (on any page); ignored when it is.
+     */
     limit?: number
     /** Restrict document search to a single template (by value). */
     template?: string
@@ -515,14 +522,14 @@ export class ReportingSyncService extends BaseService {
   }
 
   async getEntityReferences(
-    entityType: 'document' | 'template' | 'terminology' | 'term' | 'file',
+    entityType: 'document' | 'template' | 'terminology' | 'term',
     entityId: string,
   ): Promise<EntityReferencesResponse> {
     return this.get(`/entity/${seg(entityType)}/${seg(entityId)}/references`)
   }
 
   async getReferencedBy(
-    entityType: 'document' | 'template' | 'terminology' | 'term' | 'file',
+    entityType: 'document' | 'template' | 'terminology' | 'term',
     entityId: string,
     limit: number = 100,
     namespace?: string,

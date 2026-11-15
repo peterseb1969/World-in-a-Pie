@@ -121,7 +121,8 @@ export type SyncStrategy = 'latest_only' | 'all_versions' | 'disabled'
  *   target_ref reference fields. Immutable after creation.
  *
  * See PoNIF #7 (edge types are stored as templates) and PoNIF #8
- * (`versioned: false` is an option on relationship templates).
+ * (`versioned: false`, an option on any template with identity fields;
+ * edge types are its typical use).
  */
 export type TemplateUsage = 'entity' | 'reference' | 'relationship'
 
@@ -218,6 +219,15 @@ export interface Template {
    */
   header_fields?: string[]
   /**
+   * The identity paths of this version whose value is a term or a reference,
+   * dotted paths into object fields included (`address.country`). Such a
+   * path feeds the identity hash the canonical id its value resolves to,
+   * never the spelling. Set by template-store on every non-draft version;
+   * null on a draft, or on a version whose parents or nested templates could
+   * not be resolved when it was stamped.
+   */
+  referent_identity_paths?: string[] | null
+  /**
    * Usage class: entity (default), reference, or relationship.
    * Immutable after creation. Relationship templates ("edge types")
    * additionally require source_templates + target_templates and
@@ -237,8 +247,9 @@ export interface Template {
   target_templates?: EndpointRef[]
   /**
    * True (default) = updates create new versions; false = overwrite
-   * in place. Currently only available on relationship templates.
-   * Immutable after creation. See PoNIF #8.
+   * in place. Any usage; `false` requires non-empty `identity_fields`
+   * (refused on create and update otherwise). Immutable after creation.
+   * See PoNIF #8.
    */
   versioned?: boolean
   /**
@@ -276,11 +287,20 @@ export interface CreateTemplateRequest {
   header_fields?: string[]
   /** Usage class — defaults to 'entity' on the server when omitted. */
   usage?: TemplateUsage
-  /** Required when usage='relationship'; ignored otherwise. */
+  /**
+   * Required (non-empty) when usage='relationship'; refused otherwise
+   * (`validation_failed`, rule `relationship_shape`).
+   */
   source_templates?: EndpointRefInput[]
-  /** Required when usage='relationship'; ignored otherwise. */
+  /**
+   * Required (non-empty) when usage='relationship'; refused otherwise
+   * (`validation_failed`, rule `relationship_shape`).
+   */
   target_templates?: EndpointRefInput[]
-  /** Defaults to true. Immutable after creation. See PoNIF #8. */
+  /**
+   * Defaults to true; `false` requires non-empty `identity_fields`, any
+   * usage. Immutable after creation. See PoNIF #8.
+   */
   versioned?: boolean
   /**
    * Field renames relative to the previous version, `{new_field: old_field}`.
@@ -298,12 +318,21 @@ export interface CreateTemplateRequest {
   status?: string
 }
 
+/**
+ * A template update makes a new version. `value`, `identity_fields` and
+ * `reporting.table_name` are accepted so a full record read back can be sent
+ * as it is, but each must equal the current one: a change is a fork (create
+ * a template with a new value), refused with `immutable_property` (rule
+ * `value` / `table_name`) or `identity_fields_immutable`.
+ */
 export interface UpdateTemplateRequest {
+  /** Must equal the template's value (see above). */
   value?: string
   label?: string
   description?: string
   extends?: string
   extends_version?: number
+  /** Must equal the template's identity_fields (see above). */
   identity_fields?: string[]
   /** Update peer/header-projection fields (CASE-343). */
   header_fields?: string[]
@@ -363,8 +392,13 @@ export interface CascadeResult {
   old_template_id: string
   new_template_id?: string
   new_version?: number
+  /** `updated`, `unchanged` or `error`. */
   status: string
   error?: string
+  /** Machine-readable error code, set when status is `error`. */
+  error_code?: string | null
+  /** Structured context for the error, when the service gives one. */
+  details?: Record<string, unknown> | null
 }
 
 export interface CascadeResponse {

@@ -105,10 +105,17 @@ export class RegistryService extends BaseService {
    * Upsert a namespace — create if missing, update if existing.
    *
    * Equivalent to `updateNamespace` but communicates intent: callers
-   * (typically app bootstrap scripts) want a single self-healing call
-   * that succeeds whether the namespace already exists or not. On
-   * create, any field not supplied uses the platform default
-   * (isolation_mode='open', deletion_mode='retain', etc).
+   * (typically app bootstrap scripts) want one call that succeeds whether
+   * the namespace already exists or not. On create, a field not supplied
+   * comes from the namespace's reservation when it has one, else from the
+   * platform default (isolation_mode='open', deletion_mode='retain', etc).
+   *
+   * Only a platform admin key updates freely. A key holding `admin` on a
+   * reserved namespace may create it and re-run the upsert, but every
+   * setting it sends must equal the reservation's and, once the namespace
+   * exists, its live value (403 naming the field otherwise): such a key
+   * never changes a namespace's settings, so it cannot heal drifted ones.
+   * Send no settings to create the namespace as reserved.
    */
   async upsertNamespace(
     prefix: string,

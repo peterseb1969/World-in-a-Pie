@@ -21,6 +21,7 @@ export {
 export { FetchTransport, type FetchTransportConfig, type RetryConfig } from './http.js'
 
 // Service classes (for advanced usage)
+export { BaseService } from './services/base.js'
 export { DefStoreService } from './services/def-store.js'
 export { TemplateStoreService } from './services/template-store.js'
 export { DocumentStoreService, type DeleteDocumentOptions } from './services/document-store.js'

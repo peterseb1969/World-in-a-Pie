@@ -5,11 +5,28 @@ export interface BulkImportProgress {
   total: number
   succeeded: number
   failed: number
+  /**
+   * Batches whose request itself failed (an outage, a refused request): every
+   * item of such a batch is counted in `failed`. Each entry names the batch by
+   * its first item's offset in `items`, and carries the error.
+   */
+  rejected: BulkImportRejectedBatch[]
+}
+
+export interface BulkImportRejectedBatch {
+  offset: number
+  size: number
+  error: unknown
 }
 
 export interface BulkImportOptions {
   batchSize?: number
   concurrency?: number
+  /**
+   * Go on after a batch with failed items, or a batch whose request failed
+   * (default true). When false, the import stops after the first such batch;
+   * the progress returned counts everything done until then.
+   */
   continueOnError?: boolean
   onProgress?: (progress: BulkImportProgress) => void
 }
@@ -35,24 +52,37 @@ export async function bulkImport<T>(
     total: items.length,
     succeeded: 0,
     failed: 0,
+    rejected: [],
   }
 
-  // Split items into batches
-  const batches: T[][] = []
+  // Split items into batches, each with its offset in `items`
+  const batches: { offset: number; items: T[] }[] = []
   for (let i = 0; i < items.length; i += batchSize) {
-    batches.push(items.slice(i, i + batchSize))
+    batches.push({ offset: i, items: items.slice(i, i + batchSize) })
   }
+
+  // A batch whose request rejects counts all its items as failed, so the
+  // progress of the batches before it is never lost with the exception.
+  const write = async (batch: { offset: number; items: T[] }): Promise<{ succeeded: number; failed: number }> => {
+    try {
+      return await writeFn(batch.items)
+    } catch (error) {
+      progress.rejected.push({ offset: batch.offset, size: batch.items.length, error })
+      return { succeeded: 0, failed: batch.items.length }
+    }
+  }
+  const snapshot = (): BulkImportProgress => ({ ...progress, rejected: [...progress.rejected] })
 
   if (concurrency <= 1) {
     // Sequential mode (default — safe for Pi)
     for (const batch of batches) {
-      const result = await writeFn(batch)
+      const result = await write(batch)
 
-      progress.processed += batch.length
+      progress.processed += batch.items.length
       progress.succeeded += result.succeeded
       progress.failed += result.failed
 
-      options?.onProgress?.({ ...progress })
+      options?.onProgress?.(snapshot())
 
       if (!continueOnError && result.failed > 0) {
         break
@@ -69,13 +99,13 @@ export async function bulkImport<T>(
 
       const results = await Promise.all(
         chunk.map(async (batch) => {
-          const result = await writeFn(batch)
+          const result = await write(batch)
           return { batch, result }
         }),
       )
 
       for (const { batch, result } of results) {
-        progress.processed += batch.length
+        progress.processed += batch.items.length
         progress.succeeded += result.succeeded
         progress.failed += result.failed
 
@@ -84,9 +114,9 @@ export async function bulkImport<T>(
         }
       }
 
-      options?.onProgress?.({ ...progress })
+      options?.onProgress?.(snapshot())
     }
   }
 
-  return progress
+  return snapshot()
 }

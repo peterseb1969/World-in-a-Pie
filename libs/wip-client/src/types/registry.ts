@@ -288,8 +288,10 @@ export interface RegistrySearchParams {
 
 export interface AddSynonymRequest {
   target_id: string
-  synonym_namespace: string
-  synonym_entity_type: string
+  /** Deprecated: a synonym lives in its entry's namespace. Omit it; if sent, it must equal the entry's. */
+  synonym_namespace?: string
+  /** Deprecated: a synonym has its entry's entity type. Omit it; if sent, it must equal the entry's. */
+  synonym_entity_type?: string
   synonym_composite_key: Record<string, unknown>
   synonym_source_info?: { system_id: string; endpoint_url?: string }
   /** A note on who acted, kept as the entry's `actor_note`; the synonym's `created_by` is the authenticated caller. */
@@ -298,8 +300,10 @@ export interface AddSynonymRequest {
 
 export interface RemoveSynonymRequest {
   target_id: string
-  synonym_namespace: string
-  synonym_entity_type: string
+  /** Namespace of the synonym to remove (default: the entry's). */
+  synonym_namespace?: string
+  /** Entity type of the synonym to remove (default: the entry's). */
+  synonym_entity_type?: string
   synonym_composite_key: Record<string, unknown>
   /** A note on who acted, kept as the entry's `actor_note`; the entry's `updated_by` is the authenticated caller. */
   updated_by?: string
@@ -596,7 +600,7 @@ export type APIKeyListResponse = PaginatedResponse<APIKeyInfo>
 export interface ListAPIKeysParams {
   /** Default 1. */
   page?: number
-  /** Default 50, capped at 100. */
+  /** Default 50, max 1000 (a larger value is refused with 422). */
   page_size?: number
 }
 
@@ -618,7 +622,10 @@ export interface UpstreamTLS {
  * with 422 (WipValidationError), not per item. Platform admin only.
  */
 export interface AttachmentRequest {
-  /** `^[a-z][a-z0-9-]{1,40}$`; the app's origin is `<name>.<hostname>`. */
+  /**
+   * A DNS label, `^[a-z][a-z0-9-]{0,39}[a-z0-9]$` (no trailing hyphen); the
+   * app's origin is `<name>.<hostname>`.
+   */
   name: string
   /** Scheme, host and optional port only: no path, credentials, query or fragment. */
   upstream: string
