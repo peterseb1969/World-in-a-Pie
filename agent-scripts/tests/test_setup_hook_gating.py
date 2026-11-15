@@ -164,3 +164,43 @@ def test_re_running_is_idempotent(tmp_path: Path):
     assert run(tmp_path, radon=True).returncode == 0
     assert run(tmp_path, radon=True).returncode == 0
     assert hooks_path(tmp_path) == "scripts/git-hooks"
+
+
+def test_a_file_git_would_not_run_is_no_hook(tmp_path: Path):
+    """Git runs only an executable hook: a non-executable file (a copied
+    backup, a README) in .git/hooks retires nothing, so it does not block."""
+    init_repo(tmp_path)
+    stray = tmp_path / ".git" / "hooks" / "commit-msg"
+    stray.write_text("#!/bin/sh\nexit 0\n")
+    stray.chmod(0o644)
+    (tmp_path / ".git" / "hooks" / "README").write_text("notes\n")
+    result = run(tmp_path, radon=True)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) == "scripts/git-hooks"
+
+
+def test_a_link_to_a_non_executable_script_is_no_hook(tmp_path: Path):
+    init_repo(tmp_path)
+    target = tmp_path / "tools" / "commit-msg"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o644)
+    (tmp_path / ".git" / "hooks" / "commit-msg").symlink_to(target)
+    result = run(tmp_path, radon=True)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) == "scripts/git-hooks"
+
+
+def test_a_re_run_warns_of_hooks_added_after_the_path_was_set(tmp_path: Path):
+    """Once core.hooksPath points at scripts/git-hooks, a hook dropped into
+    .git/hooks later is not run. A re-run of the setup says so."""
+    init_repo(tmp_path)
+    assert run(tmp_path, radon=True).returncode == 0
+    assert hooks_path(tmp_path) == "scripts/git-hooks"
+    later = tmp_path / ".git" / "hooks" / "prepare-commit-msg"
+    later.write_text("#!/bin/sh\nexit 0\n")
+    later.chmod(0o755)
+    result = run(tmp_path, radon=True)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) == "scripts/git-hooks"
+    assert "WARNING" in result.stdout and "not run: prepare-commit-msg" in result.stdout

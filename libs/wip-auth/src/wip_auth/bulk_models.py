@@ -19,9 +19,9 @@ the services emit are listed in the error_code field's description below.
 The four services that return bulk write results — def-store,
 document-store, registry, template-store — publish that description for it;
 reporting-sync returns none. A service gives its own wording to error_code
-on the items it defines outside this contract: registry's activate and
-synonym items, def-store's term-validation answer, template-store's
-cascade result.
+on the items it defines outside this contract: registry's own item models
+and its lookup, resolve and search answers, def-store's term-validation
+answer, template-store's cascade result.
 """
 
 from typing import Any, Generic, TypeVar

@@ -7,7 +7,9 @@ packages: [wip-auth]
 ### The served bulk error surface names the codes the services actually emit
 
 `error_code` on a bulk result item is documented in one place
-(`libs/wip-auth`), and every service's OpenAPI spec publishes that text. It
+(`libs/wip-auth`), and the four services that return bulk write results
+(def-store, document-store, registry, template-store) publish that text in
+their OpenAPI specs; reporting-sync returns none. It
 named two codes no service ever returns — `archived` and
 `archived_relationship_endpoint` — and left out six it does:
 `ambiguous_terminology`, `dependency_unavailable`, `duplicate_in_snapshot`,

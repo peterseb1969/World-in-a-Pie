@@ -670,15 +670,24 @@ if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "    executable — core.hooksPath left unset."
     else
         HOOKS_PATH="$(git -C "$WIP_ROOT" config --get core.hooksPath || true)"
-        GIT_HOOKS_DIR="$(git -C "$WIP_ROOT" rev-parse --git-path hooks)"
+        # The repository's own hooks directory, not --git-path hooks: that one
+        # follows core.hooksPath once it is set, and would list the ratchet
+        # hook instead of what sits in .git/hooks.
+        GIT_HOOKS_DIR="$(git -C "$WIP_ROOT" rev-parse --git-common-dir)/hooks"
         case "$GIT_HOOKS_DIR" in
             /*) ;;
             *) GIT_HOOKS_DIR="$WIP_ROOT/$GIT_HOOKS_DIR" ;;
         esac
         # -H follows the hooks directory itself when that is a link; -type l
         # catches a hook that links to a script elsewhere, which git runs the
-        # same as a file sitting there.
-        OWN_HOOKS="$(find -H "$GIT_HOOKS_DIR" -maxdepth 1 \
+        # same as a file sitting there. Git runs only an executable hook, so a
+        # file that is not (a copied backup, a README) is no hook; [ -x ]
+        # follows a link to its target's mode.
+        OWN_HOOKS=""
+        while IFS= read -r own; do
+            [ -n "$own" ] && [ -x "$own" ] && OWN_HOOKS="${OWN_HOOKS:+$OWN_HOOKS
+}$own"
+        done <<< "$(find -H "$GIT_HOOKS_DIR" -maxdepth 1 \
             \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | sort || true)"
         if [ -z "$HOOKS_PATH" ] && [ -n "$OWN_HOOKS" ]; then
             echo "4b. Git hooks: $GIT_HOOKS_DIR already holds hooks"
@@ -691,6 +700,16 @@ if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         elif [ -z "$HOOKS_PATH" ] || [ "$HOOKS_PATH" = "scripts/git-hooks" ]; then
             git -C "$WIP_ROOT" config core.hooksPath scripts/git-hooks
             echo "4b. Git hooks: pre-commit runs the complexity ratchet (core.hooksPath = scripts/git-hooks)"
+            # Set by an earlier run: hooks added to .git/hooks since then are
+            # not run, because git looks only at core.hooksPath.
+            if [ -n "$OWN_HOOKS" ]; then
+                echo "    WARNING: $GIT_HOOKS_DIR holds hooks git does not run while"
+                echo "    core.hooksPath points at scripts/git-hooks:"
+                while IFS= read -r own; do
+                    [ -n "$own" ] && echo "    not run: ${own##*/}"
+                done <<< "$OWN_HOOKS"
+                echo "    Chain them from scripts/git-hooks, or unset core.hooksPath."
+            fi
         else
             echo "4b. Git hooks: core.hooksPath is already '$HOOKS_PATH' — left as is."
             echo "    To run the complexity ratchet before each commit, chain"
