@@ -919,13 +919,18 @@ _HOLDER_WAIT_ATTEMPTS = 10
 _HOLDER_WAIT_PAUSE = 0.02
 
 
-async def _holder_of_own_key(entry: RegistryEntry) -> RegistryEntry | None:
+async def _holder_of_own_key(entry: RegistryEntry, token: str) -> RegistryEntry | None:
     """The existing entry that holds ``entry``'s own primary key, or None.
 
     Only the item's own key makes it the same entity as the holder: a key
     held as one of the item's synonyms is a conflict with a different
     entity. The holder may be another request that claimed the key and is
     about to write its entry; it is given a moment to do so.
+
+    A claim carrying this request's ``token`` is no such request: it is one
+    this batch took for another of its own items, and that entry is written
+    only after the gate. Nothing is in flight to wait for, so the key is
+    reported as claimed at once.
     """
     if not entry.primary_composite_key_hash:
         return None
@@ -933,6 +938,8 @@ async def _holder_of_own_key(entry: RegistryEntry) -> RegistryEntry | None:
         entry.namespace, entry.entity_type, entry.primary_composite_key_hash,
     )
     if claim is None or claim.owner_entry_id == entry.entry_id:
+        return None
+    if claim.claim_token == token:
         return None
     for attempt in range(_HOLDER_WAIT_ATTEMPTS):
         holder = await RegistryEntry.find_one({"entry_id": claim.owner_entry_id, "status": "active"})
@@ -960,8 +967,9 @@ async def _gate_on_claims(
     """Claim every entry's keys pending; answer the items that cannot have
     them. An item whose own key another request registered meanwhile is
     answered already_exists with that request's entry; any other conflict is
-    a key_claimed error. Returns (entries to insert, their item indices,
-    already_exists, errors) counted."""
+    a key_claimed error — including one against another item of this batch,
+    whose entry is not written yet. Returns (entries to insert, their item
+    indices, already_exists, errors) counted."""
     gated: list[RegistryEntry] = []
     gated_indices: list[int] = []
     exists = errors = 0
@@ -971,7 +979,7 @@ async def _gate_on_claims(
             gated.append(entry)
             gated_indices.append(idx)
             continue
-        holder = await _holder_of_own_key(entry)
+        holder = await _holder_of_own_key(entry, token)
         if holder is not None:
             results[idx] = RegisterKeyResponse(
                 index=idx, status="already_exists", registry_id=holder.entry_id,

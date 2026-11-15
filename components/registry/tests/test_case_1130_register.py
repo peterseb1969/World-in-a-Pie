@@ -6,8 +6,13 @@ prefixed ids in one counter round trip per prefix.
   when it was created, the earlier item's error otherwise — never an id that
   was minted and then not written.
 - Registering a new key while another request registers it too answers
-  already_exists with the entry that request wrote, not an error. A key held
-  as some other entry's synonym stays a conflict: that is a different entity.
+  already_exists with the entry that request wrote, not an error. An item
+  whose own key another entry holds — as that entry's primary key or as one
+  of its synonyms — is the same entity and is answered already_exists too; a
+  conflict on one of the item's own synonyms stays a conflict: that is a
+  different entity. The holder wait is only for another request: an item
+  blocked by a key this very batch holds for its own later entry is answered
+  without waiting.
 - A batch's prefixed ids are reserved with one counter increment per prefix,
   and the namespace is read once per request.
 - Provisioning with composite keys needs one key per id.
@@ -19,9 +24,13 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
+from registry.api import entries as entries_api
+from registry.models.composite_key_claim import CompositeKeyClaim
 from registry.models.entry import RegistryEntry
 from registry.models.id_counter import IdCounter
 from registry.models.namespace import Namespace
+from registry.services.claims import new_claim_token
+from registry.services.hash import HashService
 
 BASE = "/api/registry"
 REGISTER = f"{BASE}/entries/register"
@@ -152,6 +161,89 @@ async def test_a_key_held_as_another_entrys_synonym_stays_a_conflict(client, aut
     result = body["results"][0]
     assert result["status"] == "error", result
     assert result["details"]["rule"] == "key_claimed"
+
+
+def _holder_pauses(monkeypatch) -> list[float]:
+    """Every holder-window pause taken while the patch is in place."""
+    pauses: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def recording(delay: float, *args, **kwargs):
+        if delay == entries_api._HOLDER_WAIT_PAUSE:
+            pauses.append(delay)
+        return await real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", recording)
+    return pauses
+
+
+def _unwritten_entry(tag: str, key: dict) -> RegistryEntry:
+    """An entry as the gate sees it: built, claimed, not written yet."""
+    return RegistryEntry(
+        entry_id=f"DOC-{tag}", namespace="default", entity_type="documents",
+        primary_composite_key=key,
+        primary_composite_key_hash=HashService.compute_composite_key_hash(key),
+        status="active",
+    )
+
+
+async def _gate_one(entry: RegistryEntry, token: str) -> tuple[list, dict, int, int]:
+    results: list = [None]
+    gated, _, exists, errors = await entries_api._gate_on_claims(
+        [entry], [0], [None], results, token,
+    )
+    return gated, results[0], exists, errors
+
+
+@pytest.mark.asyncio
+async def test_a_key_the_same_batch_holds_is_answered_without_the_holder_wait(
+    client, auth_headers, monkeypatch
+):
+    """The wait bridges another request claiming the key and about to write its
+    entry. A claim carrying this request's own token is no such request: the
+    entry behind it is written only after the gate, so the window can only
+    expire. The item is still the conflict it is — answered at once."""
+    tag = _tag()
+    key = {"vendor": tag}
+    token = new_claim_token()
+    claim = await CompositeKeyClaim.claim(
+        "default", "documents", HashService.compute_composite_key_hash(key),
+        f"DOC-{tag}-batch-mate", "synonym", state="pending", token=token,
+    )
+    assert claim is not None
+    pauses = _holder_pauses(monkeypatch)
+
+    gated, answer, exists, errors = await _gate_one(_unwritten_entry(tag, key), token)
+
+    assert gated == [] and exists == 0 and errors == 1
+    assert answer.status == "error" and answer.details["rule"] == "key_claimed"
+    assert pauses == [], "a same-batch claim must not wait out the holder window"
+    await CompositeKeyClaim.get_motor_collection().delete_many({"claim_token": token})
+
+
+@pytest.mark.asyncio
+async def test_a_key_another_request_holds_is_still_given_the_holder_window(
+    client, auth_headers, monkeypatch
+):
+    """The other side of the same gate: a foreign in-flight claim gets its
+    moment to land an entry, and the item is a conflict only once it didn't."""
+    tag = _tag()
+    key = {"vendor": tag}
+    token = new_claim_token()
+    await CompositeKeyClaim.claim(
+        "default", "documents", HashService.compute_composite_key_hash(key),
+        f"DOC-{tag}-other-request", "synonym", state="pending", token=new_claim_token(),
+    )
+    pauses = _holder_pauses(monkeypatch)
+
+    gated, answer, exists, errors = await _gate_one(_unwritten_entry(tag, key), token)
+
+    assert gated == [] and exists == 0 and errors == 1
+    assert answer.status == "error" and answer.details["rule"] == "key_claimed"
+    assert len(pauses) == entries_api._HOLDER_WAIT_ATTEMPTS - 1, pauses
+    await CompositeKeyClaim.get_motor_collection().delete_many({
+        "owner_entry_id": f"DOC-{tag}-other-request",
+    })
 
 
 # ── item 3: one counter round trip per prefix ─────────────────────────────
