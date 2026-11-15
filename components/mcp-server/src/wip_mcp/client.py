@@ -218,6 +218,31 @@ class _ActingKeyAuth(httpx.Auth):
         yield request
 
 
+#: The rate an import is assumed to manage at worst, in rows per second. The
+#: route writes row by row (a Registry call and a write each); a dev install
+#: measured 25-50 rows/s.
+IMPORT_ROWS_PER_SECOND = 20
+#: The longest an import call waits for its answer. An import estimated to
+#: take longer is refused before it starts: the MCP host has a tool-call limit
+#: of its own, and a longer wait only moves the point where the client gives
+#: up while the server goes on writing.
+IMPORT_MAX_WAIT_SECONDS = 300.0
+#: Added to every estimate: the upload, the parse and the answer.
+_IMPORT_MARGIN_SECONDS = 30.0
+
+
+def import_wait_seconds(rows: int, floor: float) -> float:
+    """How long an import of ``rows`` rows is waited for: the estimate at
+    IMPORT_ROWS_PER_SECOND plus a margin, never less than ``floor`` (the
+    client's default timeout)."""
+    return max(floor, rows / IMPORT_ROWS_PER_SECOND + _IMPORT_MARGIN_SECONDS)
+
+
+def import_max_rows() -> int:
+    """The most rows one import call is waited for (IMPORT_MAX_WAIT_SECONDS)."""
+    return int((IMPORT_MAX_WAIT_SECONDS - _IMPORT_MARGIN_SECONDS) * IMPORT_ROWS_PER_SECOND)
+
+
 class WipClient:
     """Client for all WIP service APIs.
 
@@ -1720,11 +1745,14 @@ class WipClient:
         column_mapping: dict,
         namespace: str | None = None,
         skip_errors: bool = True,
+        timeout: float | None = None,
     ) -> dict:
         """Import documents from CSV/XLSX. Every row is attempted by default,
         as the endpoint does; skip_errors=False stops at the first failing
         row. An outage stops the import either way (503, detail = the report
-        so far)."""
+        so far). The route answers only once every row is written, so
+        ``timeout`` (see import_wait_seconds) replaces the client's default
+        for this call."""
         namespace = self._ns(namespace)
         import json as _json
         client = await self._get_client()
@@ -1740,6 +1768,7 @@ class WipClient:
             files=files,
             data=data,
             headers={"X-API-Key": self.api_key},
+            timeout=timeout if timeout is not None else self.timeout,
         )
         _raise_for_status_with_body(resp)
         parsed: dict[str, Any] = resp.json()

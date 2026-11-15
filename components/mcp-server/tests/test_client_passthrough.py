@@ -140,6 +140,8 @@ async def test_import_documents_csv_resolves_the_template_in_the_target_namespac
     f.write_text("name\nA\n")
     mock = AsyncMock()
     mock._ns = lambda ns: ns or "clinic"
+    mock.timeout = 30.0
+    mock.preview_import.return_value = {"headers": ["name"], "total_rows": 1}
     mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
     mock.import_documents.return_value = {"created": 1}
     with patch("wip_mcp.server.get_client", return_value=mock):

@@ -8,6 +8,7 @@ import os
 import tempfile
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from wip_mcp.client import WipClient
@@ -294,6 +295,8 @@ async def test_cancel_replay():
 async def test_import_documents_csv_success():
     """import_documents_csv reads file and calls client."""
     mock = _mock_client()
+    mock.timeout = 30.0
+    mock.preview_import.return_value = {"headers": ["name", "email"], "total_rows": 2}
     mock.get_template_by_value.return_value = {"template_id": "0190c000-0000-7000-0000-000000000001"}
     mock.import_documents.return_value = {
         "total_rows": 2,
@@ -326,6 +329,8 @@ async def test_import_documents_csv_success():
         call_kwargs = mock.import_documents.call_args.kwargs
         assert call_kwargs["template_id"] == "0190c000-0000-7000-0000-000000000001"
         assert call_kwargs["column_mapping"] == {"name": "name", "email": "email"}
+        # Never less than the client's default.
+        assert call_kwargs["timeout"] >= 30.0
     finally:
         os.unlink(tmp_path)
 
@@ -375,9 +380,79 @@ async def test_import_documents_csv_not_found():
 
 
 @pytest.mark.asyncio
+async def test_import_documents_csv_waits_in_proportion_to_the_rows(tmp_path):
+    """The route answers once every row is written: the call waits for the
+    estimate at the assumed rate, not the client's fixed default."""
+    from wip_mcp.client import IMPORT_ROWS_PER_SECOND
+
+    f = tmp_path / "rows.csv"
+    f.write_text("name\nA\n")
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.preview_import.return_value = {"headers": ["name"], "total_rows": 3000}
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
+    mock.import_documents.return_value = {"succeeded": 3000}
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await import_documents_csv(str(f), "PATIENT", column_mapping={"name": "name"})
+    assert mock.import_documents.call_args.kwargs["timeout"] == 3000 / IMPORT_ROWS_PER_SECOND + 30
+
+
+@pytest.mark.asyncio
+async def test_import_documents_csv_refuses_a_file_too_large_to_wait_for(tmp_path):
+    """Nothing is written; the answer names the row count one call takes."""
+    from wip_mcp.client import import_max_rows
+
+    f = tmp_path / "rows.csv"
+    f.write_text("name\nA\n")
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.preview_import.return_value = {"headers": ["name"], "total_rows": 30000}
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await import_documents_csv(str(f), "PATIENT", column_mapping={"name": "name"})
+    mock.import_documents.assert_not_awaited()
+    assert "30000 rows" in result and "Nothing was imported" in result
+    assert f"at most {import_max_rows()} rows" in result
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_import_says_it_may_still_be_running(tmp_path):
+    f = tmp_path / "rows.csv"
+    f.write_text("name\nA\n")
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.preview_import.return_value = {"headers": ["name"], "total_rows": 1}
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
+    mock.import_documents.side_effect = httpx.ReadTimeout("")
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await import_documents_csv(str(f), "PATIENT", column_mapping={"name": "name"})
+    assert "timed out waiting for WIP (ReadTimeout)" in result
+    assert "may still be running" in result
+    assert "To check: count the documents of template 'PATIENT'" in result
+
+
+@pytest.mark.parametrize(("exc", "expected"), [
+    (httpx.ReadTimeout(""), "timed out waiting for WIP (ReadTimeout)"),
+    (httpx.ConnectTimeout(""), "timed out waiting for WIP (ConnectTimeout)"),
+    (RuntimeError(""), "Error: RuntimeError"),
+    (ValueError("boom"), "Error: boom"),
+])
+def test_error_names_a_timeout_and_an_empty_message(exc, expected):
+    from wip_mcp.server import _error
+
+    assert expected in _error(exc)
+    assert "To check" not in _error(exc)
+    if isinstance(exc, httpx.TimeoutException):
+        assert _error(exc, check="look").endswith("To check: look")
+    else:
+        assert "To check" not in _error(exc, check="look")
+
+
+@pytest.mark.asyncio
 async def test_import_documents_csv_auto_mapping():
     """import_documents_csv with no mapping auto-maps columns to fields."""
     mock = _mock_client()
+    mock.timeout = 30.0
     mock.get_template_by_value.return_value = {
         "template_id": "0190c000-0000-7000-0000-000000000001",
         "fields": [{"name": "name", "type": "string"}],
@@ -743,3 +818,33 @@ async def test_table_tools_limit_documents_to_the_namespace_given():
 
     assert mock.get_table_view.call_args.kwargs["namespace"] == "clinic-a"
     assert mock.export_table_csv.call_args.kwargs["namespace"] == "clinic-a"
+
+
+def test_import_wait_is_the_estimate_with_the_default_as_floor():
+    from wip_mcp.client import IMPORT_MAX_WAIT_SECONDS, import_max_rows, import_wait_seconds
+
+    assert import_wait_seconds(0, 30.0) == 30.0
+    assert import_wait_seconds(2000, 30.0) == 2000 / 20 + 30
+    # The largest file one call takes is waited for within the ceiling.
+    assert import_wait_seconds(import_max_rows(), 30.0) <= IMPORT_MAX_WAIT_SECONDS
+    assert import_wait_seconds(import_max_rows() + 20, 30.0) > IMPORT_MAX_WAIT_SECONDS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "method", "kwargs", "check"), [
+    ("migrate_documents", "migrate_documents",
+     {"template_id": "T", "from_version": 1, "to_version": 2, "dry_run": False}, "dry_run=true"),
+    ("delete_namespace", "delete_namespace", {"prefix": "scratch", "dry_run": False},
+     "delete_namespace('scratch', dry_run=true)"),
+    ("start_restore", "start_restore", {"namespace": "scratch", "archive_path": "/tmp/a.zip"},
+     "list_backup_jobs"),
+])
+async def test_a_timed_out_long_write_says_how_to_check(tool, method, kwargs, check):
+    from wip_mcp import server
+
+    mock = _mock_client()
+    getattr(mock, method).side_effect = httpx.ReadTimeout("")
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await getattr(server, tool)(**kwargs)
+    assert "may still be running" in result, result
+    assert "To check: " in result and check in result, result

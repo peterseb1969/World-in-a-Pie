@@ -15,9 +15,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .client import BulkError, WipClient
+from .client import IMPORT_MAX_WAIT_SECONDS, BulkError, WipClient, import_max_rows, import_wait_seconds
 
 # ---------------------------------------------------------------------------
 # Server setup
@@ -73,15 +74,28 @@ def _place_in_namespace(
             item["namespace"] = ns
 
 
-def _error(e: Exception) -> str:
-    """Format an exception for MCP tool output."""
+def _error(e: Exception, check: str | None = None) -> str:
+    """Format an exception for MCP tool output.
+
+    A timeout is not a failure the server reported: the client stopped
+    waiting, and the request may still be running and may complete. It says
+    so, with ``check`` (how to see what the request did) when the tool gives
+    one, so an agent does not retry a write that is landing. An exception
+    with an empty message is named by its type."""
     if isinstance(e, BulkError):
         head = f"WIP error [{e.error_code}]: " if e.error_code else "WIP error: "
         text = f"{head}{e.error}"
         if e.details:
             text += f"\ndetails: {json.dumps(e.details, default=str)}"
         return text
-    return f"Error: {e}"
+    if isinstance(e, httpx.TimeoutException):
+        text = (
+            f"Error: timed out waiting for WIP ({type(e).__name__}). This is not a "
+            "failure the server reported: the request may still be running and may "
+            "complete. Do not retry it before checking what it did."
+        )
+        return f"{text}\nTo check: {check}" if check else text
+    return f"Error: {e}" if str(e) else f"Error: {type(e).__name__}"
 
 
 # ===================================================================
@@ -120,6 +134,15 @@ name inside a document's data follows the term rule instead (wip://data-model):
 on an identity field an ambiguous name fails the item as validation_failed
 with code ambiguous_term in details.errors, on any other field it resolves to
 the first bearer with a warning.
+
+## Timeouts: a Timed-Out Write May Still Land
+A tool that times out reports "timed out waiting for WIP": the client stopped
+waiting, the server did not refuse. The request may still be running and may
+complete (an import, a migration, a namespace deletion each run to the end
+on the server). Never retry such a write before checking what it did; the
+tool's error says how. CSV/XLSX import waits in proportion to the file's row
+count and refuses, before writing anything, a file too large to wait for:
+split it into the files of the size it names.
 
 ## Partial Updates: update_document (PATCH)
 The update_document tool applies an RFC 7396 JSON Merge Patch to an existing
@@ -1623,7 +1646,11 @@ async def delete_namespace(
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
-        return _error(e)
+        return _error(e, check=(
+            f"delete_namespace('{prefix}', dry_run=true): a deletion still running is "
+            "refused there as 'locked' (deletion in progress); once it has finished, "
+            "the namespace is not found."
+        ))
 
 
 # ===================================================================
@@ -3906,7 +3933,10 @@ async def migrate_documents(
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
-        return _error(e)
+        return _error(e, check=(
+            f"run migrate_documents again with dry_run=true: documents already moved "
+            f"to version {to_version} are no longer in the version {from_version} cohort."
+        ))
 
 
 @mcp.tool()
@@ -4831,6 +4861,39 @@ async def delete_reporting_view(name: str, namespace: str | None = None) -> str:
 # ===================================================================
 
 
+def _import_wait(preview: dict, name: str, floor: float) -> tuple[float, str | None]:
+    """How long an import of the previewed file is waited for, or the refusal
+    of a file too large to wait for (nothing is written then)."""
+    rows = int(preview.get("total_rows") or 0)
+    wait = import_wait_seconds(rows, floor)
+    if wait <= IMPORT_MAX_WAIT_SECONDS:
+        return wait, None
+    return wait, (
+        f"Error: {name} has {rows} rows; importing them is estimated to take "
+        f"about {int(wait)} s, longer than this tool waits "
+        f"({int(IMPORT_MAX_WAIT_SECONDS)} s). Nothing was imported. Split the "
+        f"file into files of at most {import_max_rows()} rows and import each."
+    )
+
+
+def _auto_mapping(headers: list[str], fields: list[dict]) -> tuple[dict, str | None]:
+    """Map file columns to template fields by name (case-insensitive, spaces
+    as underscores), or the refusal when no column maps."""
+    field_names = {f["name"].lower(): f["name"] for f in fields}
+    mapping = {
+        header: field_names[header.lower().replace(" ", "_")]
+        for header in headers if header.lower().replace(" ", "_") in field_names
+    }
+    if mapping:
+        return mapping, None
+    return mapping, (
+        f"Error: No columns could be auto-mapped.\n"
+        f"CSV columns: {headers}\n"
+        f"Template fields: {[f['name'] for f in fields]}\n"
+        f"Provide an explicit column_mapping."
+    )
+
+
 @mcp.tool()
 async def import_documents_csv(
     file_path: str,
@@ -4850,6 +4913,12 @@ async def import_documents_csv(
     that one apostrophe: it is the escape WIP's CSV exports write so a
     spreadsheet does not run the cell as a formula. To import such a value
     literally, double the apostrophe.
+
+    The import answers once every row is written, so the tool waits in
+    proportion to the file's row count. A file too large to wait for is
+    refused before anything is written, with the row count that fits: split
+    it. If the call times out anyway, the import may still be running; count
+    the template's documents before importing again.
 
     Args:
         file_path: Path to a CSV or XLSX file.
@@ -4880,29 +4949,20 @@ async def import_documents_csv(
         if not template_id:
             raise ValueError(f"template '{template_value}' has no template_id")
 
+        # The preview counts the rows (and gives the headers for auto-mapping;
+        # an unreadable file is a 422, raised here). The import answers only
+        # once every row is written, so its wait is sized from the count, and
+        # a file too large to wait for is refused before anything is written.
+        preview = await client.preview_import(content, p.name)
+        wait, refusal = _import_wait(preview, p.name, client.timeout)
+        if refusal:
+            return refusal
+
         # If no mapping provided, auto-map by getting template fields
         if column_mapping is None:
-            # Preview to get headers (an unreadable file is a 422, raised here)
-            preview = await client.preview_import(content, p.name)
-            headers = preview.get("headers", [])
-
-            fields = tmpl.get("fields", [])
-            field_names = {f["name"].lower(): f["name"] for f in fields}
-
-            # Auto-map: match CSV headers to field names (case-insensitive)
-            column_mapping = {}
-            for header in headers:
-                lower = header.lower().replace(" ", "_")
-                if lower in field_names:
-                    column_mapping[header] = field_names[lower]
-
-            if not column_mapping:
-                return (
-                    f"Error: No columns could be auto-mapped.\n"
-                    f"CSV columns: {headers}\n"
-                    f"Template fields: {[f['name'] for f in fields]}\n"
-                    f"Provide an explicit column_mapping."
-                )
+            column_mapping, refusal = _auto_mapping(preview.get("headers", []), tmpl.get("fields", []))
+            if refusal:
+                return refusal
 
         result = await client.import_documents(
             file_content=content,
@@ -4911,10 +4971,16 @@ async def import_documents_csv(
             column_mapping=column_mapping,
             namespace=ns,
             skip_errors=skip_errors,
+            timeout=wait,
         )
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        return _error(e)
+        return _error(e, check=(
+            f"count the documents of template '{template_value}' (query_by_template or "
+            "list_documents, their total) and compare with the rows in the file. The "
+            "import's own report counts a row that changed nothing as succeeded, so "
+            "only the count tells what landed."
+        ))
 
 
 # ===================================================================
@@ -5243,7 +5309,12 @@ async def start_restore(
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
-        return _error(e)
+        # The archive upload is answered only once it has been read, so a
+        # timeout can come before the job exists: there is no id to poll.
+        return _error(e, check=(
+            "list_backup_jobs: a restore job created for this archive is listed "
+            "there, with its status, even though no job id came back."
+        ))
 
 
 @mcp.tool()
