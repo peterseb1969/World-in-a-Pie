@@ -143,7 +143,8 @@ async def test_import_documents_csv_resolves_the_template_in_the_target_namespac
     mock.timeout = 30.0
     mock.preview_import.return_value = {"headers": ["name"], "total_rows": 1}
     mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
-    mock.import_documents.return_value = {"created": 1}
+    mock.import_documents.return_value = {"job_id": "imp-1", "kind": "import",
+                                         "status": "complete"}
     with patch("wip_mcp.server.get_client", return_value=mock):
         await server.import_documents_csv(
             str(f), "PATIENT", column_mapping={"name": "name"}, namespace="clinic",

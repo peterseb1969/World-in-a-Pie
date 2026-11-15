@@ -291,24 +291,54 @@ async def test_cancel_replay():
 # =========================================================================
 
 
+def _import_job(**over):
+    """An import job snapshot, complete by default; `over` moves its state."""
+    job = {
+        "job_id": "imp-0000000000000001",
+        "kind": "import",
+        "namespace": "wip",
+        "status": "complete",
+        "phase": "complete",
+        "percent": 100.0,
+        "result": {
+            "result_kind": "import_report",
+            "total_rows": 2,
+            "succeeded": 2,
+            "failed": 0,
+            "skipped": 0,
+            "results": [
+                {"row": 2, "document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "is_new": True},
+                {"row": 3, "document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "is_new": True},
+            ],
+            "errors": [],
+        },
+    }
+    job.update(over)
+    return job
+
+
+def _running_job(**over):
+    return _import_job(
+        status="running", phase="phase_import", percent=40.0,
+        message="imported 800/2000 row(s), 1 failed", result=None, **over,
+    )
+
+
+def _rows_csv(tmp_path, rows: int):
+    f = tmp_path / "rows.csv"
+    f.write_text("name\n" + "".join(f"A{i}\n" for i in range(rows)))
+    return str(f)
+
+
 @pytest.mark.asyncio
-async def test_import_documents_csv_success():
-    """import_documents_csv reads file and calls client."""
+async def test_import_documents_csv_returns_the_job_and_its_report():
+    """The route answers with a job; the report the tool used to get back
+    directly is now the job's result, read at the same call when the run was
+    quick enough to finish under the tool's watch."""
     mock = _mock_client()
     mock.timeout = 30.0
-    mock.preview_import.return_value = {"headers": ["name", "email"], "total_rows": 2}
     mock.get_template_by_value.return_value = {"template_id": "0190c000-0000-7000-0000-000000000001"}
-    mock.import_documents.return_value = {
-        "total_rows": 2,
-        "succeeded": 2,
-        "failed": 0,
-        "skipped": 0,
-        "results": [
-            {"row": 2, "document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "is_new": True},
-            {"row": 3, "document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "is_new": True},
-        ],
-        "errors": [],
-    }
+    mock.import_documents.return_value = _import_job()
 
     csv_content = "name,email\nAlice,alice@test.com\nBob,bob@test.com\n"
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
@@ -324,15 +354,89 @@ async def test_import_documents_csv_success():
             )
 
         data = json.loads(result)
-        assert data["succeeded"] == 2
+        assert data["kind"] == "import" and data["status"] == "complete"
+        assert data["result"]["succeeded"] == 2
         mock.import_documents.assert_awaited_once()
         call_kwargs = mock.import_documents.call_args.kwargs
         assert call_kwargs["template_id"] == "0190c000-0000-7000-0000-000000000001"
         assert call_kwargs["column_mapping"] == {"name": "name", "email": "email"}
-        # Never less than the client's default.
-        assert call_kwargs["timeout"] >= 30.0
+        # The job ends the request: nothing is waited for on the submission.
+        assert "timeout" not in call_kwargs
+        # A job already terminal needs no poll.
+        mock.get_backup_job.assert_not_awaited()
     finally:
         os.unlink(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_import_documents_csv_polls_a_job_still_running(tmp_path, monkeypatch):
+    """The tool watches the job it started and brings back the report, so a
+    normal file is still one call for the agent."""
+    from wip_mcp import server
+
+    monkeypatch.setattr(server, "_IMPORT_POLL_INTERVAL_SECONDS", 0.01)
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
+    mock.import_documents.return_value = _running_job()
+    mock.get_backup_job.side_effect = [_running_job(), _import_job()]
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        data = json.loads(await import_documents_csv(
+            _rows_csv(tmp_path, 2), "PATIENT", column_mapping={"name": "name"},
+        ))
+
+    assert data["status"] == "complete"
+    assert data["result"]["succeeded"] == 2
+    assert [c.args[0] for c in mock.get_backup_job.await_args_list] == [
+        "imp-0000000000000001", "imp-0000000000000001",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_watch_hands_back_the_job_id_rather_than_nothing(tmp_path, monkeypatch):
+    """When the watch runs out the answer is the live job: the rows keep being
+    written either way, and the id is how the caller gets the report."""
+    from wip_mcp import server
+
+    monkeypatch.setattr(server, "_IMPORT_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(server, "_IMPORT_POLL_BUDGET_SECONDS", 0.05)
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
+    mock.import_documents.return_value = _running_job()
+    mock.get_backup_job.return_value = _running_job()
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        data = json.loads(await import_documents_csv(
+            _rows_csv(tmp_path, 2000), "PATIENT", column_mapping={"name": "name"},
+        ))
+
+    assert data["status"] == "running"
+    assert data["job_id"] == "imp-0000000000000001"
+    assert mock.get_backup_job.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_a_long_file_is_not_refused_and_needs_no_preview(tmp_path):
+    """30,000 rows used to be refused before anything was written, because no
+    call could wait for them. As a job they are simply started: the file is
+    never parsed twice, so the preview goes when the row-count wait went."""
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
+    mock.import_documents.return_value = _import_job(
+        result={"result_kind": "import_report", "total_rows": 30000,
+                "succeeded": 30000, "failed": 0, "skipped": 0},
+    )
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        data = json.loads(await import_documents_csv(
+            _rows_csv(tmp_path, 30000), "PATIENT", column_mapping={"name": "name"},
+        ))
+
+    mock.preview_import.assert_not_awaited()
+    assert data["result"]["total_rows"] == 30000
 
 
 @pytest.mark.asyncio
@@ -380,55 +484,21 @@ async def test_import_documents_csv_not_found():
 
 
 @pytest.mark.asyncio
-async def test_import_documents_csv_waits_in_proportion_to_the_rows(tmp_path):
-    """The route answers once every row is written: the call waits for the
-    estimate at the assumed rate, not the client's fixed default."""
-    from wip_mcp.client import IMPORT_ROWS_PER_SECOND
-
-    f = tmp_path / "rows.csv"
-    f.write_text("name\nA\n")
+async def test_a_timed_out_import_points_at_the_jobs_it_may_have_started(tmp_path):
+    """A submission that never answered may still have started its job, so the
+    error names where a lost import is found rather than the row count."""
     mock = _mock_client()
     mock.timeout = 30.0
-    mock.preview_import.return_value = {"headers": ["name"], "total_rows": 3000}
-    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
-    mock.import_documents.return_value = {"succeeded": 3000}
-    with patch("wip_mcp.server.get_client", return_value=mock):
-        await import_documents_csv(str(f), "PATIENT", column_mapping={"name": "name"})
-    assert mock.import_documents.call_args.kwargs["timeout"] == 3000 / IMPORT_ROWS_PER_SECOND + 30
-
-
-@pytest.mark.asyncio
-async def test_import_documents_csv_refuses_a_file_too_large_to_wait_for(tmp_path):
-    """Nothing is written; the answer names the row count one call takes."""
-    from wip_mcp.client import import_max_rows
-
-    f = tmp_path / "rows.csv"
-    f.write_text("name\nA\n")
-    mock = _mock_client()
-    mock.timeout = 30.0
-    mock.preview_import.return_value = {"headers": ["name"], "total_rows": 30000}
-    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
-    with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await import_documents_csv(str(f), "PATIENT", column_mapping={"name": "name"})
-    mock.import_documents.assert_not_awaited()
-    assert "30000 rows" in result and "Nothing was imported" in result
-    assert f"at most {import_max_rows()} rows" in result
-
-
-@pytest.mark.asyncio
-async def test_a_timed_out_import_says_it_may_still_be_running(tmp_path):
-    f = tmp_path / "rows.csv"
-    f.write_text("name\nA\n")
-    mock = _mock_client()
-    mock.timeout = 30.0
-    mock.preview_import.return_value = {"headers": ["name"], "total_rows": 1}
     mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
     mock.import_documents.side_effect = httpx.ReadTimeout("")
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await import_documents_csv(str(f), "PATIENT", column_mapping={"name": "name"})
+        result = await import_documents_csv(
+            _rows_csv(tmp_path, 1), "PATIENT", column_mapping={"name": "name"},
+        )
     assert "timed out waiting for WIP (ReadTimeout)" in result
     assert "may still be running" in result
-    assert "To check: count the documents of template 'PATIENT'" in result
+    assert "To check: list the namespace's jobs" in result
+    assert "list_backup_jobs" in result
 
 
 @pytest.mark.parametrize(("exc", "expected"), [
@@ -463,14 +533,10 @@ async def test_import_documents_csv_auto_mapping():
         "total_rows": 1,
         "format": "csv",
     }
-    mock.import_documents.return_value = {
-        "total_rows": 1,
-        "succeeded": 1,
-        "failed": 0,
-        "skipped": 0,
-        "results": [],
-        "errors": [],
-    }
+    mock.import_documents.return_value = _import_job(
+        result={"result_kind": "import_report", "total_rows": 1, "succeeded": 1,
+                "failed": 0, "skipped": 0},
+    )
 
     csv_content = "name\nAlice\n"
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
@@ -486,7 +552,8 @@ async def test_import_documents_csv_auto_mapping():
             )
 
         data = json.loads(result)
-        assert data["succeeded"] == 1
+        assert data["result"]["succeeded"] == 1
+        assert mock.import_documents.call_args.kwargs["column_mapping"] == {"name": "name"}
     finally:
         os.unlink(tmp_path)
 
@@ -818,16 +885,6 @@ async def test_table_tools_limit_documents_to_the_namespace_given():
 
     assert mock.get_table_view.call_args.kwargs["namespace"] == "clinic-a"
     assert mock.export_table_csv.call_args.kwargs["namespace"] == "clinic-a"
-
-
-def test_import_wait_is_the_estimate_with_the_default_as_floor():
-    from wip_mcp.client import IMPORT_MAX_WAIT_SECONDS, import_max_rows, import_wait_seconds
-
-    assert import_wait_seconds(0, 30.0) == 30.0
-    assert import_wait_seconds(2000, 30.0) == 2000 / 20 + 30
-    # The largest file one call takes is waited for within the ceiling.
-    assert import_wait_seconds(import_max_rows(), 30.0) <= IMPORT_MAX_WAIT_SECONDS
-    assert import_wait_seconds(import_max_rows() + 20, 30.0) > IMPORT_MAX_WAIT_SECONDS
 
 
 @pytest.mark.asyncio

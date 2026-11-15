@@ -9,6 +9,7 @@ Run with:  python -m wip_mcp.server          (stdio, for Claude Code / Cursor)
            python -m wip_mcp.server --sse     (SSE, legacy — deprecated in MCP spec)
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -18,7 +19,7 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .client import IMPORT_MAX_WAIT_SECONDS, BulkError, WipClient, import_max_rows, import_wait_seconds
+from .client import BulkError, WipClient
 
 # ---------------------------------------------------------------------------
 # Server setup
@@ -138,11 +139,12 @@ the first bearer with a warning.
 ## Timeouts: a Timed-Out Write May Still Land
 A tool that times out reports "timed out waiting for WIP": the client stopped
 waiting, the server did not refuse. The request may still be running and may
-complete (an import, a migration, a namespace deletion each run to the end
-on the server). Never retry such a write before checking what it did; the
-tool's error says how. CSV/XLSX import waits in proportion to the file's row
-count and refuses, before writing anything, a file too large to wait for:
-split it into the files of the size it names.
+complete (a migration, a namespace deletion each run to the end on the server).
+Never retry such a write before checking what it did; the tool's error says how.
+CSV/XLSX import runs as a job for exactly this reason: import_documents_csv
+starts it and watches it, and no file is refused for being long — when the
+watch runs out the answer is still the job, and get_backup_job carries its
+progress and, at the end, its report.
 
 ## Partial Updates: update_document (PATCH)
 The update_document tool applies an RFC 7396 JSON Merge Patch to an existing
@@ -4882,19 +4884,33 @@ async def delete_reporting_view(name: str, namespace: str | None = None) -> str:
 # ===================================================================
 
 
-def _import_wait(preview: dict, name: str, floor: float) -> tuple[float, str | None]:
-    """How long an import of the previewed file is waited for, or the refusal
-    of a file too large to wait for (nothing is written then)."""
-    rows = int(preview.get("total_rows") or 0)
-    wait = import_wait_seconds(rows, floor)
-    if wait <= IMPORT_MAX_WAIT_SECONDS:
-        return wait, None
-    return wait, (
-        f"Error: {name} has {rows} rows; importing them is estimated to take "
-        f"about {int(wait)} s, longer than this tool waits "
-        f"({int(IMPORT_MAX_WAIT_SECONDS)} s). Nothing was imported. Split the "
-        f"file into files of at most {import_max_rows()} rows and import each."
-    )
+# How long the import tool watches its job before handing the job id back to
+# the agent. The host has a tool-call limit of its own (about five minutes), and
+# the point of running the import as a job is that the answer outlives this
+# call — so the watch ends short of the limit, with the id in hand, rather than
+# at it with nothing. No file is refused for being long.
+_IMPORT_POLL_BUDGET_SECONDS = 240.0
+_IMPORT_POLL_INTERVAL_SECONDS = 2.0
+_TERMINAL_JOB_STATUSES = ("complete", "failed")
+
+
+async def _await_import_job(client: WipClient, job: dict) -> dict:
+    """Watch an import job to its end, or until the watch runs out.
+
+    Either way the answer is the job snapshot: terminal, with the report of
+    every row in `result`, or still running, in which case the agent polls
+    get_backup_job with the id. The rows are written whichever way the call
+    ends — that is the difference from the request that used to hold them.
+    """
+    waited = 0.0
+    while (
+        job.get("status") not in _TERMINAL_JOB_STATUSES
+        and waited < _IMPORT_POLL_BUDGET_SECONDS
+    ):
+        await asyncio.sleep(_IMPORT_POLL_INTERVAL_SECONDS)
+        waited += _IMPORT_POLL_INTERVAL_SECONDS
+        job = await client.get_backup_job(job["job_id"])
+    return job
 
 
 def _auto_mapping(headers: list[str], fields: list[dict]) -> tuple[dict, str | None]:
@@ -4923,7 +4939,7 @@ async def import_documents_csv(
     namespace: str | None = None,
     skip_errors: bool = True,
 ) -> str:
-    """Import documents from a CSV or XLSX file into a template.
+    """Import documents from a CSV or XLSX file into a template, as a job.
 
     Reads a local file, maps columns to template fields, and creates
     documents in bulk. If column_mapping is omitted, columns are
@@ -4935,11 +4951,17 @@ async def import_documents_csv(
     spreadsheet does not run the cell as a formula. To import such a value
     literally, double the apostrophe.
 
-    The import answers once every row is written, so the tool waits in
-    proportion to the file's row count. A file too large to wait for is
-    refused before anything is written, with the row count that fits: split
-    it. If the call times out anyway, the import may still be running; count
-    the template's documents before importing again.
+    The rows are written as a job, so the answer is the job snapshot: its
+    `result` is the report — every row attempted and reported, as
+    `skip_errors` says — once `status` is complete or failed. This tool
+    watches the job for up to four minutes, which covers a file of a few
+    thousand rows; when it hands back a job that is still running, poll
+    get_backup_job with its job_id. The import goes on either way: a long file
+    is not refused, and giving up never stopped it.
+
+    A row that fails validation does not fail the job. A row that meets an
+    outage (a service the import needs not answering) does: the job is failed,
+    and its result is the report of what was written before it.
 
     Args:
         file_path: Path to a CSV or XLSX file.
@@ -4948,10 +4970,9 @@ async def import_documents_csv(
             If omitted, auto-maps columns whose names match field names.
         namespace: Namespace. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         skip_errors: Report a row that fails and go on with the next
-            (default: true); false stops at the first failing row. A row
-            that meets an outage (a service the import needs not answering)
-            stops the import either way: the error is a 503 whose detail is
-            the report so far, the rows after it counted as skipped.
+            (default: true); false stops at the first failing row and reports
+            the rest skipped. A row that meets an outage stops the import
+            either way, with the rows after it counted as skipped.
     """
     try:
         client = get_client()
@@ -4970,37 +4991,34 @@ async def import_documents_csv(
         if not template_id:
             raise ValueError(f"template '{template_value}' has no template_id")
 
-        # The preview counts the rows (and gives the headers for auto-mapping;
-        # an unreadable file is a 422, raised here). The import answers only
-        # once every row is written, so its wait is sized from the count, and
-        # a file too large to wait for is refused before anything is written.
-        preview = await client.preview_import(content, p.name)
-        wait, refusal = _import_wait(preview, p.name, client.timeout)
-        if refusal:
-            return refusal
-
-        # If no mapping provided, auto-map by getting template fields
+        # The preview is only what an auto-mapping needs: the file's headers.
+        # (It used to be where the wait was sized from, and a file too large
+        # to wait for refused.) An unreadable file is a 422 either way — here
+        # or from the import, which parses it too.
         if column_mapping is None:
+            preview = await client.preview_import(content, p.name)
             column_mapping, refusal = _auto_mapping(preview.get("headers", []), tmpl.get("fields", []))
             if refusal:
                 return refusal
 
-        result = await client.import_documents(
+        job = await client.import_documents(
             file_content=content,
             filename=p.name,
             template_id=template_id,
             column_mapping=column_mapping,
             namespace=ns,
             skip_errors=skip_errors,
-            timeout=wait,
         )
-        return json.dumps(result, indent=2, default=str)
+        job = await _await_import_job(client, job)
+        return json.dumps(job, indent=2, default=str)
     except Exception as e:
         return _error(e, check=(
-            f"count the documents of template '{template_value}' (query_by_template or "
-            "list_documents, their total) and compare with the rows in the file. The "
-            "import's own report counts a row that changed nothing as succeeded, so "
-            "only the count tells what landed."
+            f"list the namespace's jobs (list_backup_jobs, namespace "
+            f"'{namespace or 'the default one'}'): an import that started is there, "
+            "with its id, its status and its report; an empty list means nothing was "
+            f"written. The import's own report counts a row that changed nothing as "
+            f"succeeded, so the document count of template '{template_value}' is "
+            "what tells what landed."
         ))
 
 
