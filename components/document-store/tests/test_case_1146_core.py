@@ -17,6 +17,8 @@ from document_store.models.document import Document, DocumentStatus
 from document_store.services import reporting_client
 from document_store.services.reporting_client import ReportingSyncClient
 
+from .test_case_1140_import import finish_job
+
 API = "/api/document-store"
 WIP_ONLY = {"X-API-Key": "test_xns_writer_key"}  # reads 'wip', not 'xns-closed'
 
@@ -64,8 +66,9 @@ async def test_import_backs_off_like_every_write(client, auth_headers, monkeypat
               '{"national_id": "national_id", "first_name": "first_name", "last_name": "last_name"}'},
         files={"file": ("p.csv", body, "text/csv")},
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["succeeded"] == 1
+    assert resp.status_code == 202, resp.text
+    report = (await finish_job(client, auth_headers, resp.json()["job_id"]))["result"]
+    assert report["succeeded"] == 1
     assert calls
 
 

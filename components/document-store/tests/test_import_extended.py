@@ -7,6 +7,8 @@ import openpyxl
 import pytest
 from httpx import AsyncClient
 
+from .test_case_1140_import import report_of
+
 
 def _make_csv(headers: list[str], rows: list[list[str]], delimiter: str = ",") -> bytes:
     """Build a CSV file in memory with configurable delimiter."""
@@ -72,8 +74,7 @@ async def test_csv_quoted_fields_with_commas(client: AsyncClient, auth_headers: 
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping, skip_errors="true"),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["total_rows"] == 2
     assert data["succeeded"] == 2
     assert data["failed"] == 0
@@ -120,8 +121,7 @@ async def test_csv_empty_rows_skipped(client: AsyncClient, auth_headers: dict):
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping, skip_errors="true"),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     # 3 rows parsed total (including the empty one)
     assert data["total_rows"] == 3
     # The empty row will have no data → validation will fail (missing mandatory fields)
@@ -148,8 +148,7 @@ async def test_csv_extra_columns_ignored(client: AsyncClient, auth_headers: dict
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["total_rows"] == 2
     assert data["succeeded"] == 2
     assert data["failed"] == 0
@@ -192,8 +191,7 @@ async def test_csv_utf8_special_characters(client: AsyncClient, auth_headers: di
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping, skip_errors="true"),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["total_rows"] == 2
     assert data["succeeded"] == 2
     assert data["failed"] == 0
@@ -271,8 +269,7 @@ async def test_import_invalid_term_value(client: AsyncClient, auth_headers: dict
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping, skip_errors="true"),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["failed"] == 1
     assert len(data["errors"]) == 1
     assert data["errors"][0]["row"] == 2  # row 2 (1-indexed + header)
@@ -300,8 +297,7 @@ async def test_import_missing_required_field(client: AsyncClient, auth_headers: 
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping, skip_errors="true"),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["failed"] == 1
     assert len(data["errors"]) == 1
     # Error should mention the missing required field
@@ -335,8 +331,7 @@ async def test_import_type_mismatch(client: AsyncClient, auth_headers: dict):
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping, skip_errors="true"),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["failed"] == 1
     assert len(data["errors"]) == 1
 
@@ -366,8 +361,7 @@ async def test_import_partial_success(client: AsyncClient, auth_headers: dict):
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping, skip_errors="true"),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["total_rows"] == 4
     assert data["succeeded"] == 2
     assert data["failed"] == 2
@@ -603,8 +597,7 @@ async def test_import_xlsx_success(client: AsyncClient, auth_headers: dict):
         files={"file": ("data.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         data=_import_data("PERSON", mapping),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["total_rows"] == 2
     assert data["succeeded"] == 2
     assert data["failed"] == 0
@@ -628,8 +621,7 @@ async def test_import_xlsx_with_extra_columns(client: AsyncClient, auth_headers:
         files={"file": ("data.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         data=_import_data("PERSON", mapping),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["succeeded"] == 2
     assert data["failed"] == 0
 
@@ -676,8 +668,7 @@ async def test_csv_import_duplicate_identity_upsert(client: AsyncClient, auth_he
         files={"file": ("data.csv", csv_bytes_v1, "text/csv")},
         data=_import_data("PERSON", mapping),
     )
-    assert response1.status_code == 200
-    data1 = response1.json()
+    data1 = await report_of(client, auth_headers, response1)
     assert data1["succeeded"] == 1
     doc_id = data1["results"][0]["document_id"]
     assert data1["results"][0]["is_new"] is True
@@ -693,8 +684,7 @@ async def test_csv_import_duplicate_identity_upsert(client: AsyncClient, auth_he
         files={"file": ("data.csv", csv_bytes_v2, "text/csv")},
         data=_import_data("PERSON", mapping),
     )
-    assert response2.status_code == 200
-    data2 = response2.json()
+    data2 = await report_of(client, auth_headers, response2)
     assert data2["succeeded"] == 1
     # Same document_id (stable identity), new version
     assert data2["results"][0]["document_id"] == doc_id
@@ -720,8 +710,7 @@ async def test_csv_with_bom(client: AsyncClient, auth_headers: dict):
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     # BOM should be stripped (the code uses utf-8-sig decoding)
     assert data["succeeded"] == 1
     assert data["failed"] == 0
@@ -845,7 +834,6 @@ async def test_import_valid_term_value(client: AsyncClient, auth_headers: dict):
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping),
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["succeeded"] == 1
     assert data["failed"] == 0

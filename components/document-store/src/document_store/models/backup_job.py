@@ -1,10 +1,11 @@
 """BackupJob model for the Document Store service.
 
-Tracks long-running backup, restore and validation jobs, run in-process by
-document-store's own engines. Created when a caller POSTs to
+Tracks long-running backup, restore, validation and CSV-import jobs, run
+in-process by document-store's own engines. Created when a caller POSTs to
 /api/document-store/backup/namespaces/{ns}/backup, .../restore or
-.../validate, or to /api/document-store/backup/jobs/{id}/restore, and by a
-restore that wrote data, which starts a validation job per namespace it wrote;
+.../validate, or to /api/document-store/backup/jobs/{id}/restore, or to
+/api/document-store/import, and by a restore that wrote data, which starts a
+validation job per namespace it wrote;
 updated as the engine emits progress events; read by the SSE and status
 endpoints.
 
@@ -35,6 +36,13 @@ class BackupJobKind(StrEnum):
     # status, the warnings list — and a restore links to the validation it
     # triggered, so the two belong in one place.
     VALIDATE = "validate"
+    # Creates documents from CSV/XLSX rows. A file of tens of thousands of
+    # rows runs for minutes at the one-Registry-call-per-row rate, so the
+    # route cannot answer with the report and stay reachable: it hands back
+    # this record instead. Same machinery as VALIDATE — progress events, SSE,
+    # persisted status — plus the row report, which rides `result` the way a
+    # validation's findings do.
+    IMPORT = "import"
 
 
 class BackupJobStatus(StrEnum):
@@ -52,7 +60,7 @@ RUNNING_RESTORE_INDEX = "backup_one_running_restore_idx"
 
 class BackupJob(BeanieDocument):
     """
-    A long-running backup, restore or validation job.
+    A long-running backup, restore, validation or CSV-import job.
 
     Jobs are created immediately on request; the run is an asyncio task on
     the service's event loop. Its progress events are persisted here as they
@@ -66,11 +74,11 @@ class BackupJob(BeanieDocument):
     # Identity
     job_id: str = Field(
         ...,
-        description="Globally unique job ID: 'bkp-' (backup), 'rst-' (restore) or 'val-' (validation) prefix + 16 hex chars (UUID4-derived)"
+        description="Globally unique job ID: 'bkp-' (backup), 'rst-' (restore), 'val-' (validation) or 'imp-' (CSV/XLSX import) prefix + 16 hex chars (UUID4-derived)"
     )
     kind: BackupJobKind = Field(
         ...,
-        description="backup (export), restore (import) or validate (integrity check)"
+        description="backup (namespace export), restore (archive import), validate (integrity check) or import (documents from CSV/XLSX rows)"
     )
     namespace: str = Field(
         ...,
@@ -172,13 +180,17 @@ class BackupJob(BeanieDocument):
     # sample of issues. Capped deliberately — a namespace with a systematic
     # problem produces one issue per document, and the job record is not the
     # right place to hold a quarter of a million of them.
+    # An import job's report is written the same way, and rewritten with the
+    # counts so far as its rows are written: a run the process lost mid-way
+    # then still says how far it got.
     result: dict[str, Any] | None = Field(
         default=None,
         description=(
             "Structured outcome for jobs that produce one: a validation's "
             "findings, a restore dry run's plan, a backup's omissions "
             "(how many inactive template versions it left out, per namespace), "
-            "or a refused merge's every "
+            "an import's row report (result_kind: import_report, and while it "
+            "runs the counts so far), or a refused merge's every "
             "incompatibility (result_kind: merge_refused)"
         )
     )

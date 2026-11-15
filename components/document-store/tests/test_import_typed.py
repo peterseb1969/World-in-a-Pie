@@ -14,6 +14,8 @@ from httpx import AsyncClient
 from document_store.models.document import Document
 from document_store.services.import_service import CellConversionError, ImportService, convert_cell
 
+from .test_case_1140_import import finish_job
+
 
 def _csv(headers, rows) -> bytes:
     buf = io.StringIO()
@@ -39,6 +41,8 @@ HEADERS = list(MAPPING)
 
 
 async def _import(client, auth_headers, filename, content, skip_errors=True):
+    """The file in, the report out: the route answers with a job, and the rows
+    are on the record once its run has ended."""
     resp = await client.post(
         "/api/document-store/import",
         headers=auth_headers,
@@ -46,8 +50,9 @@ async def _import(client, auth_headers, filename, content, skip_errors=True):
         data={"template_id": "PERSON", "column_mapping": json.dumps(MAPPING),
               "namespace": "wip", "skip_errors": str(skip_errors).lower()},
     )
-    assert resp.status_code == 200, resp.text
-    return resp.json()
+    assert resp.status_code == 202, resp.text
+    job = await finish_job(client, auth_headers, resp.json()["job_id"])
+    return job["result"]
 
 
 async def _stored(result) -> Document:

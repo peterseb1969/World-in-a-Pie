@@ -105,8 +105,9 @@ class _Sentinel:
 
 _SENTINEL: _Sentinel = _Sentinel()
 
-# Type of the coroutine function that runs a backup/restore job. Receives a
-# progress_callback it must call at phase boundaries; raises on failure.
+# Type of the coroutine function that runs a backup/restore/validation/import
+# job. Receives a progress_callback it must call at phase boundaries; raises on
+# failure.
 AsyncRunner = Callable[[Callable[[ProgressEvent], None]], Awaitable[Any]]
 
 # Per-job in-process state (process-local by design — see module docstring).
@@ -400,6 +401,34 @@ async def _lost_completion_follow_ups(created: BackupJob | None, event: Progress
 _TERMINATED = "Process terminated during execution (pod restart)"
 
 
+def _terminated_import_error(job: BackupJob) -> str:
+    """A terminated import's account of itself, from the counts its runner
+    persisted as it went.
+
+    Each row it wrote is a committed document on the ordinary create path, so
+    what it wrote stands and nothing needs rolling back — but "the process
+    died" alone cannot tell a caller whether that was 12,000 rows or none, and
+    an import keeps its parsed rows only in memory, so the run cannot be
+    resumed from here. Before the counts were persisted the record said only
+    that it stopped, and the caller had to count the template's documents to
+    learn what a job it started had done.
+    """
+    report = job.result or {}
+    written = report.get("succeeded")
+    if report.get("result_kind") != "import_report" or not isinstance(written, int):
+        return (
+            f"{_TERMINATED}; how many rows it had written was not recorded — "
+            "count the documents of the template it was importing into"
+        )
+    return (
+        f"{_TERMINATED}; {written} of {report.get('total_rows')} row(s) had been "
+        f"written and stand as documents, {report.get('failed', 0)} had failed, and "
+        "the rows after them were not attempted. The run cannot be resumed: re-send "
+        "the file, noting that a template without identity_fields appends a second "
+        "document per row instead of updating the one already written."
+    )
+
+
 async def reconcile_orphaned_jobs() -> int:
     """At startup, mark FAILED every job a previous process left PENDING or
     RUNNING (OOMKill, node drain, crash): no worker in this process will
@@ -414,6 +443,10 @@ async def reconcile_orphaned_jobs() -> int:
 
     Failing it also frees the instance for the next restore: a restore the
     process left running no longer counts as one (running_restore).
+
+    An import that was RUNNING gets the counts its runner persisted as it
+    went into its error, since the rows it wrote are committed and the rest
+    are not: the caller needs to know which of the two it is left with.
 
     This is only right because document-store runs as ONE process per
     install (one replica, one uvicorn worker, and on k8s the Recreate
@@ -432,6 +465,8 @@ async def reconcile_orphaned_jobs() -> int:
         if job.status == BackupJobStatus.RUNNING and _restore_wrote(job):
             follow_ups = await _start_follow_ups_now(job, ProgressEvent(phase="complete", message=""))
             error = f"{_TERMINATED}; {follow_ups}"
+        elif job.kind == BackupJobKind.IMPORT:
+            error = _terminated_import_error(job)
         await job.set({
             BackupJob.status: BackupJobStatus.FAILED,
             BackupJob.error: error,
@@ -498,7 +533,7 @@ async def start_async_job(
     *,
     on_event: Callable[[ProgressEvent], Awaitable[None]] | None = None,
 ) -> asyncio.Task[None]:
-    """Kick off a backup/restore job.
+    """Kick off a backup, restore, validation or import job.
 
     Args:
         job_id: The BackupJob.job_id of a previously persisted record.

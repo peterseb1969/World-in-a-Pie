@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,6 +16,11 @@ from wip_auth.registry_client import DependencyUnavailableError
 from wip_auth.term_resolution import term_resolution_batch
 
 from ..models.api_models import DocumentCreateRequest
+from ..models.backup_job import BackupJob, BackupJobKind, BackupJobSnapshot
+
+# ProgressEvent is taken from backup_service, not from wip_archive: keeping the
+# archive library out of the HTTP surface is Guardrail 1 (see api/backup.py).
+from ..services.backup_service import AsyncRunner, ProgressEvent, start_async_job
 from ..services.document_service import DocumentService
 from ..services.errors import dependency_unavailable, error_fields
 from ..services.file_storage_client import FileStorageUnavailableError
@@ -114,7 +121,8 @@ class _ImportOutcome:
     skipped: int = 0
     created: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
-    # Set when a row met an outage: the import stopped there (503).
+    # Set when a row met an outage: the import stopped there, and the run
+    # ends as a FAILED job rather than a report of a partly written file.
     outage: dict[str, Any] | None = None
 
 
@@ -195,6 +203,7 @@ def _outage_fields(e: BaseException) -> dict[str, Any]:
 
 async def _import_rows(
     documents: list[dict[str, Any]], namespace: str, skip_errors: bool,
+    on_batch: Callable[[_ImportOutcome], Awaitable[None]] | None = None,
 ) -> _ImportOutcome:
     """Create every row's document in order, each through the single-item
     create path (its own Registry call and write), so a failing row is
@@ -204,7 +213,10 @@ async def _import_rows(
     after it are counted as skipped. A row that met an outage (a service the
     write needs could not be asked) stops it whatever skip_errors says: every
     later row would meet the same outage, so they are counted as skipped and
-    the outage is recorded for the 503 answer.
+    the outage is recorded for the caller to report.
+
+    ``on_batch``, when given, is awaited after every batch of rows with the
+    outcome so far — the job runner uses it to publish progress.
     """
     doc_service = DocumentService()
     outcome = _ImportOutcome(total=len(documents))
@@ -228,6 +240,8 @@ async def _import_rows(
                 if outcome.outage is not None or not skip_errors:
                     outcome.skipped = outcome.total - (outcome.succeeded + outcome.failed)
                     return outcome
+            if on_batch is not None:
+                await on_batch(outcome)
             # Write endpoints back off while the reporting consumer lags
             # (nats_client.get_throttle_delay); an import is the largest of them.
             await asyncio.sleep(get_throttle_delay())
@@ -248,6 +262,113 @@ def _import_response(outcome: _ImportOutcome) -> dict[str, Any]:
     }
 
 
+def _import_result(outcome: _ImportOutcome) -> dict[str, Any]:
+    """The report as it stands on the job record: the import's answer, under
+    the discriminator the ``result`` field shares with a validation's findings
+    and a restore dry run's plan."""
+    return {"result_kind": "import_report", **_import_response(outcome)}
+
+
+class ImportStoppedError(Exception):
+    """An import run stopped at a row that met an outage — the Registry,
+    def-store, template-store or the store did not answer — so the rows after
+    it were never attempted.
+
+    Its ``details`` are the report of what was written, which rides the job's
+    terminal error event onto the record (the way a refused merge keeps its
+    account): the caller that started the import needs the two together — that
+    it failed, and how far it got.
+    """
+
+    def __init__(self, message: str, report: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.details = report
+
+
+def _progress_fields(outcome: _ImportOutcome) -> tuple[str, float, int]:
+    """The progress event's message, percent and rows-done for an outcome so
+    far. The run stays below 100 until it emits its terminal event."""
+    done = outcome.succeeded + outcome.failed + outcome.skipped
+    percent = round(done / outcome.total * 95, 1) if outcome.total else 95.0
+    return (
+        f"imported {outcome.succeeded}/{outcome.total} row(s), "
+        f"{outcome.failed} failed",
+        min(percent, 95.0),
+        done,
+    )
+
+
+async def _record_import_progress(
+    job_id: str, outcome: _ImportOutcome,
+    progress_callback: Callable[[ProgressEvent], None],
+) -> None:
+    """Publish where a running import has got: an event for the SSE stream,
+    and the counts on the record.
+
+    The record is the part that outlives the process. An import holds its
+    parsed rows in memory, so a run the process lost cannot resume — the
+    counts it persisted are the only account of which rows were written.
+    A record write that fails is not worth stopping the import over: the
+    terminal event carries the full report either way.
+    """
+    message, percent, done = _progress_fields(outcome)
+    progress_callback(ProgressEvent(
+        phase="phase_import",
+        message=message,
+        percent=percent,
+        current=done,
+        total=outcome.total,
+    ))
+    try:
+        job = await BackupJob.find_one(BackupJob.job_id == job_id)
+        if job is not None:
+            await job.set({BackupJob.result: _import_result(outcome)})
+    except Exception:
+        logger.warning("Could not persist import progress for job %s", job_id)
+
+
+def make_import_runner(
+    job_id: str, documents: list[dict[str, Any]], namespace: str, skip_errors: bool,
+) -> AsyncRunner:
+    """Build the runner that writes an uploaded file's rows.
+
+    The file is parsed and its rows built before the route answers, so a file
+    the caller cannot read is refused there with 422 and never becomes a job.
+    What runs here is the writing — at one Registry call and one write per row,
+    which is the part that takes minutes and would otherwise hold the request
+    open for all of them.
+    """
+
+    async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
+        progress_callback(ProgressEvent(
+            phase="start",
+            message=f"Importing {len(documents)} row(s) into namespace '{namespace}'",
+            percent=0,
+        ))
+
+        async def on_batch(outcome: _ImportOutcome) -> None:
+            await _record_import_progress(job_id, outcome, progress_callback)
+
+        outcome = await _import_rows(documents, namespace, skip_errors, on_batch=on_batch)
+        if outcome.outage is not None:
+            raise ImportStoppedError(
+                f"The import stopped at row {outcome.outage['row']}: "
+                f"{outcome.outage['error']}; the rows after it were not attempted",
+                _import_result(outcome),
+            )
+        progress_callback(ProgressEvent(
+            phase="complete",
+            message=(
+                f"Import complete: {outcome.succeeded}/{outcome.total} row(s) "
+                f"written, {outcome.failed} failed, {outcome.skipped} skipped"
+            ),
+            percent=100,
+            details=_import_result(outcome),
+        ))
+
+    return runner
+
+
 # The import side of the CSV formula escape (wip_auth.csv_cells).
 _UNESCAPE_NOTE = (
     "In a CSV file (not XLSX), a text cell that starts with an apostrophe "
@@ -258,7 +379,44 @@ _UNESCAPE_NOTE = (
 )
 
 
-@router.post("")
+async def _start_import_job(
+    identity: UserIdentity, namespace: str, template_id: str, filename: str,
+    column_mapping: dict[str, Any], skip_errors: bool, documents: list[dict[str, Any]],
+) -> BackupJob:
+    """Record the upload as an import job and start its run.
+
+    The options are what the caller sent, resolved: the canonical template id
+    rather than the spelling in the form, so the record says what was written
+    against and the import can be read back, or replayed, from the job alone.
+    """
+    job_id = f"imp-{uuid.uuid4().hex[:16]}"
+    job = BackupJob(
+        job_id=job_id,
+        kind=BackupJobKind.IMPORT,
+        namespace=namespace,
+        namespaces=[namespace],
+        options={
+            "filename": filename,
+            "template_id": template_id,
+            "column_mapping": column_mapping,
+            "skip_errors": skip_errors,
+            "total_rows": len(documents),
+        },
+        created_by=(
+            identity.identity_string
+            if hasattr(identity, "identity_string") else str(identity)
+        ),
+    )
+    await job.insert()
+
+    try:
+        await start_async_job(job_id, make_import_runner(job_id, documents, namespace, skip_errors))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job
+
+
+@router.post("", response_model=BackupJobSnapshot, status_code=202)
 async def import_documents(
     file: UploadFile = File(..., description=f"CSV or XLSX file to import. {_UNESCAPE_NOTE}"),
     template_id: str = Form(..., description="Template ID for the documents"),
@@ -270,8 +428,8 @@ async def import_documents(
                     "false stops at the first failing row and reports the rest skipped",
     ),
     identity: UserIdentity = Depends(require_api_key),
-) -> dict[str, Any]:
-    """Import documents from a CSV/XLSX file.
+) -> BackupJobSnapshot:
+    """Import documents from a CSV/XLSX file, as a job.
 
     Upload a file with a column mapping to create documents in bulk.
     Use the /preview endpoint first to see the file structure.
@@ -279,7 +437,7 @@ async def import_documents(
     The column_mapping maps CSV column names to template field names:
     {"CSV Column Name": "template_field_name", ...}
 
-    Term fields: use human-readable values in the CSV (e.g., "United Kingdom").
+    Term fields: use human-readable values in the file (e.g., "United Kingdom").
     WIP resolves them to term_ids automatically.
 
     Cells are converted to their field's type before validation: number and
@@ -288,11 +446,27 @@ async def import_documents(
     datetime fields ISO 8601. A cell that cannot be read as its field's type
     fails its row, reported in ``errors`` like a validation failure.
 
-    Every row is attempted and reported (``skip_errors`` true, the default)
-    unless ``skip_errors`` is false. A row that meets an outage (the Registry,
-    def-store, template-store or the store not answering) stops the import
-    either way: the answer is 503 (error_code dependency_unavailable), its
-    detail the report so far, with the rows after it counted as skipped.
+    The answer is 202 and the job: the rows are written in the background,
+    one create per row, which for a large file is minutes of work no caller
+    should hold a request open for. Poll
+    ``GET /api/document-store/backup/jobs/{job_id}`` (or its SSE stream at
+    ``.../events``) for progress; the counts refresh on the record every 50
+    rows. ``result`` then holds the report: every row is attempted and
+    reported (``skip_errors`` true, the default) unless ``skip_errors`` is
+    false. Leaving and coming back is safe — leaving never stopped the import,
+    and the job record says what it did.
+
+    A file that cannot be read, a mapping naming columns the file has not got,
+    a template that cannot be used and an oversized upload are refused here,
+    with 422 (or 413), before the job exists: nothing is written and there is
+    no job to poll.
+
+    Rows that fail validation do not fail the job — the import ran, and its
+    report is the deliverable. A row that meets an outage (the Registry,
+    def-store, template-store or the store not answering) does: the job is
+    FAILED, its ``error`` names the row it stopped at and its ``result`` the
+    report so far, with the rows after it counted as skipped.
+
     Each entry of ``errors`` carries the row's error_code. ``results`` lists at most the first 100
     created rows and ``errors`` the first 50 failed ones; ``results_truncated``
     and ``errors_truncated`` say when a list was cut, and ``succeeded`` /
@@ -333,14 +507,10 @@ async def import_documents(
     if not documents:
         raise _unusable("No documents to import (file may be empty)")
 
-    outcome = await _import_rows(documents, namespace, skip_errors)
-    if outcome.outage is not None:
-        # 503: retry later. The body is the import's report so far, so the
-        # caller knows which rows were written before the outage.
-        raise HTTPException(status_code=503, detail={
-            "message": f"The import stopped at row {outcome.outage['row']}: "
-                       f"{outcome.outage['error']}; the rows after it were not attempted",
-            "error_code": "dependency_unavailable",
-            **_import_response(outcome),
-        })
-    return _import_response(outcome)
+    # Everything the caller could get wrong is settled; what is left is the
+    # writing, so this is where the job starts and the request ends.
+    job = await _start_import_job(
+        identity, namespace, template_id, file.filename or "data.csv",
+        mapping, skip_errors, documents,
+    )
+    return BackupJobSnapshot.from_job(job)

@@ -7,6 +7,8 @@ import openpyxl
 import pytest
 from httpx import AsyncClient
 
+from .test_case_1140_import import report_of
+
 
 def _make_csv(headers: list[str], rows: list[list[str]]) -> bytes:
     """Build a CSV file in memory."""
@@ -96,8 +98,7 @@ async def test_import_csv_success(client: AsyncClient, auth_headers: dict):
             "skip_errors": "false",
         },
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["total_rows"] == 2
     assert data["succeeded"] == 2
     assert data["failed"] == 0
@@ -134,8 +135,7 @@ async def test_import_csv_with_bad_rows_skip(client: AsyncClient, auth_headers: 
             "skip_errors": "true",
         },
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["total_rows"] == 3
     assert data["succeeded"] == 2
     assert data["failed"] == 1
@@ -172,8 +172,7 @@ async def test_import_csv_without_skip_stops_on_error(client: AsyncClient, auth_
             "skip_errors": "false",
         },
     )
-    assert response.status_code == 200
-    data = response.json()
+    data = await report_of(client, auth_headers, response)
     assert data["failed"] == 1
     assert data["skipped"] == 2  # remaining rows skipped
 
