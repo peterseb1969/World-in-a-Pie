@@ -49,12 +49,20 @@ async def _audited_namespace(
     from the entity's most recent audit row. Reads are scoped to that one
     namespace — a terminology_id is unique per namespace only, and another
     namespace's rows under the same id are not this entity's history.
+
+    An id with neither an entity row nor any audit row was never written here,
+    so there is no history to serve: it answers ``miss`` (the resolution 404 of
+    this request) when ids resolve in a namespace, and the empty page only when
+    they do not — the same answer an id that names nothing gets, so an empty
+    page never confirms that the id was issued.
     """
     namespace = entity_namespace
     if namespace is None:
         latest = await TermAuditLog.find({id_field: entity_id})\
             .sort([("changed_at", SortDirection.DESCENDING)]).first_or_none()
         if latest is None:
+            if miss is not None:
+                raise miss
             return None
         namespace = latest.namespace
     # A namespace the caller cannot see answers what an unknown id gets:

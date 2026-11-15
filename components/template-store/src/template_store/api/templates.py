@@ -248,7 +248,7 @@ async def get_template(
             )
         await _gate_unresolvable(exc, raw, not_found)
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise HTTPException(status_code=404, detail=not_found)
     # CASE-386 — gate read on the template's actual namespace (prevents
     # cross-namespace schema leakage; the 404 on denial also hides which
     # template IDs exist in which namespace).
@@ -285,7 +285,7 @@ async def get_template_raw(
             value=template_id, version=version, resolve_inheritance=False, namespace=namespace
         )
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise HTTPException(status_code=404, detail=not_found)
     # CASE-386 — gate read on the template's actual namespace.
     identity = require_current_identity()
     await check_readable(identity, template.namespace, not_found)
@@ -556,11 +556,16 @@ async def get_template_dependencies(template_id: str, namespace: str | None = Qu
     # CASE-386 — dependency metadata leaks existence + dependent names;
     # gate read on the template's actual namespace.
     identity = require_current_identity()
+    miss = await miss_detail(
+        raw_id, "template", namespace, f"Template {template_id} not found", "template_id",
+    )
     existing = await Template.find_one({"template_id": template_id})
-    if existing:
-        await check_readable(identity, existing.namespace, await miss_detail(
-            raw_id, "template", namespace, f"Template {template_id} not found", "template_id",
-        ))
+    if existing is None:
+        # A Registry entry with no template behind it answers as an id that
+        # names nothing: the dependency check's own not-found would confirm
+        # that this id was issued.
+        raise HTTPException(status_code=404, detail=miss)
+    await check_readable(identity, existing.namespace, miss)
 
     try:
         return await DependencyService.check_template_dependencies(template_id)
@@ -762,7 +767,10 @@ async def validate_template(
     # gate read on the template's actual namespace.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    if existing and not await can_read(identity, existing.namespace):
+    # One the caller cannot see, and one with no template behind its Registry
+    # entry, are treated alike.
+    hidden = existing is None or not await can_read(identity, existing.namespace)
+    if hidden:
         # Answered as for an id that names nothing: the resolution 404 of
         # this request when ids resolve, else the not_found validation.
         if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
@@ -795,7 +803,16 @@ async def activate_template(
     identity = require_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
+    raw_id = template_id
     template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+
+    # A Registry entry with no template behind it answers as an id that names
+    # nothing: the service refuses with 400, which would confirm that this id
+    # was issued.
+    if await Template.find_one({"template_id": template_id}) is None:
+        raise HTTPException(status_code=404, detail=await miss_detail(
+            raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
+        ))
 
     try:
         return await TemplateService.activate_template(
@@ -883,11 +900,16 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
     # CASE-386 — cascade mutates child templates; gate write on the
     # parent template's actual namespace.
     identity = require_current_identity()
+    not_found = await miss_detail(
+        raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
+    )
     existing = await Template.find_one({"template_id": template_id})
-    if existing:
-        await check_entity_permission(identity, existing.namespace, "write", await miss_detail(
-            raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
-        ))
+    if existing is None:
+        # A Registry entry with no template behind it answers as an id that
+        # names nothing, and is refused here rather than by the service — the
+        # write check below would otherwise be skipped on its way past.
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_entity_permission(identity, existing.namespace, "write", not_found)
 
     try:
         return await TemplateService.cascade_to_children(template_id)
@@ -940,9 +962,10 @@ async def get_template_children(template_id: str, namespace: str | None = Query(
     # CASE-386 — child listing confirms existence cross-namespace; gate read.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    # One the caller cannot see answers as an id that names nothing: the
-    # resolution 404 of this request when ids resolve, else an empty list.
-    hidden = existing is not None and not await can_read(identity, existing.namespace)
+    # One the caller cannot see, and one with no template behind its Registry
+    # entry, answers as an id that names nothing: the resolution 404 of this
+    # request when ids resolve, else an empty list.
+    hidden = existing is None or not await can_read(identity, existing.namespace)
     if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
         raise miss
     children = [] if hidden else await InheritanceService.get_children(template_id)
@@ -965,9 +988,10 @@ async def get_template_descendants(template_id: str, namespace: str | None = Que
     # CASE-386 — descendant listing confirms existence cross-namespace; gate read.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    # One the caller cannot see answers as an id that names nothing: the
-    # resolution 404 of this request when ids resolve, else an empty list.
-    hidden = existing is not None and not await can_read(identity, existing.namespace)
+    # One the caller cannot see, and one with no template behind its Registry
+    # entry, answers as an id that names nothing: the resolution 404 of this
+    # request when ids resolve, else an empty list.
+    hidden = existing is None or not await can_read(identity, existing.namespace)
     if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
         raise miss
     descendants = [] if hidden else await InheritanceService.get_descendants(template_id)

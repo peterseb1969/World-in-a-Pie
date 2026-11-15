@@ -181,7 +181,9 @@ async def get_terminology(
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     if not result:
-        raise HTTPException(status_code=404, detail="Terminology not found")
+        raise HTTPException(status_code=404, detail=await miss_detail(
+            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+        ))
 
     # Read on the entity's own namespace; one the caller cannot see answers
     # exactly as an id that names nothing, so the 404 does not confirm that
@@ -282,11 +284,16 @@ async def get_terminology_dependencies(
     # the terminology exists in the namespace and lists template names
     # referencing it). Gate by read permission on the entity's namespace.
     from ..models.terminology import Terminology as _T
+    miss = await miss_detail(
+        raw_id, "terminology", None, f"Terminology {terminology_id} not found", "terminology_id",
+    )
     existing = await _T.find_one({"terminology_id": terminology_id})
-    if existing:
-        await check_readable(identity, existing.namespace, await miss_detail(
-            raw_id, "terminology", None, f"Terminology {terminology_id} not found", "terminology_id",
-        ))
+    if existing is None:
+        # A Registry entry with no terminology behind it answers as an id that
+        # names nothing: the dependency check's own not-found would confirm
+        # that this id was issued.
+        raise HTTPException(status_code=404, detail=miss)
+    await check_readable(identity, existing.namespace, miss)
 
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
@@ -316,11 +323,17 @@ async def restore_terminology(
     # namespace. Lookup the entity first to resolve the namespace, then
     # check before restoring.
     from ..models.terminology import Terminology as _T
+    not_found = await miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    )
     existing = await _T.find_one({"terminology_id": terminology_id})
-    if existing:
-        await check_entity_permission(identity, existing.namespace, "write", await miss_detail(
-            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
-        ))
+    if existing is None:
+        # A Registry entry with no terminology behind it answers as an id that
+        # names nothing, and is refused before the restore rather than by the
+        # service — the write check below would otherwise be skipped on its way
+        # past.
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_entity_permission(identity, existing.namespace, "write", not_found)
 
     try:
         result = await TerminologyService.restore_terminology(

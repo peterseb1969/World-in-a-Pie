@@ -263,14 +263,15 @@ async def get_file(
     service = get_file_service()
     file_response = await service.get_file(file_id)
 
+    # A Registry entry with no file record behind it answers as an id that
+    # names nothing, as does one in a namespace the caller cannot see.
+    missing = await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id")
     if not file_response:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=missing)
 
     # The namespace of the record just read: one read, and the check always
     # runs (a second read could miss a file hard-deleted in between and skip it).
-    await check_readable(
-        identity, file_response.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"),
-    )
+    await check_readable(identity, file_response.namespace, missing)
     return file_response
 
 
@@ -300,10 +301,13 @@ async def get_download_url(
 
     # Check namespace permission before generating presigned URL
     from ..models.file import File as FileModel
+    missing = await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id")
     file_doc = await FileModel.find_one({"file_id": file_id})
-    if not file_doc:
-        raise HTTPException(status_code=404, detail="File not found")
-    await check_readable(identity, file_doc.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
+    if file_doc is None:
+        # A Registry entry with no file record behind it answers as an id that
+        # names nothing.
+        raise HTTPException(status_code=404, detail=missing)
+    await check_readable(identity, file_doc.namespace, missing)
 
     try:
         response = await service.get_download_url(file_id, expires_in)
@@ -333,15 +337,18 @@ async def download_file_content(
     from ..models.file import FileStatus
 
     # Quick metadata lookup (no file content loaded yet)
+    missing = await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id")
     file_doc = await FileModel.find_one({"file_id": file_id})
-    if not file_doc:
-        raise HTTPException(status_code=404, detail="File not found")
+    if file_doc is None:
+        # A Registry entry with no file record behind it answers as an id that
+        # names nothing.
+        raise HTTPException(status_code=404, detail=missing)
 
     if file_doc.status == FileStatus.INACTIVE:
         raise HTTPException(status_code=409, detail="File has been deleted")
 
     # Check namespace permission
-    await check_readable(identity, file_doc.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
+    await check_readable(identity, file_doc.namespace, missing)
 
     # Stream chunks directly from the object store → browser (no full buffering).
     # The first chunk is read before the response starts: once the status line
@@ -585,11 +592,14 @@ async def get_file_documents(
     from ..models.file import File as FileModel
 
     # Verify file exists and check namespace permission
+    missing = await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id")
     file_doc = await FileModel.find_one({"file_id": file_id})
-    if not file_doc:
-        raise HTTPException(status_code=404, detail="File not found")
+    if file_doc is None:
+        # A Registry entry with no file record behind it answers as an id that
+        # names nothing.
+        raise HTTPException(status_code=404, detail=missing)
 
-    await check_readable(identity, file_doc.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
+    await check_readable(identity, file_doc.namespace, missing)
 
     # Query documents with this file_id in file_references. A document in
     # another namespace may reference the file; list only those the caller
@@ -652,6 +662,7 @@ async def hard_delete_file(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Permanently delete a file."""
+    raw_file_id = file_id
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     service = get_file_service()
@@ -659,8 +670,14 @@ async def hard_delete_file(
     # Check namespace permission — hard delete requires admin
     from ..models.file import File as FileModel
     file_doc = await FileModel.find_one({"file_id": file_id})
-    if not file_doc:
-        raise HTTPException(status_code=404, detail="File not found")
+    if file_doc is None:
+        # A Registry entry with no file record behind it answers as an id that
+        # names nothing, and is refused before the delete rather than by the
+        # service — the admin check below would otherwise be skipped on its way
+        # past.
+        raise HTTPException(status_code=404, detail=await miss_detail(
+            raw_file_id, "file", namespace, "File not found", "file_id",
+        ))
     await check_namespace_permission(identity, file_doc.namespace, "admin")
 
     try:
