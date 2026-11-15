@@ -27,9 +27,9 @@ def _probe_budget_seconds() -> int:
 
 def test_the_ping_and_server_selection_fit_the_probe_budget():
     budget = _probe_budget_seconds()
-    assert mongo.PING_TIMEOUT_S < budget
-    assert mongo.SERVER_SELECTION_TIMEOUT_MS / 1000 < budget
-    assert mongo.CONNECT_TIMEOUT_MS / 1000 < budget
+    assert budget > mongo.PING_TIMEOUT_S
+    assert budget > mongo.SERVER_SELECTION_TIMEOUT_MS / 1000
+    assert budget > mongo.CONNECT_TIMEOUT_MS / 1000
 
 
 def test_a_ping_waits_the_real_bound_by_default(monkeypatch):
