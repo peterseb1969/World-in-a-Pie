@@ -655,8 +655,9 @@ echo "   Written: CLAUDE.md (tier $($TIER3 && echo 3 || echo 2))"
 # enabling it there would block every commit for the rest of this clone's life.
 # The hook file: nothing to enable if it is absent or not executable. And the
 # operator's own hooks: a hooks path someone else set is left alone and
-# reported, and so are hooks sitting in .git/hooks — setting core.hooksPath
-# stops git looking there at all, which would quietly retire them.
+# reported, and so are hooks sitting in .git/hooks, whether a regular file or a
+# link to a script elsewhere — setting core.hooksPath stops git looking there at
+# all, which would quietly retire them.
 if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     RATCHET_HOOK="$WIP_ROOT/scripts/git-hooks/pre-commit"
     if ! "$VENV_PYTHON" -c "import radon" >/dev/null 2>&1; then
@@ -674,7 +675,11 @@ if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             /*) ;;
             *) GIT_HOOKS_DIR="$WIP_ROOT/$GIT_HOOKS_DIR" ;;
         esac
-        OWN_HOOKS="$(find "$GIT_HOOKS_DIR" -maxdepth 1 -type f ! -name '*.sample' 2>/dev/null | sort || true)"
+        # -H follows the hooks directory itself when that is a link; -type l
+        # catches a hook that links to a script elsewhere, which git runs the
+        # same as a file sitting there.
+        OWN_HOOKS="$(find -H "$GIT_HOOKS_DIR" -maxdepth 1 \
+            \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | sort || true)"
         if [ -z "$HOOKS_PATH" ] && [ -n "$OWN_HOOKS" ]; then
             echo "4b. Git hooks: $GIT_HOOKS_DIR already holds hooks"
             while IFS= read -r own; do

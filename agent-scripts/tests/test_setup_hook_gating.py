@@ -10,6 +10,7 @@ checked rather than asserted from the prose around it.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -93,6 +94,46 @@ def test_not_enabled_over_a_hooks_directory_with_its_own_hooks(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert hooks_path(tmp_path) is None, (
         "setting core.hooksPath silently retires the hooks in .git/hooks"
+    )
+    assert "commit-msg" in result.stdout
+
+
+def test_a_symlinked_hook_blocks_it_as_much_as_a_regular_one(tmp_path: Path):
+    """A hook that links to a script elsewhere is a hook git runs.
+
+    Listing the directory by file type alone sees only regular files, so the
+    link is invisible and setting the path would retire it in silence.
+    """
+    init_repo(tmp_path)
+    target = tmp_path / "tools" / "hooks" / "commit-msg"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    link = tmp_path / ".git" / "hooks" / "pre-commit"
+    link.symlink_to(target)
+    result = run(tmp_path, radon=True)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) is None, (
+        "setting core.hooksPath silently retires the symlinked hook in .git/hooks"
+    )
+    assert "pre-commit" in result.stdout
+
+
+def test_a_symlinked_hooks_directory_is_searched_through(tmp_path: Path):
+    """.git/hooks itself can be a link; the hooks behind it are still live."""
+    init_repo(tmp_path)
+    real = tmp_path / "shared-hooks"
+    real.mkdir()
+    own = real / "commit-msg"
+    own.write_text("#!/bin/sh\nexit 0\n")
+    own.chmod(0o755)
+    hooks = tmp_path / ".git" / "hooks"
+    shutil.rmtree(hooks)
+    hooks.symlink_to(real)
+    result = run(tmp_path, radon=True)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) is None, (
+        "the hooks behind the linked hooks directory would stop running"
     )
     assert "commit-msg" in result.stdout
 
