@@ -82,13 +82,14 @@ async def _document(
     term_references=None,
     status="active",
     version=1,
+    template_version=1,
 ):
     data = data or {"patient_id": "P-1"}
     document = Document(
         document_id=doc_id,
         namespace=namespace,
         template_id=TEMPLATE_ID,
-        template_version=1,
+        template_version=template_version,
         identity_hash=(
             compute_hash({"patient_id": data["patient_id"]})
             if identity_hash is None
@@ -107,6 +108,16 @@ async def _document(
 
 def _types(result):
     return sorted(issue.type for issue in result.issues)
+
+
+def _template_statuses(statuses):
+    """A get_template stub serving {(template_id, version): status}."""
+    async def get_template(template_id=None, version=None, **_):
+        status = statuses.get((template_id, version))
+        if status is None:
+            return None
+        return {"status": status, "identity_fields": IDENTITY_FIELDS}
+    return AsyncMock(side_effect=get_template)
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +306,67 @@ class TestReferences:
         result = await check_all_documents(namespace=NAMESPACE)
 
         assert "orphaned_template_ref" in _types(result)
+
+    @pytest.mark.asyncio
+    async def test_a_missing_template_is_reported_on_a_superseded_version_too(self, db):
+        # A reference that resolves to nothing is a defect in history as well;
+        # only the retired-but-present case is scoped to current versions.
+        db["template_store"].get_template = AsyncMock(return_value=None)
+        await _document("D1", status="inactive", version=2)
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert "orphaned_template_ref" in _types(result)
+        assert result.summary.orphaned_template_refs == 1
+
+    @pytest.mark.asyncio
+    async def test_a_superseded_version_keeps_its_retired_pin_as_history(self, db):
+        """A version written while its template version was current stays pinned
+        to it when that version is later retired (PoNIF #1: retired, not
+        deleted). Reporting it would flag every document an evolved namespace
+        ever versioned, on every scan, forever."""
+        db["template_store"].get_template = _template_statuses({
+            (TEMPLATE_ID, 1): "inactive",
+            (TEMPLATE_ID, 2): "active",
+        })
+        await _document("D1", status="inactive", version=1, template_version=1)
+        await _document("D1", version=2, template_version=2)
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.status == "healthy"
+        assert result.issues == []
+        assert result.summary.inactive_template_refs == 0
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_document_on_a_retired_template_version_is_history(self, db):
+        # Soft-delete leaves the document's last version inactive: like a
+        # superseded version, it has no next write to fail.
+        db["template_store"].get_template = _template_statuses({(TEMPLATE_ID, 1): "inactive"})
+        await _document("D1", status="inactive")
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.status == "healthy"
+        assert result.summary.inactive_template_refs == 0
+
+    @pytest.mark.asyncio
+    async def test_a_current_version_on_a_retired_template_version_still_warns(self, db):
+        """The finding the check exists for: such a document cannot be updated as
+        it stands, whatever history sits next to it."""
+        db["template_store"].get_template = _template_statuses({
+            (TEMPLATE_ID, 1): "inactive",
+            (TEMPLATE_ID, 2): "active",
+        })
+        await _document("D1", status="inactive", version=1, template_version=1)
+        await _document("D2", data={"patient_id": "P-2"}, template_version=1)
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.status == "warning"
+        assert [(i.document_id, i.version) for i in result.issues] == [("D2", 1)]
+        assert result.summary.inactive_template_refs == 1
+        assert result.summary.documents_with_issues == 1
 
     @pytest.mark.asyncio
     async def test_a_missing_term_is_still_reported(self, db):

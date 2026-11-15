@@ -98,7 +98,15 @@ class IntegritySummary(BaseModel):
     documents_with_issues: int = 0
     orphaned_template_refs: int = 0
     orphaned_term_refs: int = 0
-    inactive_template_refs: int = 0
+    inactive_template_refs: int = Field(
+        default=0,
+        description=(
+            "Documents whose current version is pinned to a template version "
+            "that has since been retired: such a document cannot be updated as "
+            "it stands. A superseded version keeps its pin as history and is "
+            "not counted"
+        ),
+    )
     orphaned_document_refs: int = 0
     misplaced_document_refs: int = 0
     orphaned_file_refs: int = 0
@@ -211,6 +219,14 @@ async def check_template_reference(
     """
     Check if a template reference is valid.
 
+    A template that is missing entirely is reported on every version. A pin to
+    a template version that has since been retired is reported only on the
+    document's current version (an active row): a superseded version keeps the
+    pin it was written with (PoNIF #1), so one that was current while its
+    template version was, and was superseded before that version was retired,
+    is expected history that blocks nothing — while a current version on a
+    retired version cannot be updated as it stands.
+
     Args:
         template_id: Template ID
         document: Document containing the reference
@@ -251,7 +267,10 @@ async def check_template_reference(
             reference=template_id,
             message=f"Template '{template_id}' not found"
         ))
-    elif status not in ("active", "version_missing"):
+    elif (
+        status not in ("active", "version_missing")
+        and document.status == DocumentStatus.ACTIVE
+    ):
         issues.append(IntegrityIssue(
             type="inactive_template_ref",
             severity="warning",
