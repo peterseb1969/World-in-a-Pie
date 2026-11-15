@@ -763,13 +763,22 @@ async def validate_template(
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
     # CASE-386 — validating against a template exercises its semantics;
-    # gate read on the template's actual namespace.
+    # gate read on the template's actual namespace. A template that is not
+    # there is answered here rather than left to the service's view of it, so
+    # the gate stands on every path that reads.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    if existing and not await can_read(identity, existing.namespace):
+    miss = await resolution_miss(raw_id, "template", namespace, "template_id")
+    if existing is None:
         # Answered as for an id that names nothing: the resolution 404 of
         # this request when ids resolve, else the not_found validation.
-        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+        if miss is not None:
+            raise miss
+        return TemplateService.template_not_found_validation(template_id)
+    if not await can_read(identity, existing.namespace):
+        # One the caller cannot see answers exactly the same, so it confirms
+        # nothing.
+        if miss is not None:
             raise miss
         return TemplateService.template_not_found_validation(template_id)
 
@@ -946,14 +955,19 @@ async def get_template_children(template_id: str, namespace: str | None = Query(
     raw_id = template_id
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
     # CASE-386 — child listing confirms existence cross-namespace; gate read.
+    # A parent that is not here is answered here rather than left to a search
+    # for its children, so the gate stands on every path that reads.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
+    if existing is None:
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
     # One the caller cannot see answers as an id that names nothing: the
     # resolution 404 of this request when ids resolve, else an empty list.
-    hidden = existing is not None and not await can_read(identity, existing.namespace)
-    if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
-        raise miss
-    children = [] if hidden else await InheritanceService.get_children(template_id)
+    if not await can_read(identity, existing.namespace):
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+            raise miss
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
+    children = await InheritanceService.get_children(template_id)
     templates = [TemplateService._to_template_response(t) for t in children]
     return TemplateListResponse(
         items=templates,
@@ -971,14 +985,19 @@ async def get_template_descendants(template_id: str, namespace: str | None = Que
     raw_id = template_id
     template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
     # CASE-386 — descendant listing confirms existence cross-namespace; gate read.
+    # A parent that is not here is answered here rather than left to a search
+    # for its descendants, so the gate stands on every path that reads.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
+    if existing is None:
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
     # One the caller cannot see answers as an id that names nothing: the
     # resolution 404 of this request when ids resolve, else an empty list.
-    hidden = existing is not None and not await can_read(identity, existing.namespace)
-    if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
-        raise miss
-    descendants = [] if hidden else await InheritanceService.get_descendants(template_id)
+    if not await can_read(identity, existing.namespace):
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+            raise miss
+        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
+    descendants = await InheritanceService.get_descendants(template_id)
     templates = [TemplateService._to_template_response(t) for t in descendants]
     return TemplateListResponse(
         items=templates,

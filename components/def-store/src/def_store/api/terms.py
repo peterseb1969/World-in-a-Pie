@@ -165,22 +165,25 @@ async def create_terms(
 
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
-    held = AmbiguousItems(items)
-    if term_parent:
-        await check_entity_permission(identity, term_parent.namespace, "write", await miss_detail(
-            raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found",
-            "terminology_id",
-        ))
-        # A parent is a term of this terminology: resolve it there (a value
-        # is that terminology's value, never colon-parsed; a UUID passes).
-        # Write door — the id is persisted, so the cache is bypassed. What
-        # does not resolve is refused per item by the service; a value
-        # several terms bear is answered per item as ambiguous.
-        from wip_auth import resolve_bulk_ids
-        held = AmbiguousItems(items, await resolve_bulk_ids(
-            items, "parent_term_id", "term", namespace=term_parent.namespace,
-            terminology=terminology_id, bypass_cache=True,
-        ))
+    not_found = await miss_detail(
+        raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found", "terminology_id",
+    )
+    # A terminology that is not here is answered here, not left to the service's
+    # view of it: the gate below then stands on every path that writes.
+    if term_parent is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_entity_permission(identity, term_parent.namespace, "write", not_found)
+
+    # A parent is a term of this terminology: resolve it there (a value
+    # is that terminology's value, never colon-parsed; a UUID passes).
+    # Write door — the id is persisted, so the cache is bypassed. What
+    # does not resolve is refused per item by the service; a value
+    # several terms bear is answered per item as ambiguous.
+    from wip_auth import resolve_bulk_ids
+    held = AmbiguousItems(items, await resolve_bulk_ids(
+        items, "parent_term_id", "term", namespace=term_parent.namespace,
+        terminology=terminology_id, bypass_cache=True,
+    ))
 
     # The request's size picks the path, whatever is held out of it.
     single = len(items) == 1
