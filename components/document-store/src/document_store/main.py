@@ -28,6 +28,7 @@ from wip_auth import (
     declare_api_key_security,
     init_beanie_with_retry,
     install_liveness,
+    require_admin_identity,
     require_groups,
     require_service_keys,
     service_api_key,
@@ -39,7 +40,6 @@ from wip_auth.mongo import mongo_client_options, mongo_identity, mongo_ping
 
 from . import __version__
 from .api import api_router
-from .api.auth import require_api_key
 from .models.backup_job import BackupJob
 from .models.document import Document
 from .models.file import File
@@ -575,8 +575,10 @@ async def ready_check():
         raise HTTPException(status_code=503, detail={"ready": False}) from None
 
 
-# Debug endpoints for performance analysis (gated behind auth — H7)
-@app.get("/debug/timing", tags=["Debug"], dependencies=[Depends(require_api_key)])
+# Debug endpoints for performance analysis. Admin-only (wip-admins): they
+# expose and reset service-wide timing statistics and clear the template
+# and def-store client caches, which affects every caller of the service.
+@app.get("/debug/timing", tags=["Debug"], dependencies=[Depends(require_admin_identity)])
 async def get_timing_stats():
     """
     Get timing statistics for document creation and validation.
@@ -608,7 +610,7 @@ async def get_timing_stats():
     }
 
 
-@app.post("/debug/timing/reset", tags=["Debug"], dependencies=[Depends(require_api_key)])
+@app.post("/debug/timing/reset", tags=["Debug"], dependencies=[Depends(require_admin_identity)])
 async def reset_timing_stats():
     """Reset all timing statistics (creation and validation)."""
     from .services.document_service import DocumentService
@@ -618,7 +620,7 @@ async def reset_timing_stats():
     return {"status": "reset"}
 
 
-@app.get("/debug/cache", tags=["Debug"], dependencies=[Depends(require_api_key)])
+@app.get("/debug/cache", tags=["Debug"], dependencies=[Depends(require_admin_identity)])
 async def get_cache_stats():
     """
     Get cache statistics for the Template Store client, and Def-Store's
@@ -647,7 +649,7 @@ async def get_cache_stats():
     }
 
 
-@app.post("/debug/cache/clear", tags=["Debug"], dependencies=[Depends(require_api_key)])
+@app.post("/debug/cache/clear", tags=["Debug"], dependencies=[Depends(require_admin_identity)])
 async def clear_caches():
     """Clear all caches (template and term validation)."""
     template_client = get_template_store_client()

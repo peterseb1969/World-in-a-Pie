@@ -11,6 +11,7 @@ Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 - OTHER    read on 'xns-closed' only, nothing on 'wip';
 - WRITER   write on 'wip';
 - WIPADMIN admin on 'wip';
+- SERVICES wip-services (no namespace scope);
 - ADMIN    wip-admins.
 
 Groups:
@@ -23,6 +24,7 @@ Groups:
 - ns_admin:      admin on 'wip' (or the privileged groups); a writer gets
                  403, a caller who cannot read 'wip' 404.
 - privileged:    wip-admins / wip-services only (403 for everyone else).
+- admin:         wip-admins only; a wip-services key gets 403 too.
 - filtered:      a listing that shows a caller only what it can read.
 
 "Passes the gate" is asserted as "not refused" (not 401/403/404, or for a
@@ -46,6 +48,7 @@ NOGRANT = "test_scoped_key"
 OTHER = "test_xns_only_key"
 WRITER = "test_xns_writer_key"
 WIPADMIN = "test_wip_admin_key"
+SERVICES = "test_services_key"
 ADMIN = "test_api_key"
 
 Ctx = dict[str, str]
@@ -86,10 +89,10 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", "/health", "public", _get("/health")),
     ("GET", f"{P}/health", "public", _get(f"{P}/health")),
     ("GET", "/ready", "public", _get("/ready")),
-    ("GET", "/debug/timing", "authenticated", _get("/debug/timing")),
-    ("POST", "/debug/timing/reset", "authenticated", _json("/debug/timing/reset", None)),
-    ("GET", "/debug/cache", "authenticated", _get("/debug/cache")),
-    ("POST", "/debug/cache/clear", "authenticated", _json("/debug/cache/clear", None)),
+    ("GET", "/debug/timing", "admin", _get("/debug/timing")),
+    ("POST", "/debug/timing/reset", "admin", _json("/debug/timing/reset", None)),
+    ("GET", "/debug/cache", "admin", _get("/debug/cache")),
+    ("POST", "/debug/cache/clear", "admin", _json("/debug/cache/clear", None)),
     ("GET", "/health/integrity", "privileged", _get("/health/integrity")),
     ("GET", f"{P}/health/events", "privileged", _get(f"{P}/health/events")),
     # documents
@@ -312,6 +315,16 @@ async def test_namespace_admin_routes(route, ctx):
 async def test_privileged_routes(route, ctx):
     assert (await _call(route, ctx, None)).status_code == 401
     for key in (NOGRANT, OTHER, WRITER, WIPADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 403, (key, resp.status_code, resp.text[:200])
+    assert (await _call(route, ctx, ADMIN)).status_code not in (401, 403)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _of("admin"))
+async def test_admin_routes(route, ctx):
+    assert (await _call(route, ctx, None)).status_code == 401
+    for key in (NOGRANT, OTHER, WRITER, WIPADMIN, SERVICES):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 403, (key, resp.status_code, resp.text[:200])
     assert (await _call(route, ctx, ADMIN)).status_code not in (401, 403)

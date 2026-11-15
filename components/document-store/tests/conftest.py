@@ -129,6 +129,13 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "groups": [],
     "namespaces": ["wip"],
     "grants": {"wip": "admin"},
+}, {
+    # A platform service key (wip-services, never namespace-scoped): passes
+    # the privileged gates, refused by the wip-admins-only ones.
+    "name": "test-services",
+    "key": "test_services_key",
+    "owner": "test-services",
+    "groups": ["wip-services"],
 }]))
 
 
