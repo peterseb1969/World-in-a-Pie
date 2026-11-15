@@ -26,6 +26,4 @@ carries a `+local.<tree>` suffix. Two pushed lanes that each changed a library
 used to get the same plain version for different content.
 
 **Action:** anything that compares a service's reported version against the
-old numbers (for example `0.4.0` from the Registry) sees `2.1.0` now. The
-`schemas/*.json` snapshots keep the old `info.version` until
-`scripts/update-schemas.sh` next refreshes them.
+old numbers (for example `0.4.0` from the Registry) sees `2.1.0` now.

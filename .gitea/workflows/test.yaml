@@ -55,7 +55,9 @@ jobs:
       - name: ShellCheck (changed files only)
         run: |
           . .venv/bin/activate
-          CHANGED_SH=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.sh')
+          # scripts/git-hooks/ holds the hooks a clone runs; they carry no .sh
+          # suffix, so the name pattern below would leave them unchecked.
+          CHANGED_SH=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.sh' 'scripts/git-hooks/')
           if [ -n "$CHANGED_SH" ]; then
             echo "$CHANGED_SH" | xargs shellcheck
           else

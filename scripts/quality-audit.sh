@@ -201,7 +201,11 @@ ok "Ruff: $RUFF_COUNT issues ($(step_time $STEP_START))"
 info "Step 2: ShellCheck..."
 STEP_START=$(date +%s)
 
-SHELL_FILES=$(find "$ROOT_DIR/scripts" -name '*.sh' -type f 2>/dev/null || true)
+# The hooks under scripts/git-hooks/ are shell too and carry no .sh suffix, so
+# they are picked up by path; a .sample is a template nobody runs.
+SHELL_FILES=$(find "$ROOT_DIR/scripts" -type f \
+    \( -name '*.sh' -o -path "$ROOT_DIR/scripts/git-hooks/*" \) \
+    ! -name '*.sample' 2>/dev/null || true)
 if [ -n "$SHELL_FILES" ]; then
     # ShellCheck reads .shellcheckrc from the file's directory or parents
     shellcheck --format=json $SHELL_FILES > "$RAW_DIR/shellcheck.json" 2>&1 || true

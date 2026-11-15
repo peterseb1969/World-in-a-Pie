@@ -365,7 +365,8 @@ if ! "$VENV_PYTHON" -c "import pytest, ruff, mypy, build, radon" 2>/dev/null \
     else
         echo ""
         echo "   WARNING: test tool install failed — scripts/wip-test.sh will not run,"
-        echo "   and the pre-commit complexity ratchet will refuse every commit."
+        echo "   and step 4b leaves the pre-commit complexity ratchet disabled (it"
+        echo "   needs radon; enabling it without radon would refuse every commit)."
         echo "   Fix manually: .venv/bin/pip install pytest ruff mypy build radon==6.0.1"
         echo ""
     fi
@@ -646,17 +647,55 @@ echo "   Written: CLAUDE.md (tier $($TIER3 && echo 3 || echo 2))"
 # pushed commit, against the staged snapshot. The ratchet compares commits and
 # never reads the working tree, so a bare run before committing checks the
 # previous commit and passes, and the new commit fails in CI; running it from a
-# hook is what makes it check the commit being made. A hooks path the operator
-# set to something else is left alone and reported, never overwritten.
+# hook is what makes it check the commit being made.
+#
+# Three things keep it from being switched on blindly. radon: the hook needs it
+# in .venv and refuses every commit without it, so a run that skipped the
+# install above (WIP_SKIP_VENV_INSTALL=1) or saw it fail leaves the hook off —
+# enabling it there would block every commit for the rest of this clone's life.
+# The hook file: nothing to enable if it is absent or not executable. And the
+# operator's own hooks: a hooks path someone else set is left alone and
+# reported, and so are hooks sitting in .git/hooks, whether a regular file or a
+# link to a script elsewhere — setting core.hooksPath stops git looking there at
+# all, which would quietly retire them.
 if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    HOOKS_PATH="$(git -C "$WIP_ROOT" config --get core.hooksPath || true)"
-    if [[ -z "$HOOKS_PATH" || "$HOOKS_PATH" == "scripts/git-hooks" ]]; then
-        git -C "$WIP_ROOT" config core.hooksPath scripts/git-hooks
-        echo "4b. Git hooks: pre-commit runs the complexity ratchet (core.hooksPath = scripts/git-hooks)"
+    RATCHET_HOOK="$WIP_ROOT/scripts/git-hooks/pre-commit"
+    if ! "$VENV_PYTHON" -c "import radon" >/dev/null 2>&1; then
+        echo "4b. Git hooks: radon is not in .venv — the complexity ratchet hook is"
+        echo "    NOT enabled (enabling it would refuse every commit). Install it with"
+        echo "    .venv/bin/pip install radon==6.0.1 and re-run, or set"
+        echo "    core.hooksPath yourself; CI's lint job runs the same check anyway."
+    elif [ ! -f "$RATCHET_HOOK" ] || [ ! -x "$RATCHET_HOOK" ]; then
+        echo "4b. Git hooks: scripts/git-hooks/pre-commit is missing or not"
+        echo "    executable — core.hooksPath left unset."
     else
-        echo "4b. Git hooks: core.hooksPath is already '$HOOKS_PATH' — left as is."
-        echo "    To run the complexity ratchet before each commit, chain"
-        echo "    scripts/git-hooks/pre-commit from that hooks directory."
+        HOOKS_PATH="$(git -C "$WIP_ROOT" config --get core.hooksPath || true)"
+        GIT_HOOKS_DIR="$(git -C "$WIP_ROOT" rev-parse --git-path hooks)"
+        case "$GIT_HOOKS_DIR" in
+            /*) ;;
+            *) GIT_HOOKS_DIR="$WIP_ROOT/$GIT_HOOKS_DIR" ;;
+        esac
+        # -H follows the hooks directory itself when that is a link; -type l
+        # catches a hook that links to a script elsewhere, which git runs the
+        # same as a file sitting there.
+        OWN_HOOKS="$(find -H "$GIT_HOOKS_DIR" -maxdepth 1 \
+            \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | sort || true)"
+        if [ -z "$HOOKS_PATH" ] && [ -n "$OWN_HOOKS" ]; then
+            echo "4b. Git hooks: $GIT_HOOKS_DIR already holds hooks"
+            while IFS= read -r own; do
+                [ -n "$own" ] && echo "    runs: ${own##*/}"
+            done <<< "$OWN_HOOKS"
+            echo "    core.hooksPath left unset — setting it would stop git running"
+            echo "    those. To add the complexity ratchet, chain"
+            echo "    scripts/git-hooks/pre-commit from them."
+        elif [ -z "$HOOKS_PATH" ] || [ "$HOOKS_PATH" = "scripts/git-hooks" ]; then
+            git -C "$WIP_ROOT" config core.hooksPath scripts/git-hooks
+            echo "4b. Git hooks: pre-commit runs the complexity ratchet (core.hooksPath = scripts/git-hooks)"
+        else
+            echo "4b. Git hooks: core.hooksPath is already '$HOOKS_PATH' — left as is."
+            echo "    To run the complexity ratchet before each commit, chain"
+            echo "    scripts/git-hooks/pre-commit from that hooks directory."
+        fi
     fi
 fi
 

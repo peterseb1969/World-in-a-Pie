@@ -421,7 +421,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
-| `useUploadFile()` | `{ file, filename?, metadata?, namespace? }` | `FileEntity` | `files.all` + `registry.all` (active) |
+| `useUploadFile()` | `{ file, filename?, metadata?, namespace }` (`namespace` is required: the service refuses an upload without one) | `FileEntity` | `files.all` + `registry.all` (active) |
 | `useUpdateFileMetadata()` | `{ fileId, data }` | `BulkResultItem` | `files.all` |
 | `useDeleteFile()` | `string`, or `{ fileId, namespace?, force? }` (`force` deletes a file documents still reference) | `BulkResultItem` | `files.all` |
 | `useDeleteFiles()` | `string[]`, or `{ fileIds, namespace?, force? }` | `BulkResponse` | `files.all` |
@@ -519,6 +519,7 @@ const handleUpload = (file: File) => {
   upload.mutate({
     file,
     filename: file.name,
+    namespace: 'clinic',
     metadata: {
       description: 'Patient scan',
       tags: ['radiology'],
@@ -529,6 +530,7 @@ const handleUpload = (file: File) => {
 
 // upload.isPending — show spinner
 // upload.data — FileEntity on success
+// namespace is required — the service refuses an upload that names none
 ```
 
 ### Delete
