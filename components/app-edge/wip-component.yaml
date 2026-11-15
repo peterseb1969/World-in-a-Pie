@@ -6,7 +6,7 @@ metadata:
   description: |
     Serves the apps attached under the umbrella through the Registry's API.
     A Caddy whose config a sync loop rebuilds from the Registry's attachment
-    records: every /apps/<name> of an active attachment goes through the
+    records: every origin <name>.<hostname> of an active attachment goes through the
     auth gateway, then to the upstream the record names, dialled at the
     address the loop resolved and checked against the install's blocklist.
     Deployer apps keep their own, more specific routes; the public router

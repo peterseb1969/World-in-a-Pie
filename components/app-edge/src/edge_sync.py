@@ -306,10 +306,15 @@ def _upstream(record: dict[str, Any]) -> tuple[str, str, int]:
         raise ValueError("credentials, query or fragment")
     if parts.path not in ("", "/"):
         raise ValueError("a path")
+    # Port 0 names no port, as the Registry's write rule says; read as
+    # "none given" it would serve the scheme's default port instead.
+    port = parts.port
+    if port == 0:
+        raise ValueError("port 0")
     host = parts.hostname
     if _host_error(host):
         raise ValueError("an unusable host")
-    return parts.scheme, host, parts.port or (443 if parts.scheme == "https" else 80)
+    return parts.scheme, host, port if port is not None else (443 if parts.scheme == "https" else 80)
 
 
 def _is_ip(host: str) -> bool:

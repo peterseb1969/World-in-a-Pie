@@ -212,11 +212,13 @@ validation and ID-generation round-trips rather than by raw data movement.
 Before the modes, the identity model needs to be stated plainly because it
 drives every decision.
 
-**Entity IDs are not globally unique.** Per `id_algorithm.py`, the default
-is UUID7, but a namespace can be configured with `prefixed` (e.g.
-`TERM-000042`), `pattern`, `nanoid`, or custom algorithms. The platform
-only guarantees that `(namespace, entity_type, entity_id)` is unique, and
-even that only inside one install. Across installs nothing is guaranteed.
+**Entity IDs are unique inside one install, not across installs.** Per
+`id_algorithm.py`, the default is UUID7, but a namespace can be configured
+with `prefixed` (e.g. `TERM-000042`), `pattern`, `nanoid`, or custom
+algorithms. Every entity id is a Registry `entry_id`, held under a unique
+index, so on one install no id names entities in two namespaces (a prefixed
+sequence is counted per prefix, install-wide). Across installs nothing is
+guaranteed.
 
 **Composite keys are the only identity that survives.** Every entity
 carries a Registry composite key (post-CASE-32 including files) that is
@@ -416,13 +418,13 @@ because every target entity is also in the dump.
 **Uses:** same-install rollback, exact clone of a namespace to a new name
 (with `target_namespace`, see below).
 
-### Mode 2: `target_namespace` — preserve IDs, different namespace name, same install
+### Mode 2: `target_namespace` — new IDs, different namespace name, same install
 
 *Previously I thought this could bulk-insert with a namespace field rewrite.
-That is incorrect because entity_ids are not globally unique, so the
-rewritten collection could collide with identically-IDed entries in
-another namespace, and because composite_key_hash embeds the namespace.
-This mode is therefore a variant of fresh mode, not of restore mode.*
+That is incorrect because the copy would reuse the source's ids, which the
+Registry holds install-wide (the source namespace still has them), and
+because composite_key_hash embeds the namespace. This mode is therefore a
+variant of fresh mode, not of restore mode.*
 
 See "fresh mode" below. `target_namespace` is fresh mode with an explicit
 destination namespace name.

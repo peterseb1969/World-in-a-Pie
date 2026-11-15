@@ -130,3 +130,24 @@ def test_the_cli_warns_without_ranges(capsys):
     # No edge, nothing to warn about.
     _warn_app_edge_reach(_k8s_deployment(apps=["wip-kb"]))
     assert capsys.readouterr().err == ""
+
+
+def test_the_cli_warns_that_clients_share_one_rate_limit_without_pod_ranges(capsys):
+    # Without pod ranges wip-caddy replaces the ingress controller's
+    # X-Forwarded-For, so the rate limit sees one client. App edge or not.
+    from wip_deploy.cli import _warn_shared_rate_limit
+
+    _warn_shared_rate_limit(_k8s_deployment(apps=["wip-kb"]))
+    err = capsys.readouterr().err
+    assert "pods=CIDR" in err and "share one budget" in err
+    _warn_shared_rate_limit(_with_ranges(pods=["10.42.0.0/16"]))
+    assert capsys.readouterr().err == ""
+
+
+def test_no_rate_limit_warning_off_k8s(capsys):
+    from wip_deploy.cli import _warn_shared_rate_limit
+
+    from .renderers.test_compose import _minimal_compose
+
+    _warn_shared_rate_limit(_minimal_compose())
+    assert capsys.readouterr().err == ""

@@ -3733,6 +3733,7 @@ def redeploy(
         else:
             typer.echo("⊙ cluster ranges are already these — no change.")
         _warn_app_edge_reach(deployment)
+    _warn_shared_rate_limit(deployment)
 
     cluster_pinned = False
     if kubeconfig and not kube_context:
@@ -6976,6 +6977,7 @@ def _assemble(
 
     _warn_unmatched_tag_overrides(deployment, discovery.components, discovery.apps)
     _warn_app_edge_reach(deployment)
+    _warn_shared_rate_limit(deployment)
 
     return deployment, discovery.components, discovery.apps
 
@@ -7082,6 +7084,25 @@ def _warn_app_edge_reach(deployment: Deployment) -> None:
         "warning: the app edge can reach parts of the cluster itself; "
         "pass the missing ranges. Missing: " + "; ".join(gaps) + ". "
         "Whether it reaches pod and Service addresses depends on the network plugin.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+
+
+def _warn_shared_rate_limit(deployment: Deployment) -> None:
+    """On k8s every request reaches wip-caddy from the ingress controller's
+    pod. Without the pod ranges (--cluster-cidr pods=) wip-caddy does not
+    keep the controller's X-Forwarded-For, and the services' per-client rate
+    limit sees one client: every user shares one budget, and one busy client
+    throttles everyone. Warn (stderr), never refuse: the deployer cannot
+    discover the ranges itself."""
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target != "k8s" or k8s is None or k8s.cluster_ranges.pods:
+        return
+    typer.secho(
+        "warning: no pod ranges given (--cluster-cidr pods=CIDR, e.g. pods=10.42.0.0/16): "
+        "the services' per-client rate limit sees every request as coming from the "
+        "ingress controller, so all clients share one budget.",
         fg=typer.colors.YELLOW,
         err=True,
     )

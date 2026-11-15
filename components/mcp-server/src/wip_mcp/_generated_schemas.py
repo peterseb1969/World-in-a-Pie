@@ -6,9 +6,9 @@ The server appends TOOL_FIELD_DOCS[tool] to that tool's docstring and
 replaces the parameter TOOL_PARAMS[tool] names with TOOL_SCHEMAS[ref].
 
 Generated from:
-  schemas/registry.json  version 2.1.0  sha256 c49ab40d77045f99
+  schemas/registry.json  version 2.1.0  sha256 cfb4c3b3df50d4cb
   schemas/def-store.json  version 2.1.0  sha256 f948e0f7c5a474be
-  schemas/template-store.json  version 2.1.0  sha256 e4208bdf3e5cbd96
+  schemas/template-store.json  version 2.1.0  sha256 22ec6cb848d4e6c3
   schemas/document-store.json  version 2.1.0  sha256 41bd501c7848bdd8
   schemas/reporting-sync.json  version 2.1.0  sha256 a93a928b3136b21a
 """

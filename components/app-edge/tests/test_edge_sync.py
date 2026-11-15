@@ -90,6 +90,8 @@ def test_the_dialled_addresses_are_the_checked_ones():
         ("http://100.100.100.200", "cloud metadata"),
         ("http://unknown.example", "does not resolve"),
         ("http://aa.apps.example/base", "a path"),
+        ("http://aa.apps.example:0", "port 0"),
+        ("https://aa.apps.example:0/", "port 0"),
     ],
 )
 def test_unservable_upstreams_are_skipped(upstream, why):

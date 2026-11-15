@@ -27,9 +27,11 @@ Only two things are globally unique across the entire WIP instance:
 
 These must be globally unique because they serve as cross-cutting identifiers. The Registry's `entry_id` is the root of all identity — every terminology, term, template, document, and file ultimately traces back to one.
 
+**An entity's id is its Registry `entry_id`**, so entity ids (`terminology_id`, `term_id`, `template_id`, `document_id`, `file_id`) are unique install-wide too: the Registry mints or accepts each one under a unique index, whatever the namespace's id algorithm (a prefixed sequence is counted per prefix, install-wide). Code may look an entity up by its id alone. Two entities under one id would be corruption, not a state the platform produces — which includes namespaces that shared a prefix under the older per-namespace counters. Across installs nothing is guaranteed; that is what composite keys are for.
+
 ### Tier 2: Namespace-Scoped Uniqueness
 
-All domain entities enforce uniqueness **within their namespace**, not globally:
+The stores' MongoDB indexes are scoped to the namespace; the install-wide uniqueness of the id itself comes from the Registry (Tier 1):
 
 | Entity | Unique Key | MongoDB Index |
 |--------|-----------|---------------|
@@ -41,7 +43,7 @@ All domain entities enforce uniqueness **within their namespace**, not globally:
 | Document | `(namespace, document_id, version)` | `ns_document_id_version_unique_idx` |
 | File | `(namespace, file_id)` | `ns_file_id_unique_idx` |
 
-This means a terminology `COUNTRY` in namespace `wip` and `COUNTRY` in namespace `backup` are **independent entities**. They have different Registry `entry_id`s, different data, different lifecycles. The entity_id is a human-friendly label scoped to its namespace.
+This means a terminology `COUNTRY` in namespace `wip` and `COUNTRY` in namespace `backup` are **independent entities**. They have different ids (each its own Registry `entry_id`), different data, different lifecycles. The *value* is what is scoped to the namespace.
 
 ### Tier 3: Parent-Scoped Uniqueness
 
@@ -389,24 +391,21 @@ For the full design, see `docs/design/universal-synonym-resolution.md`.
 
 ## Cross-Namespace Behavior
 
-### Design Decision: Namespace-Scoped, Not Global
+### Design Decision: Values Per Namespace, Ids Install-Wide
 
-Early WIP versions enforced globally unique entity IDs (e.g., `terminology_id` unique across all namespaces). This blocked a critical workflow: **restoring a backup into a different namespace on the same instance**.
+What is scoped to a namespace is the *value*: `COUNTRY` in `production` and `COUNTRY` in `backup` are two terminologies, and the stores' indexes are `(namespace, …)`. The *id* is not: every entity id is a Registry `entry_id`, unique install-wide, so the same id never names entities in two namespaces of one install.
 
-If namespace `production` has a terminology `COUNTRY` and you try to restore a backup containing the same `COUNTRY` terminology into namespace `backup`, a global unique index rejects it — even though the two entities live in completely separate namespaces.
-
-The fix: uniqueness indexes are scoped to `(namespace, entity_id)`. The same entity_id can exist in both namespaces independently. Each has its own Registry `entry_id` (which remains globally unique).
+A copy of a namespace into another namespace on the same install therefore gets new ids: the backup design's `target_namespace` and `fresh` modes mint them and rewrite every internal reference (`docs/design/backup-restore-redesign.md`); the `restore` mode keeps the archived ids.
 
 ### What This Enables
 
-- **Backup & restore** with preserved IDs into any namespace
-- **Data migration** between namespaces on the same instance
-- **Multi-tenant operation** where tenants may have overlapping ID sequences
+- **Backup & restore** with preserved IDs (`restore` mode)
+- **Copying a namespace** under another name on the same install, with new ids
 - **Fresh import** with ID remapping — WIP-Toolkit generates new IDs and rewrites all internal references, optionally registering old-to-new mappings as synonyms
 
-### What Remains Globally Unique
+### What Is Globally Unique
 
-Only the Registry `entry_id` and namespace `prefix`. These are the cross-cutting identifiers that must never collide.
+The Registry `entry_id` — and with it every entity id — and the namespace `prefix`. These are the cross-cutting identifiers that must never collide on one install.
 
 ---
 
