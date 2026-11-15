@@ -1155,14 +1155,17 @@ class TemplateService:
         overrides: dict[tuple[str, int], Template] | None = None,
     ) -> list[str]:
         """The version's referent identity paths, or a refused write when a
-        parent or nested template on an identity path cannot be read (the
-        answer would be a guess)."""
+        parent or nested template on an identity path cannot be read, or is
+        not pinned (the answer would be a guess)."""
         try:
             return await referent_paths.referent_identity_paths(template, overrides)
         except InheritanceError as e:
             code = (
                 "reference_violation"
-                if e.rule in ("missing_parent", "unpinned_parent", "missing_nested_template")
+                if e.rule in (
+                    "missing_parent", "unpinned_parent",
+                    "missing_nested_template", "unpinned_nested_template",
+                )
                 else "invalid_state"
             )
             raise TemplateError(str(e), code, rule=e.rule) from e

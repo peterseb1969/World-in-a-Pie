@@ -68,7 +68,14 @@ async def _is_referent_path(
     if field.type != "object" or not field.template_ref:
         return False
     if field.template_ref_version is None:
-        return False
+        # Same rule as an unpinned parent: the path cannot be classified from
+        # the top-level field, and following the ref unqualified would read
+        # whatever version is latest. Refused, not guessed.
+        raise InheritanceError(
+            f"Nested template '{field.template_ref}' is not pinned to an "
+            "explicit version, so the identity path cannot be classified",
+            "unpinned_nested_template",
+        )
     nested = await _nested_fields(field.template_ref, field.template_ref_version, overrides)
     if nested is None:
         raise InheritanceError(
@@ -85,7 +92,8 @@ async def referent_identity_paths(
     """The template version's identity paths whose value is a referent.
 
     Raises InheritanceError when a parent or a nested template on an identity
-    path cannot be read: the answer would be a guess.
+    path cannot be read, or is not pinned to an explicit version: the answer
+    would be a guess.
     """
     identity_fields, fields = await _resolved(template, overrides)
     return [

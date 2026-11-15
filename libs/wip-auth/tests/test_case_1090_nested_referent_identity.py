@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from wip_auth.document_identity import (
+    UnclassifiableIdentityPath,
     compute_hash,
     referent_identity_fields,
     resolved_identity_values,
@@ -38,8 +39,13 @@ def test_without_declared_paths_top_level_fields_classify_as_before():
 
 
 def test_without_declared_paths_a_nested_template_path_is_refused():
-    with pytest.raises(ValueError, match=r"address\.country"):
+    # Its own exception type: a path that cannot be classified says nothing
+    # about whether an identity differs, and callers branch on that.
+    # Provenance: CASE-1289 (e32df5e2 R3).
+    with pytest.raises(UnclassifiableIdentityPath, match=r"address\.country") as refused:
         referent_identity_fields(IDENTITY, FIELDS)
+    assert refused.value.path == "address.country"
+    assert isinstance(refused.value, ValueError)
 
 
 def test_a_path_into_a_free_form_object_is_plain_data():

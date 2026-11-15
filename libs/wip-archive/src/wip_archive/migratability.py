@@ -17,7 +17,10 @@ can be assessed on any archive without an instance. It follows the live rules:
 - a recomputed identity hash that differs from the stored one fails the
   document (`identity_hash_stale`, as live). An identity term the archive
   cannot resolve (its vocabulary is not carried, e.g. shared `wip` terms) is
-  taken from the document's stored resolution instead.
+  taken from the document's stored resolution instead. An identity path the
+  target cannot classify (it carries no `referent_identity_paths`) fails as
+  `identity_unclassifiable`: the hash was never computed, so nothing here says
+  the identity changed.
 
 Not reproduced: reference and file checks, which live re-runs on every write
 and an archive cannot (their targets may lie outside it). A `ready` document is
@@ -32,7 +35,11 @@ from typing import Any
 
 from wip_archive.archive import ArchiveReader
 from wip_archive.definitions import DefinitionIndex, UnresolvableTemplate
-from wip_archive.identity import compute_composite_key_hash, resolved_identity_values
+from wip_archive.identity import (
+    UnclassifiableIdentityPath,
+    compute_composite_key_hash,
+    resolved_identity_values,
+)
 from wip_archive.validation import OfflineValidator
 
 MAX_SAMPLES = 5
@@ -199,6 +206,14 @@ def _assess_document(
                 term_references, row.get("references"),
                 target.get("referent_identity_paths"),
             ))
+        except UnclassifiableIdentityPath as e:
+            # The hash could not be computed at all, so nothing says the
+            # identity changed. The document is still not ready, only labelled
+            # for what it is.
+            cohort.failures[(e.path, "identity_unclassifiable")] += 1
+            if len(cohort.samples) < MAX_SAMPLES:
+                cohort.samples.append(f"{tag}: identity path '{e.path}' not classifiable")
+            return
         except (ValueError, KeyError, TypeError):
             recomputed = None
         if recomputed != stored:

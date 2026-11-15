@@ -24,6 +24,11 @@ def _template(version, fields, *, identity=("code",), status="active", renames=N
 CODE = {"name": "code", "type": "string", "mandatory": True}
 V1 = _template(1, [CODE, {"name": "name", "type": "string"}])
 
+LAIR = "0190c000-0000-7000-0000-0000000000l2"
+LAIR_V1 = {"template_id": LAIR, "version": 1, "value": "LAIR", "namespace": NS,
+           "status": "active", "identity_fields": [],
+           "fields": [{"name": "name", "type": "string"}]}
+
 
 def _doc(document_id, data, *, template_version=1, status="active"):
     return {"document_id": document_id, "namespace": NS, "template_id": TPL,
@@ -120,6 +125,24 @@ def test_a_stale_stored_hash_fails_the_document_as_live_does(tmp_path):
     cohort = report.cohorts[1]
     assert cohort.ready == 1 and cohort.identity_changed == 1
     assert cohort.failures[(None, "identity_hash_stale")] == 1
+
+
+def test_an_unclassifiable_identity_path_is_not_reported_as_a_change(tmp_path):
+    """A nested identity path on a target that carries no
+    referent_identity_paths cannot be recomputed at all. Counting it as
+    identity_changed / identity_hash_stale would state something the archive
+    does not know: the two sides were never compared."""
+    fields = [CODE, {"name": "lair", "type": "object", "template_ref": LAIR,
+                     "template_ref_version": 1, "mandatory": True}]
+    v1 = _template(1, fields, identity=("code", "lair.name"))
+    v2 = _template(2, fields, identity=("code", "lair.name"))
+    doc = dict(_doc("d1", {"code": "A", "lair": {"name": "Erebor"}}), identity_hash="f" * 64)
+    report = _assess(tmp_path, [v1, v2, LAIR_V1], [doc])
+    cohort = report.cohorts[1]
+    assert cohort.ready == 0 and cohort.identity_changed == 0
+    assert dict(cohort.failures) == {("lair.name", "identity_unclassifiable"): 1}
+    assert cohort.samples == ["d1 v1: identity path 'lair.name' not classifiable"]
+    assert cohort.to_dict()["failing"] == 1
 
 
 def test_an_identity_term_from_an_uncarried_vocabulary_uses_the_stored_resolution(tmp_path):

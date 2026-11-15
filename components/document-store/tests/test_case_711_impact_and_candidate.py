@@ -335,10 +335,12 @@ async def test_a_candidate_that_extends_is_validated_with_its_parent(
 
 
 @pytest.mark.asyncio
-async def test_an_unpinned_nested_identity_path_is_not_a_referent(monkeypatch):
-    """template-store does not follow a nested template with no pinned
-    version, so such a path names no referent; the candidate rule agrees
-    instead of reading the nested template's latest version."""
+async def test_an_unpinned_nested_identity_path_refuses_the_candidate_identity(monkeypatch):
+    """template-store refuses an identity path into a nested template with no
+    pinned version rather than stamp it "no referent", so the candidate rule
+    must not answer more loosely: None, which the identity stage turns into a
+    refusal, instead of an empty list that would let the path feed the hash the
+    submitted spelling."""
     from document_store.services import validation_service as vs
 
     async def must_not_fetch(*args, **kwargs):
@@ -349,4 +351,32 @@ async def test_an_unpinned_nested_identity_path_is_not_a_referent(monkeypatch):
         "identity_fields": ["addr.country"],
         "fields": [{"name": "addr", "type": "object", "template_ref": "ADDR"}],
     })
-    assert paths == []
+    assert paths is None
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_identity_path_into_an_unpinned_nested_template_fails_the_write(
+    client: AsyncClient, auth_headers: dict
+):
+    """What the refusal is for: a candidate whose dotted identity path names an
+    unpinned nested template is refused at the identity stage, the way the
+    stored version is, instead of classifying the path as no referent and
+    hashing the submitted spelling."""
+    candidate = {
+        "value": "NESTED_UNPINNED_711", "label": "Nested Unpinned", "namespace": "wip",
+        "identity_fields": ["name", "address.country"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "address", "label": "Address", "type": "object",
+             "template_ref": "TPL-NESTED-ADDRESS", "mandatory": True},
+        ],
+    }
+    resp = await client.post(CANDIDATE, headers=auth_headers, json={
+        "namespace": "wip", "template_definition": candidate,
+        "documents": [{"name": "Ada", "address": {"country": "UK"}}],
+    })
+    assert resp.status_code == 200, resp.text
+    [outcome] = resp.json()["results"]
+    validation = outcome["validation"]
+    assert not validation["valid"], outcome
+    assert "identity_resolution_failed" in {e["code"] for e in validation["errors"]}, validation

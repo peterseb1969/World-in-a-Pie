@@ -1684,8 +1684,8 @@ class ValidationService:
         leaf is a term or reference field, following each object field into
         its nested template at the version the candidate's documents are
         validated against. None when a nested template on an identity path
-        cannot be read — the identity stage then refuses the path rather than
-        guess.
+        cannot be read or is not pinned — the identity stage then refuses the
+        path rather than guess.
         """
         paths: list[str] = []
         for path in template.get("identity_fields") or []:
@@ -1702,9 +1702,11 @@ class ValidationService:
                 if field.get("type") != "object" or not field.get("template_ref"):
                     break
                 if field.get("template_ref_version") is None:
-                    # template-store's rule: an unpinned nested template is
-                    # not followed, so the path names no referent.
-                    break
+                    # template-store refuses an identity path into an unpinned
+                    # nested template rather than answer "no referent", and a
+                    # candidate must not be classified more loosely than the
+                    # stored version it would become. None is the refusal.
+                    return None
                 fields = await self._nested_template_fields(
                     field["template_ref"], field.get("template_ref_version")
                 )

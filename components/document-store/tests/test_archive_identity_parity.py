@@ -28,6 +28,14 @@ def _functions(module: ModuleType) -> dict[str, object]:
     }
 
 
+def _classes(module: ModuleType) -> dict[str, object]:
+    return {
+        name: obj
+        for name, obj in inspect.getmembers(module, inspect.isclass)
+        if obj.__module__ == module.__name__
+    }
+
+
 # Everything document_identity defines, plus the composite-key hash the
 # Registry stores as identity_hash (and its helper).
 ORIGINALS = {
@@ -50,6 +58,19 @@ def test_every_function_is_copied_verbatim() -> None:
 def test_the_copy_carries_nothing_extra() -> None:
     extra = set(_functions(archive_identity)) - set(ORIGINALS)
     assert not extra, f"wip_archive.identity defines functions wip_auth lacks: {sorted(extra)}"
+
+
+def test_the_exception_classes_are_copied_verbatim() -> None:
+    # The feed raises these and callers branch on them, so a copy that drifts
+    # would mislabel the refusal rather than fail.
+    copied = _classes(archive_identity)
+    originals = _classes(auth_identity)
+    assert set(copied) == set(originals)
+    for name, original in originals.items():
+        assert inspect.getsource(copied[name]) == inspect.getsource(original), (
+            f"{name} differs between wip_auth and wip_archive.identity — "
+            "change the original, then copy it verbatim"
+        )
 
 
 TEMPLATE = {

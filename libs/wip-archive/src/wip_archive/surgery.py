@@ -10,8 +10,11 @@ edit invalidates:
   and changing identity is a fork the platform refuses. Surgery refuses it
   as well: ``require_same_identity`` recomputes the hash with the platform's
   own feed (``wip_archive.identity``) and raises ``IdentityChangeError``
-  when it differs. On surgery output, ``strict_identity`` makes any
-  remaining mismatch an error rather than a warning.
+  when it differs. An identity path the template cannot classify (no
+  ``referent_identity_paths``) is not a difference: it raises
+  ``SurgeryError``, since nothing about the identity was established. On
+  surgery output, ``strict_identity`` makes any remaining mismatch an error
+  rather than a warning.
 - **Snapshot paths.** Term, reference and file snapshots name their field
   by path; a renamed field moves its snapshots with it (``rename_paths``).
 - **Timestamps and actor.** Rows surgery writes carry ``updated_at`` (and,
@@ -26,7 +29,11 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from .identity import compute_composite_key_hash, resolved_identity_values
+from .identity import (
+    UnclassifiableIdentityPath,
+    compute_composite_key_hash,
+    resolved_identity_values,
+)
 
 
 class SurgeryError(ValueError):
@@ -87,6 +94,16 @@ def require_same_identity(
         return
     try:
         recomputed = identity_hash(data, template, term_references, references)
+    except UnclassifiableIdentityPath as e:
+        # Nothing was learned about this document's identity: the template
+        # carries no referent_identity_paths, so the hash cannot be recomputed
+        # at all. Refuse as unverifiable, do not claim a fork.
+        raise SurgeryError(
+            f"document {row.get('document_id')} v{row.get('version')}: identity "
+            f"path '{e.path}' cannot be classified, because the template carries "
+            "no referent_identity_paths; its identity hash cannot be recomputed, "
+            "so the edit cannot be checked"
+        ) from e
     except (ValueError, KeyError, TypeError) as e:
         raise IdentityChangeError(str(row.get("document_id")), row.get("version")) from e
     if recomputed is not None and recomputed != stored:
