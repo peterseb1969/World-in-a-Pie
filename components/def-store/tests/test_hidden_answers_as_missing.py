@@ -17,6 +17,14 @@ Two callers, because the miss differs between them:
 - the admin key with no namespace: ids pass through unresolved, and the
   door's own miss ("Terminology not found", an empty page) is the answer.
 The app key runs unpatched; the admin key has its permission patched.
+
+The same comparison runs on a third kind of id: a Registry entry whose row is
+gone (a ghost, what /maintenance/registry-ghosts reports). It resolves and has
+nothing behind it, so the door used to answer its own miss while an id nobody
+ever issued answered the resolving one. Only the audit doors keep a difference:
+an entity whose row is gone keeps serving its history, so the ghost there is
+compared with no history at all, and the history of one that has it is asserted
+separately.
 """
 
 import contextlib
@@ -26,6 +34,10 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
+from def_store.models.audit_log import TermAuditLog
+from def_store.models.term import Term
+from def_store.models.terminology import Terminology
+
 API = "/api/def-store"
 APP_KEY = {"X-API-Key": "test_xns_writer_key"}  # 'wip' only; 'xns-closed' is invisible
 MODES = {
@@ -33,6 +45,7 @@ MODES = {
     "app-key": ("xns-closed", False),
     "admin-unresolved": ("test-ns", True),
 }
+GHOST_NS = "wip"  # readable and writable by APP_KEY: only the row is missing
 
 
 def _missing_id() -> str:
@@ -145,3 +158,52 @@ async def test_a_hidden_item_does_not_abort_the_rest_of_the_batch(client: AsyncC
     assert hidden_row["error_code"] == "not_found"
     assert hidden_row["error"] == "Terminology not found"
     assert visible_row["status"] == "updated"
+
+
+async def _ghost_ids(client: AsyncClient, auth_headers: dict, *, with_history: bool) -> dict[str, str]:
+    """A terminology and two terms whose Registry entries outlive their rows.
+
+    `RegistryEntryNotRemovedError` leaves exactly this behind, and
+    /maintenance/registry-ghosts exists to find it. With with_history=false the
+    audit trail goes too, so nothing of the entity remains but its identity.
+    """
+    tid, a, b = await _entities(client, auth_headers, GHOST_NS)
+    await Terminology.find({"terminology_id": tid}).delete()
+    await Term.find({"term_id": {"$in": [a, b]}}).delete()
+    if not with_history:
+        await TermAuditLog.find({"terminology_id": tid}).delete()
+    return {"tid": tid, "term": a, "other": b}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", list(MODES))
+@pytest.mark.parametrize("door", list(DOORS))
+async def test_an_id_whose_row_is_gone_answers_as_a_missing_one(
+    client: AsyncClient, auth_headers: dict, door: str, mode: str,
+):
+    headers = auth_headers if mode == "admin-unresolved" else APP_KEY
+    ghost_ids = await _ghost_ids(client, auth_headers, with_history=False)
+    missing_ids = {name: _missing_id() for name in ghost_ids}
+
+    ghost = await _call(client, headers, door, ghost_ids)
+    missing = await _call(client, headers, door, missing_ids)
+
+    assert missing.status_code not in (401, 403), missing.text  # the key is in effect
+    if mode == "app-key" and door in ("get terminology", "list terms", "term search"):
+        assert "Could not resolve" in missing.text, missing.text  # the resolving path
+    assert ghost.status_code == missing.status_code, (ghost.text, missing.text)
+    assert _blank(ghost.text, ghost_ids) == _blank(missing.text, missing_ids)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["audit/terminologies/{tid}", "audit/terms/{term}"])
+async def test_an_entry_whose_row_is_gone_still_answers_with_its_history(
+    client: AsyncClient, auth_headers: dict, path: str,
+):
+    """The audit doors keep serving the trail of an entity whose row is gone —
+    the namespace comes from its most recent audit row — so only an id with no
+    row and no history answers as one that names nothing (tested above)."""
+    ids = await _ghost_ids(client, auth_headers, with_history=True)
+    r = await client.get(f"{API}/{path.format(**ids)}", headers=APP_KEY)
+    assert r.status_code == 200, r.text
+    assert r.json()["total"] > 0, r.text

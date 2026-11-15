@@ -165,22 +165,26 @@ async def create_terms(
 
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
-    held = AmbiguousItems(items)
-    if term_parent:
-        await check_entity_permission(identity, term_parent.namespace, "write", await miss_detail(
-            raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found",
-            "terminology_id",
-        ))
-        # A parent is a term of this terminology: resolve it there (a value
-        # is that terminology's value, never colon-parsed; a UUID passes).
-        # Write door — the id is persisted, so the cache is bypassed. What
-        # does not resolve is refused per item by the service; a value
-        # several terms bear is answered per item as ambiguous.
-        from wip_auth import resolve_bulk_ids
-        held = AmbiguousItems(items, await resolve_bulk_ids(
-            items, "parent_term_id", "term", namespace=term_parent.namespace,
-            terminology=terminology_id, bypass_cache=True,
-        ))
+    not_found = await miss_detail(
+        raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found",
+        "terminology_id",
+    )
+    if term_parent is None:
+        # A Registry entry with no terminology behind it answers as an id that
+        # names nothing, and is refused here rather than at the service — the
+        # write check below would otherwise be skipped on its way past.
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_entity_permission(identity, term_parent.namespace, "write", not_found)
+    # A parent is a term of this terminology: resolve it there (a value
+    # is that terminology's value, never colon-parsed; a UUID passes).
+    # Write door — the id is persisted, so the cache is bypassed. What
+    # does not resolve is refused per item by the service; a value
+    # several terms bear is answered per item as ambiguous.
+    from wip_auth import resolve_bulk_ids
+    held = AmbiguousItems(items, await resolve_bulk_ids(
+        items, "parent_term_id", "term", namespace=term_parent.namespace,
+        terminology=terminology_id, bypass_cache=True,
+    ))
 
     # The request's size picks the path, whatever is held out of it.
     single = len(items) == 1
@@ -250,7 +254,9 @@ async def reconcile_terminology(
     )
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
-        raise HTTPException(status_code=404, detail="Terminology not found")
+        raise HTTPException(status_code=404, detail=await miss_detail(
+            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+        ))
 
     await check_entity_permission(identity, terminology.namespace, "write", await miss_detail(
         raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
@@ -285,6 +291,9 @@ async def list_terms(
     )
 
     # Get terminology info
+    not_found = await miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    )
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
         # Try by value — unscoped lookups fail loud on an ambiguous value
@@ -295,11 +304,9 @@ async def list_terms(
         except AmbiguousTerminologyValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         if not terminology:
-            raise HTTPException(status_code=404, detail="Terminology not found")
+            raise HTTPException(status_code=404, detail=not_found)
     # One in a namespace the caller cannot see answers as an unknown id.
-    await check_readable(identity, terminology.namespace, await miss_detail(
-        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
-    ))
+    await check_readable(identity, terminology.namespace, not_found)
 
     terms, total = await TerminologyService.list_terms(
         terminology_id=terminology.terminology_id,
@@ -413,6 +420,9 @@ async def search_terms(
             terminology, "terminology", search_namespace, param_name="terminology"
         )
         parent = await Terminology.find_one({"terminology_id": terminology_id})
+        not_found = await miss_detail(
+            terminology, "terminology", search_namespace, "Terminology not found", "terminology",
+        )
         if not parent:
             # Value-form fallback within the resolved namespace
             try:
@@ -420,13 +430,11 @@ async def search_terms(
             except AmbiguousTerminologyValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
             if not parent:
-                raise HTTPException(status_code=404, detail="Terminology not found")
+                raise HTTPException(status_code=404, detail=not_found)
             terminology_id = parent.terminology_id
         # An id resolves wherever it lives; one in a namespace the caller
         # cannot see answers as an id that names nothing.
-        await check_readable(identity, parent.namespace, await miss_detail(
-            terminology, "terminology", search_namespace, "Terminology not found", "terminology",
-        ))
+        await check_readable(identity, parent.namespace, not_found)
 
     status_list = [s.strip() for s in statuses.split(",") if s.strip()]
 
@@ -475,7 +483,7 @@ async def get_term(
 
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
-        raise HTTPException(status_code=404, detail="Term not found")
+        raise HTTPException(status_code=404, detail=not_found)
 
     # Read on the term's namespace; one the caller cannot see answers as an
     # id that names nothing.

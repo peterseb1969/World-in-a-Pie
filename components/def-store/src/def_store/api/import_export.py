@@ -49,11 +49,16 @@ async def export_terminology(
     # namespace. Without this, any authenticated key could exfiltrate
     # any terminology by ID.
     from ..models.terminology import Terminology as _T
+    miss = await miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    )
     existing = await _T.find_one({"terminology_id": terminology_id})
-    if existing:
-        await check_readable(identity, existing.namespace, await miss_detail(
-            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
-        ))
+    if existing is None:
+        # A Registry entry with no terminology behind it answers as an id that
+        # names nothing: the export's own not-found would confirm that this id
+        # was issued.
+        raise HTTPException(status_code=404, detail=miss)
+    await check_readable(identity, existing.namespace, miss)
 
     try:
         language_list = languages.split(",") if languages else None
