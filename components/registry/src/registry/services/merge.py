@@ -5,10 +5,12 @@ Afterwards:
 
 - D is inactive and records ``merged_into = P``; resolving D's id follows it
   (through further merges), so references already stored as D keep resolving.
-- Every key D held now belongs to P: D's id as the key ``{"entry_id": D}``,
-  D's primary key and D's synonyms, each with its claim re-pointed to P. D
-  keeps a record of them, all inactive, and its primary key hash is cleared,
-  so re-registering D's identity answers P.
+- Every key D still holds now belongs to P: D's id as the key ``{"entry_id": D}``,
+  D's primary key and D's active synonyms, each with its claim re-pointed to P.
+  D keeps a record of them, all inactive, and its primary key hash is cleared,
+  so re-registering D's identity answers P. A synonym D had already released
+  stays D's own record and does not move: it is a key D let go, not part of
+  what D is.
 - The keys a merge gives P in D's place (D's id and primary key) carry
   ``merged_from = D``, and retiring P keeps them claimed, as it keeps P's own.
 
@@ -66,8 +68,9 @@ class MergedEntryChanged(Exception):
 
 
 def moving_keys(deprecated: RegistryEntry, actor: EntryActor) -> list[Synonym]:
-    """The synonyms P gains from D: D's id, D's primary key, and D's synonyms
-    as they are (an inactive one moves as a record only)."""
+    """Every key D carried: D's id, D's primary key and D's synonyms as they
+    are, released ones included — ``_retire`` judges what D gained mid-merge
+    against the whole set. Only the active ones reach P (see ``_absorb``)."""
     def own(key: dict, key_hash: str) -> Synonym:
         return Synonym(
             namespace=deprecated.namespace, entity_type=deprecated.entity_type,
@@ -134,19 +137,16 @@ class _ClaimMove:
 
 
 def _absorb(keys: list[Synonym], now: datetime, actor: EntryActor):
-    """P takes D's keys. A key P already holds actively stays as it is. A key P
-    holds only as a released (inactive) copy is replaced by D's active one:
-    the merge confirms that key's claim for P, so P's copy must resolve too,
-    or the key would be claimed by P and resolve to nothing."""
+    """P takes the keys D still holds. A key P already holds actively stays as
+    it is. A key P holds only as a released (inactive) copy is replaced by D's
+    active one: the merge confirms that key's claim for P, so P's copy must
+    resolve too, or the key would be claimed by P and resolve to nothing. A key
+    D itself released is not taken: it would sit on P as a released synonym and
+    come back as P's the next time P's synonyms are revived."""
     def mutate(entry: RegistryEntry):
         held = {_scope(s) for s in entry.active_synonyms()}
         released = {_scope(s) for s in entry.synonyms if s.status == "inactive"}
-        new = []
-        for s in keys:
-            scope = _scope(s)
-            if scope in held or (scope in released and s.status == "inactive"):
-                continue
-            new.append(s)
+        new = [s for s in keys if s.status != "inactive" and _scope(s) not in held]
         if not new:
             return UNCHANGED
         revived = {_scope(s) for s in new} & released
@@ -231,7 +231,10 @@ async def follow_merges(entry: RegistryEntry | None) -> RegistryEntry | None:
     """The entry ``entry`` was (through any chain of merges) merged into, or
     ``entry`` itself when it was not merged. None when the chain is broken or
     longer than MERGE_CHAIN_LIMIT."""
-    for _ in range(MERGE_CHAIN_LIMIT):
+    # One pass either stops on the entry it holds or makes one hop, so a chain
+    # of MERGE_CHAIN_LIMIT merges needs one more pass to see that the entry the
+    # last hop landed on is itself the survivor.
+    for _ in range(MERGE_CHAIN_LIMIT + 1):
         if entry is None or not entry.merged_into:
             return entry
         entry = await RegistryEntry.find_one({"entry_id": entry.merged_into})

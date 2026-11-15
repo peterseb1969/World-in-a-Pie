@@ -1285,9 +1285,17 @@ class NamespaceDeletionService:
         records its target's namespace, which is matched directly.
 
         Documents are scanned for their own ids even where a template check
-        exists: a document's template may itself live in this namespace, and
-        is then deleted with it, so no surviving template says which terms
-        and files that document holds.
+        exists: a document's template may itself live in this namespace and is
+        then deleted with it, so no surviving template says which terms that
+        document holds. A file is not named on its template at all, so the
+        document scan is the only place a file reference can be found.
+
+        Two limits of the scan are accepted. It runs before this namespace is
+        locked, so a reference created in between goes uncounted and undeleted;
+        and a source namespace counts whatever its own status, so a namespace
+        that is archived or itself locked for deletion is reported as holding
+        references — over-reporting, which asks for a ``force`` it may not
+        need.
         """
         refs: list[InboundReference] = []
         motor_client = Namespace.get_motor_collection().database.client

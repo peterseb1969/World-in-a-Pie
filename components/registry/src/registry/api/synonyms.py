@@ -650,7 +650,8 @@ async def merge_entries(
     re-registering the deprecated identity answers the preferred entry. A
     key some third entry holds refuses the merge (``already_exists``, the
     holder in ``details``) and nothing is merged. Repeating a merge that
-    completed answers ``merged``. Merges are one-way.
+    completed answers ``merged`` — to a caller that may write; one that may
+    not gets ``forbidden``, as for any merge. Merges are one-way.
 
     Needs write on both entries' namespaces; an entry the caller cannot read
     is reported as not found.
@@ -684,13 +685,20 @@ async def _merge_one(
     pair = await _merge_pair(i, item, access)
     if isinstance(pair, MergeResponse):
         return pair
-    preferred, deprecated = pair
+    preferred, deprecated, already_merged = pair
 
     refusal = await _write_refusal(access, preferred.namespace, deprecated.namespace)
     if refusal:
         return MergeResponse(
             index=i, status="forbidden",
             preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id, error=refusal,
+        )
+    if already_merged:
+        # A retry of a merge that completed is answered as done — but only to a
+        # caller that could have done it: the merge still needs write.
+        return MergeResponse(
+            index=i, status="merged",
+            preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
         )
     invalid = _merge_refusal(i, item, preferred, deprecated, identity) or (
         await _bare_identity_merge_refusal(i, preferred, deprecated)
@@ -714,10 +722,11 @@ async def _merge_one(
 
 async def _merge_pair(
     i: int, item: MergeItem, access: NamespaceAccess,
-) -> tuple[RegistryEntry, RegistryEntry] | MergeResponse:
-    """The (preferred, deprecated) entries a merge item names, or its answer
-    when either is not there to merge: not found (or unreadable), or merged
-    into this preferred entry already (a retry, answered as done)."""
+) -> tuple[RegistryEntry, RegistryEntry, bool] | MergeResponse:
+    """The (preferred, deprecated) entries a merge item names and whether they
+    are already merged, or its answer when either is not there to merge: not
+    found (or unreadable). A pair already merged is flagged, not answered: the
+    retry is a success, and a success is only for a caller that could merge."""
     preferred = await RegistryEntry.find_one({"entry_id": item.preferred_id, "status": "active"})
     if not preferred or not await access.allows(preferred.namespace, "read"):
         return MergeResponse(index=i, status="preferred_not_found", preferred_id=item.preferred_id)
@@ -726,13 +735,10 @@ async def _merge_pair(
     if deprecated is None or not readable:
         return MergeResponse(index=i, status="deprecated_not_found", deprecated_id=item.deprecated_id)
     if deprecated.merged_into == preferred.entry_id:
-        return MergeResponse(
-            index=i, status="merged",
-            preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
-        )
+        return preferred, deprecated, True
     if deprecated.status != "active":
         return MergeResponse(index=i, status="deprecated_not_found", deprecated_id=item.deprecated_id)
-    return preferred, deprecated
+    return preferred, deprecated, False
 
 
 async def _bare_identity_merge_refusal(

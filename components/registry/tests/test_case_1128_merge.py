@@ -3,13 +3,21 @@
 After merging D into P:
 - D's canonical ID resolves to P on /entries/resolve, the path every service
   resolves through — not only on by-id lookup and search;
-- D's keys (its primary key and its synonyms) resolve to P, and re-registering
-  D's identity answers P, never the merged-away D;
+- D's keys (its primary key and the synonyms it still holds) resolve to P, and
+  re-registering D's identity answers P, never the merged-away D;
 - the merge takes only keys D or P hold: a key another entry holds is a
-  conflict, and nothing is merged;
+  conflict, and nothing is merged; and a synonym D had already released stays
+  D's own record, so reviving P later cannot hand it to P;
 - a merge that fails part-way leaves D as it was and can simply be retried;
+- retrying a pair that is already merged answers merged to a caller that may
+  write, forbidden to one that may not;
+- a chain of exactly MERGE_CHAIN_LIMIT merges resolves to its survivor, and
+  only a longer chain is given up on;
 - retiring P later does not drop D's redirect.
 """
+
+import uuid
+from itertools import pairwise
 
 import pytest
 
@@ -67,6 +75,25 @@ async def _resolve(client, headers, item: dict) -> dict:
     return r.json()["results"][0]
 
 
+async def _chain(client, headers, tag: str, merges: int) -> list[str]:
+    """Entries E0…E<merges>, each merged into the next: the list runs from the
+    first entry merged away to the survivor, so resolving E0 follows ``merges``
+    hops."""
+    ids = [await _register(client, headers, {"value": f"{tag}-{i}"}) for i in range(merges + 1)]
+    for merged_away, survivor in pairwise(ids):
+        assert (await _merge(client, headers, survivor, merged_away))["status"] == "merged"
+    return ids
+
+
+async def _reader_key(client, auth_headers) -> dict:
+    """A key that may read NS and nothing more."""
+    r = await client.post("/api/registry/api-keys", headers=auth_headers, json={
+        "name": f"case1128-ro-{uuid.uuid4().hex[:8]}", "groups": [], "namespaces": [NS],
+    })
+    assert r.status_code == 201, r.text
+    return {"X-API-Key": r.json()["plaintext_key"]}
+
+
 @pytest.mark.asyncio
 async def test_the_merged_away_id_resolves_to_the_survivor(client, auth_headers):
     p = await _register(client, auth_headers, {"value": "M-P1"})
@@ -90,6 +117,25 @@ async def test_a_chain_of_merges_resolves_to_the_last_survivor(client, auth_head
     for old in (a, b):
         result = await _resolve(client, auth_headers, {"entry_id": old})
         assert result["status"] == "found" and result["entry_id"] == c, result
+
+
+@pytest.mark.asyncio
+async def test_a_chain_as_long_as_the_limit_resolves_and_a_longer_one_does_not(
+    client, auth_headers
+):
+    """The bound is documented as a chain *longer than* MERGE_CHAIN_LIMIT: a
+    chain that reaches it exactly still resolves to its survivor, and only the
+    hop past it is given up on."""
+    limit = merge_service.MERGE_CHAIN_LIMIT
+    exact = await _chain(client, auth_headers, "M-CHAIN-EXACT", limit)
+    for old in exact[:-1]:
+        found = await _resolve(client, auth_headers, {"entry_id": old})
+        assert found["status"] == "found" and found["entry_id"] == exact[-1], (old, found)
+
+    over = await _chain(client, auth_headers, "M-CHAIN-OVER", limit + 1)
+    assert (await _resolve(client, auth_headers, {"entry_id": over[0]}))["status"] == "not_found"
+    found = await _resolve(client, auth_headers, {"entry_id": over[1]})
+    assert found["status"] == "found" and found["entry_id"] == over[-1], found
 
 
 @pytest.mark.asyncio
@@ -237,6 +283,21 @@ async def test_merging_an_already_merged_pair_again_answers_merged(client, auth_
 
 
 @pytest.mark.asyncio
+async def test_a_retry_of_a_completed_merge_is_still_refused_without_write(client, auth_headers):
+    """The pair is already merged, which is a success — but a success is only
+    ever reported to a caller that could have done the merge: a read-only key
+    gets forbidden, as it would for a merge still to do."""
+    p = await _register(client, auth_headers, {"value": "M-P14"})
+    d = await _register(client, auth_headers, {"value": "M-D14"})
+    assert (await _merge(client, auth_headers, p, d))["status"] == "merged"
+
+    result = await _merge(client, await _reader_key(client, auth_headers), p, d)
+    assert result["status"] == "forbidden", result
+    assert result["preferred_id"] == p and result["deprecated_id"] == d
+    assert "write permission" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_retiring_the_survivor_keeps_the_merged_id_resolving(client, auth_headers):
     p = await _register(client, auth_headers, {"value": "M-P6"})
     d = await _register(client, auth_headers, {"value": "M-D6"})
@@ -345,3 +406,46 @@ async def test_a_key_the_survivor_released_resolves_to_it_after_the_merge(client
     }], headers=auth_headers)
     found = r.json()["results"][0]
     assert found["status"] == "found" and found["entry_id"] == p, found
+
+
+@pytest.mark.asyncio
+async def test_a_synonym_the_deprecated_entry_released_does_not_move(client, auth_headers):
+    """D released this key when its entity was retired, and it stays D's
+    record. Handing the released copy to P would give P the key the next time
+    P's synonyms are revived — a key P never held."""
+    p = await _register(client, auth_headers, {"value": "M-P15"})
+    d = await _register(client, auth_headers, {"value": "M-D15"})
+    vendor = {"vendor": "M-D-RELEASED-15"}
+
+    async def lifecycle(path: str, entry_id: str) -> dict:
+        r = await client.post(
+            f"/api/registry/entries{path}", json=[{"entry_id": entry_id}], headers=auth_headers,
+        )
+        assert r.status_code == 200, r.text
+        return r.json()["results"][0]
+
+    def held(entry: RegistryEntry) -> list[str]:
+        return [s.status for s in entry.synonyms if s.composite_key == vendor]
+
+    assert (await _add_synonym(client, auth_headers, d, vendor))["status"] == "added"
+    assert (await lifecycle("/deactivate", d))["status"] == "deactivated"
+    entry_d = await RegistryEntry.find_one({"entry_id": d})
+    assert held(entry_d) == ["inactive"], "precondition: D holds the key released"
+    assert await CompositeKeyClaim.find_existing(NS, TYPE, _hash(vendor)) is None
+
+    assert (await _merge(client, auth_headers, p, d))["status"] == "merged"
+
+    entry_p = await RegistryEntry.find_one(RegistryEntry.entry_id == p)
+    assert all(s.composite_key != vendor for s in entry_p.synonyms), (
+        "the survivor must not inherit a key the merged-away entry had released"
+    )
+    entry_d = await RegistryEntry.find_one(RegistryEntry.entry_id == d)
+    assert held(entry_d) == ["inactive"], "D keeps its released key as its own record"
+
+    # Reviving the survivor is where an inherited copy would surface as P's.
+    revived = await lifecycle("/reactivate", p)
+    assert revived["status"] in ("reactivated", "unchanged"), revived
+    entry_p = await RegistryEntry.find_one(RegistryEntry.entry_id == p)
+    assert all(s.composite_key != vendor for s in entry_p.synonyms)
+    claim = await CompositeKeyClaim.find_existing(NS, TYPE, _hash(vendor))
+    assert claim is None or claim.owner_entry_id != p, "P must not take back D's old key"
