@@ -176,13 +176,21 @@ install's copy of a namespace into this one.
 
 **Where it writes.** The URL / `namespace` argument is the permission
 anchor, not the destination. A restore or merge writes each archived
-namespace to itself. A merge of a single-namespace archive can be redirected
-with `target_namespace`; a plain restore refuses a `target_namespace` that
+namespace to itself. A merge can be redirected: `target_namespace` sends a
+single-namespace archive's one namespace into the namespace you name, and
+`namespace_map` gives every namespace of a multi-namespace archive its own
+target (`{"kb": "kb2", "library": "library2"}`), so two namespaces merge in
+one job and keep their ids. A plain restore refuses a `target_namespace` that
 differs from the archive's (an id-preserving restore cannot re-namespace
 data — merge into the namespace you want, or restore a copy with
-`mode=fresh`); a multi-namespace archive takes no `target_namespace` in
-either mode. A target the mode cannot honour is refused before any job
-starts, never silently replaced.
+`mode=fresh`). Each destination needs admin, must already exist, and one
+destination takes one source: folding two namespaces into one is what
+`mode=fresh` does. A target the mode cannot honour is refused before any job
+starts, never silently replaced. A redirected merge lands rows carrying the
+target's name — including the references between the namespaces it moves —
+and its archive's ids must be free on this install, which is why the
+redirect serves an archive from another install, or from namespaces since
+deleted here.
 
 A merge runs in two passes.
 

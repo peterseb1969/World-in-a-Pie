@@ -79,6 +79,7 @@ is non-destructive — there is no risk for a rehearsal to mitigate.
 | R-FRC | `fresh` multi, N:1 collapse | two+ sources → one target |
 | R-MRG | `merge` | into a NON-empty namespace |
 | R-MRG-T | `merge` with `target_namespace` redirect | CASE-748 surface |
+| R-MRG-M | `merge` with `namespace_map` redirect (1:1) | each archived namespace into its own target |
 | R-JOB | restore-from-retained-job (`POST /backup/jobs/{id}/restore`) | no re-upload; restore/merge only |
 
 Restore options that multiply cells: `dry_run` (paired with every R-*),
@@ -200,6 +201,7 @@ dry-run assert is ever wanted on the P-CLI side.
 | R-17 | C | E16 through R-FR1 from a FOREIGN archive (referent's id and primary key unknown here, identity synonym live): the reference points at the live document with ITS namespace, template id and identity hash; an unidentifiable referent keeps its id and is a job warning naming its key (`test_remap_integration::TestOutOfArchiveReferents`) | PL-DATA, PL-JOB |
 | R-18 | L | E16 through R-FR1 and R-MRG on the SAME instance: every referent resolves to itself, the filter-dropped same-namespace target is named in its real namespace (never new-namespace + old id), job `result.referents` all resolved, PL-AUTO validation healthy. Then the same archive with its referent table stripped (`referents: None`): restore completes with `recorded: false`, and validation reports the affected references with their lookup hints | PL-DATA, PL-JOB, PL-AUTO |
 | R-19 | C | E16 through R-ID-X from a FOREIGN archive (cross-instance DR): the archive's own ids are kept; a template's `terminology_ref` and a document's `term_references` into a vocabulary the archive does not carry point at the target's entities; a document whose identity field is such a term is rehashed and its Registry row and primary claim re-keyed to the new hash; the same archive on its own install writes every row as archived; an unidentifiable referent keeps its id and its warning names the restore-order rule; a dry run reports the repointing and writes nothing (`test_case_981_plain_restore_referents`). Not run across two real installs | PL-DATA, PL-AUTO |
+| R-20 | C+L | P-SRVN × R-MRG-M: each archived namespace lands in its OWN target; the arriving rows carry the target's namespace and the references between the moved namespaces name the targets (E8 both directions); a later pair's refusal leaves the earlier pair unwritten; the job record names the targets it writes (PL-AUTO scopes to them) and the sources its retained input holds | PL-DATA, PL-JOB, PL-AUTO |
 
 ### 5.3 Refusals & failure injection
 
@@ -213,6 +215,7 @@ dry-run assert is ever wanted on the P-CLI side.
 | F-06 | L | Restore with reporting-sync stopped: completes with warnings, never fails (operator ruling); PL-REP backfills after `force` rebuild (CASE-738) |
 | F-07 | C | Permission: non-admin key refused per namespace on backup, restore, download — per-item/early, nothing partial |
 | F-08 | C | `continue_on_error` tombstone: setting it is a loud 400 naming the param (the engine has no per-item tolerance; a silent no-op would misreport what ran) |
+| F-09 | C | R-MRG-M map errors: unmapped ns / stranger ns / two sources on one target / map alongside `target_namespace` — each a 400 before any job exists, and the engine refuses the same shapes at plan time |
 
 ### 5.4 Cross-cutting invariant sweeps
 
