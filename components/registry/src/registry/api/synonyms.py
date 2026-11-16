@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -143,10 +143,15 @@ async def add_synonyms(
     changed = _apply_claimed(plan, blocked)
     # The caller's own words on who added a synonym (its created_by) are the
     # entry's note; the synonym's created_by is the authenticated caller. The
-    # note is the one sent with an addition that landed (the first, when one
-    # request adds several to an entry), never one a refused item sent.
+    # note is the text sent with an addition that landed (the first, when one
+    # request adds several to an entry), never one a refused item sent. Which
+    # one landed is only fully known after the write, so the note is kept per
+    # synonym hash and picked from the outcomes (_write_synonym_lists).
     notes = {
-        entry_id: items[plan.planned[positions[0]][0]].created_by
+        entry_id: [
+            (plan.planned[p][2].composite_key_hash, items[plan.planned[p][0]].created_by)
+            for p in positions
+        ]
         for entry_id, positions in plan.by_entry.items()
     }
     failed, redecided = await _write_synonym_lists(
@@ -400,17 +405,47 @@ SynonymOutcomes = dict[str, str]  # composite_key_hash -> per-item status
 # caller (entry_actor).
 _SYNONYM_FIELDS = ("synonyms", "search_values", *STAMP_FIELDS)
 
+#: The re-decided outcomes that mean this write changed the entry.
+_LANDED = ("added", "removed")
+
+#: After a first write whose outcome is unknown, a change the re-read finds
+#: already made is this request's own write landing before the error, so these
+#: answers mean landed too — the reading the items are settled with.
+_OWNED_AFTER_UNKNOWN = {"already_exists": "added", "not_found": "removed"}
+
+
+def _as_settled(decided: SynonymOutcomes, unknown: BaseException | None) -> SynonymOutcomes:
+    """Re-read outcomes as the items will be answered: an exception left the
+    first write's outcome unknown, and what the re-read then finds already
+    made is this request's own change."""
+    owned = _OWNED_AFTER_UNKNOWN if unknown else {}
+    return {h: owned.get(st, st) for h, st in decided.items()}
+
+
+def _landing_note(pairs: Sequence[tuple[str, str | None]], landed: Collection[str] | None) -> str | None:
+    """The caller's text of an entry's first synonym change that landed.
+
+    ``pairs`` is the entry's changes in item order, each its synonym hash and
+    the text sent with it. ``landed`` is the hashes the write actually changed,
+    or None when the write applies everything planned. Nothing landed, or
+    nothing was sent, gives no note.
+    """
+    for h, text in pairs:
+        if landed is None or h in landed:
+            return text
+    return None
+
 
 async def _write_synonym_lists(
     changed: dict[str, RegistryEntry],
     reapply: Callable[[str, RegistryEntry], SynonymOutcomes],
     actor: EntryActor,
-    notes: dict[str, str | None] | None = None,
+    notes: Mapping[str, Sequence[tuple[str, str | None]]] | None = None,
 ) -> tuple[dict[str, dict], dict[str, SynonymOutcomes]]:
-    """Write each changed entry's synonyms, search_values and updated_at, each
-    write filtered on the revision the entry was read with (entry_writes), so
-    two requests changing one entry's synonyms cannot drop each other's
-    change.
+    """Write each changed entry's synonyms, search_values and the stamp fields
+    (``updated_at``, ``updated_by``, ``actor_note``), each write filtered on the
+    revision the entry was read with (entry_writes), so two requests changing one
+    entry's synonyms cannot drop each other's change.
 
     An entry another writer changed in the meantime is read again and the
     request's changes are applied to it afresh by ``reapply(entry_id, entry)``,
@@ -421,8 +456,12 @@ async def _write_synonym_lists(
     unlike one not active at the start, which an add answers
     target_not_found and a removal not_found.
 
-    Each written entry is stamped with ``actor``, carrying the caller's
-    note for that entry from ``notes`` (none when absent).
+    Each written entry is stamped with ``actor``, carrying as its note the
+    caller's text of that entry's first change that landed, taken from
+    ``notes`` (per entry, its changes in item order as (synonym hash, text));
+    an entry with nothing in ``notes`` is stamped without a note. The note is
+    picked from the outcomes the items are answered from, so a change another
+    request made first never supplies it.
 
     Returns (failed entries with their per-item error fields, the outcomes
     re-decided on a re-read, by entry).
@@ -431,12 +470,13 @@ async def _write_synonym_lists(
         return {}, {}
     now = datetime.now(UTC)
 
-    def finish(entry: RegistryEntry) -> None:
+    def finish(entry: RegistryEntry, landed: Collection[str] | None) -> None:
         entry.rebuild_search_values()
-        actor.noting((notes or {}).get(entry.entry_id)).stamp(entry, now)
+        pairs = (notes or {}).get(entry.entry_id) or ()
+        actor.noting(_landing_note(pairs, landed)).stamp(entry, now)
 
     async def first_write(entry: RegistryEntry) -> bool | BaseException:
-        finish(entry)
+        finish(entry, None)
         try:
             return await write_entry(entry, _SYNONYM_FIELDS, {"status": "active"})
         except Exception as e:  # outcome unknown: settled by a re-read below
@@ -453,12 +493,15 @@ async def _write_synonym_lists(
         unknown = outcome if isinstance(outcome, BaseException) else None
         decided: SynonymOutcomes = {}
 
-        def mutate(entry: RegistryEntry, entry_id: str = entry_id, decided: dict = decided) -> Any:
+        def mutate(
+            entry: RegistryEntry, entry_id: str = entry_id, decided: dict = decided,
+            unknown: BaseException | None = unknown,
+        ) -> Any:
             decided.clear()
-            decided.update(reapply(entry_id, entry))
-            if not any(status in ("added", "removed") for status in decided.values()):
+            decided.update(_as_settled(reapply(entry_id, entry), unknown))
+            if not any(status in _LANDED for status in decided.values()):
                 return UNCHANGED
-            finish(entry)
+            finish(entry, [h for h, status in decided.items() if status in _LANDED])
             return None
 
         try:
@@ -473,11 +516,6 @@ async def _write_synonym_lists(
                 "error": f"Entry {entry_id} is no longer active", "error_code": "not_found",
             }
             continue
-        if unknown is not None:
-            # The first write may have landed before its error: a change found
-            # already made is this request's own.
-            decided = {h: {"already_exists": "added", "not_found": "removed"}.get(st, st)
-                       for h, st in decided.items()}
         redecided[entry_id] = dict(decided)
     return failed, redecided
 
@@ -546,13 +584,15 @@ def _remove_response(
 
 class _RemovePlan:
     """The removals a synonym-remove request applied in memory: each entry's
-    (item index, claim key) pairs, the changed entries, and the caller's
-    note on who acted, for each."""
+    (item index, claim key) pairs, the changed entries, and, for each, its
+    removals in item order as (synonym hash, the caller's text sent with
+    them) — the note of the removal that landed is picked from these once the
+    write decided them (_write_synonym_lists)."""
 
     def __init__(self) -> None:
         self.removals: dict[str, list[tuple[int, tuple]]] = {}
         self.changed: dict[str, RegistryEntry] = {}
-        self.notes: dict[str, str | None] = {}
+        self.notes: dict[str, list[tuple[str, str | None]]] = {}
 
 
 def _drop_synonym(entry: RegistryEntry, namespace: str, entity_type: str, synonym_hash: str) -> bool:
@@ -592,7 +632,7 @@ async def _decide_removal(
             error="Synonym not found in entry",
         )
     plan.changed[entry.entry_id] = entry
-    plan.notes[entry.entry_id] = item.updated_by
+    plan.notes.setdefault(entry.entry_id, []).append((synonym_hash, item.updated_by))
     plan.removals.setdefault(entry.entry_id, []).append((i, (
         synonym_namespace, synonym_entity_type, synonym_hash, entry.entry_id, "synonym",
     )))
