@@ -97,7 +97,11 @@ export class ReportingSyncService extends BaseService {
    * Reporting tables live in per-namespace PostgreSQL schemas
    * (`"<ns>"."doc_<value>"`). Pass `namespace` so unqualified table names
    * resolve in that namespace's schema, or schema-qualify each table in the
-   * SQL for cross-namespace queries.
+   * SQL for cross-namespace queries. Without `namespace`, a key that means
+   * one namespace (a single-namespace key, or an app key beside a read-only
+   * `wip`) gets its own namespace: every schema has same-named tables
+   * (`terms`, `templates`, ...), so an unqualified name reads the key's own
+   * rows. Read the shared vocabularies as `wip.terms`.
    */
   async runQuery(
     sql: string,
@@ -328,7 +332,7 @@ export class ReportingSyncService extends BaseService {
     query: string
     /** Parameters for the query. */
     params?: unknown[]
-    /** The namespace whose reporting schema the query reads; omittable under a single-namespace key. */
+    /** The namespace whose reporting schema unqualified names resolve in. Omitted, a key that means one namespace (a single-namespace key, or an app key beside a read-only `wip`) gets its own; read the shared vocabularies as `wip.terms`. */
     namespace?: string
     /** Timeout in milliseconds (default: 5000). */
     timeout?: number

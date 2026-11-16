@@ -2703,9 +2703,15 @@ class ReportQuery(StrictModel):
     namespace: str | None = Field(
         default=None,
         description=(
-            "When set, the query runs with search_path = this namespace's schema "
-            "(CASE-628), so unqualified table names like `doc_patient` resolve "
-            "there. Omit for cross-namespace queries and schema-qualify instead."
+            "When set, the query runs with search_path = this namespace's schema, "
+            "so unqualified table names like `doc_patient` resolve there. "
+            "When omitted, a key that can read exactly one namespace, or whose "
+            "scope implies one (an app key beside a read-only `wip`), runs with "
+            "that namespace's schema on the search_path. Every namespace's schema "
+            "has tables of the same names (terms, templates, ...), so an unqualified "
+            "name then resolves in the key's own namespace, as a bare value does "
+            "everywhere in WIP: read the shared vocabularies as `wip.terms`. Any "
+            "other caller without a namespace schema-qualifies its tables."
         ),
     )
 
@@ -2762,6 +2768,10 @@ async def execute_query(
     whose scope implies one) gets that namespace's schema on its
     search_path, as the platform derives a single-namespace key's
     namespace everywhere; any other caller's query names its schemas.
+    Every namespace's schema has same-named tables (terms, templates, ...),
+    so for an app key, its own namespace beside a read-only ``wip``, an
+    unqualified name resolves in its own namespace, as a bare value does
+    everywhere in WIP; it reads the shared vocabularies as ``wip.terms``.
     """
     namespace = body.namespace
     if namespace and not _is_privileged(identity):
@@ -2887,7 +2897,13 @@ class CsvExportQuery(StrictModel):
         description=(
             "When set, the query runs with search_path = this namespace's schema, "
             "so unqualified table names like `doc_patient` resolve there (same as "
-            "POST /query). Omit for cross-namespace queries and schema-qualify instead."
+            "POST /query). When omitted, a key that can read exactly one namespace, or whose "
+            "scope implies one (an app key beside a read-only `wip`), runs with "
+            "that namespace's schema on the search_path. Every namespace's schema "
+            "has tables of the same names (terms, templates, ...), so an unqualified "
+            "name then resolves in the key's own namespace, as a bare value does "
+            "everywhere in WIP: read the shared vocabularies as `wip.terms`. Any "
+            "other caller without a namespace schema-qualifies its tables."
         ),
     )
 
@@ -3024,7 +3040,9 @@ async def export_query_csv(
 
     Scoped like POST /query: a key that is not wip-admins / wip-services
     reads only the namespaces it can read, and without ``namespace`` a key
-    that means one namespace gets its schema on the search_path.
+    that means one namespace gets its schema on the search_path: an
+    unqualified name resolves in that namespace, ``wip.terms`` reads the
+    shared vocabularies.
     """
     namespace = body.namespace
     if namespace and not _is_privileged(identity):

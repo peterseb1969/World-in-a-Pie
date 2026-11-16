@@ -35,3 +35,39 @@ async def test_a_key_reading_several_namespaces_still_names_its_schemas(scoped):
     r = await _query(XREADER, "SELECT document_id FROM doc_probe__v1")
     assert r.status_code == 400, r.text
     assert "doc_probe__v1" in r.json()["detail"]
+
+
+# CASE-1251, review of 74610d9c R1: an app key (its own namespace beside a
+# read-only wip) gets its own namespace on the search_path. Every namespace's
+# schema has tables of the same names (terms, templates, ...), so an
+# unqualified name resolves in the key's own namespace, as a bare value does
+# everywhere in WIP; the shared vocabularies are read schema-qualified.
+
+APP = "rs_app_key"  # admin on ns-a, read on wip
+
+
+@pytest.fixture
+async def same_named(scoped, pg_pool):  # noqa: F811
+    from reporting_sync.schema_manager import SchemaManager
+
+    wip = await SchemaManager(pg_pool).ensure_schema("wip")
+    async with pg_pool.acquire() as conn:
+        for schema, value in (("ns-a", "own"), (wip, "shared")):
+            await conn.execute(f'CREATE TABLE "{schema}"."case1251_vocab" (value TEXT)')
+            await conn.execute(f'INSERT INTO "{schema}"."case1251_vocab" VALUES (\'{value}\')')
+    yield
+    async with pg_pool.acquire() as conn:
+        for schema in ("ns-a", wip):
+            await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."case1251_vocab"')
+
+
+async def test_an_unqualified_name_resolves_in_the_keys_own_namespace(same_named):
+    r = await _query(APP, "SELECT value FROM case1251_vocab")
+    assert r.status_code == 200, r.text
+    assert r.json()["rows"] == [{"value": "own"}]
+
+
+async def test_the_shared_namespace_is_read_schema_qualified(same_named):
+    r = await _query(APP, 'SELECT value FROM "wip".case1251_vocab')
+    assert r.status_code == 200, r.text
+    assert r.json()["rows"] == [{"value": "shared"}]
