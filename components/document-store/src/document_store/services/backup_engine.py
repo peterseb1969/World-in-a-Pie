@@ -2094,6 +2094,19 @@ def registry_search_values(entry: dict[str, Any]) -> list[str]:
     return sorted(values)
 
 
+def _rehashed(entry: dict[str, Any], new_key: dict[str, Any]) -> str:
+    """The primary key hash a registry entry carries once its key is rewritten.
+
+    An empty hash stays empty. The Registry clears it when it merges the entry
+    away (and an identity-less document never had one): such an entry claims
+    no key, and its key now belongs to the entry it was merged into.
+    Rehashing it would let the dead entry claim that key again.
+    """
+    if not entry.get("primary_composite_key_hash"):
+        return ""
+    return compute_composite_key_hash(new_key)
+
+
 def _resolved_in(ref: Any, redirects: dict[str, str]) -> Any:
     """A document reference whose snapshot names a namespace this merge
     moves, naming that namespace's target instead."""
@@ -5785,7 +5798,7 @@ class DirectRestoreEngine:
         if isinstance(key, dict) and key.get("ns") in redirects:
             new_key = {**key, "ns": redirects[key["ns"]]}
             result["primary_composite_key"] = new_key
-            result["primary_composite_key_hash"] = compute_composite_key_hash(new_key)
+            result["primary_composite_key_hash"] = _rehashed(result, new_key)
 
         synonyms = result.get("synonyms")
         if isinstance(synonyms, list):
@@ -5870,9 +5883,7 @@ class DirectRestoreEngine:
             new_key = self._remap_key_values(key, remapper)
             if new_key != key:
                 result["primary_composite_key"] = new_key
-                result["primary_composite_key_hash"] = compute_composite_key_hash(
-                    new_key
-                )
+                result["primary_composite_key_hash"] = _rehashed(result, new_key)
 
         synonyms = result.get("synonyms")
         if isinstance(synonyms, list):

@@ -19,6 +19,7 @@ import pytest
 from wip_archive.remap import IDRemapper
 
 from document_store.services.backup_engine import DirectRestoreEngine
+from wip_auth.composite_key import compute_composite_key_hash
 
 from .test_merge_plan import NAMESPACE, planner  # noqa: F401  (planner is a fixture)
 
@@ -87,3 +88,102 @@ def test_the_rewrite_maps_merge_pointers_like_key_ids():
     assert out["merged_into"] == "D-HERE"
     assert out["synonyms"][0]["merged_from"] == "D-HERE"
     assert entry["merged_into"] == "D-THERE"  # the archived row is untouched
+
+
+# ---------------------------------------------------------------------------
+# A merged-away entry: its primary key hash is cleared, and the survivor holds
+# its primary key as a synonym with merged_from naming it.
+# ---------------------------------------------------------------------------
+
+K_D = {"ns": NAMESPACE, "template_id": "TPL-1", "identity": "D"}
+
+
+def _merged_away(entry_id: str, survivor: str) -> dict:
+    return _entry(entry_id, [_synonym(SYN_B, status="inactive")],
+                  primary_composite_key=K_D, primary_composite_key_hash="",
+                  status="inactive", merged_into=survivor)
+
+
+def _survivor(entry_id: str, merged_away: str) -> dict:
+    return _entry(entry_id, [{
+        **_synonym(K_D), "composite_key_hash": compute_composite_key_hash(K_D),
+        "merged_from": merged_away,
+    }])
+
+
+@pytest.mark.asyncio
+async def test_a_merged_away_entry_matches_its_copy_through_the_survivor(planner):  # noqa: F811
+    """Install A merged D into P; install B did the same under its own ids. D's
+    hash is cleared on both sides, so D can only be found through the key P
+    took from it."""
+    await planner.seed("registry_entries", [
+        _survivor("P-HERE", "D-HERE"), _merged_away("D-HERE", "P-HERE"),
+    ])
+    # As the rewrite leaves it: merged_into already mapped onto the target's P.
+    archived = _merged_away("D-THERE", "P-HERE")
+
+    plan = await planner.plan("registry_entries", [archived], NAMESPACE)
+
+    assert plan.to_insert == []
+    assert plan.mapping == {"D-THERE": "D-HERE"}
+    assert plan.clashes[0].diff == {}
+    assert plan.summary()["unchanged"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_merged_away_entry_the_target_holds_active_is_a_clash(planner):  # noqa: F811
+    """The target never merged D: it holds D's key as D's own primary key."""
+    held = _entry("D-HERE", [_synonym(SYN_B)], primary_composite_key=K_D,
+                  primary_composite_key_hash=compute_composite_key_hash(K_D))
+    await planner.seed("registry_entries", [held])
+
+    plan = await planner.plan("registry_entries", [_merged_away("D-THERE", "P-HERE")], NAMESPACE)
+
+    assert plan.mapping == {"D-THERE": "D-HERE"}
+    assert {"status", "merged_into", "synonyms"} <= set(plan.clashes[0].diff)
+
+
+@pytest.mark.asyncio
+async def test_a_merged_away_entry_the_target_lacks_is_inserted(planner):  # noqa: F811
+    await planner.seed("registry_entries", [_entry("OTHER", [])])
+    plan = await planner.plan("registry_entries", [_merged_away("D-THERE", "P-HERE")], NAMESPACE)
+    assert [e["entry_id"] for e in plan.to_insert] == ["D-THERE"]
+
+
+# ---------------------------------------------------------------------------
+# A cleared primary key hash stays cleared through the merge's rewrites: the
+# Registry cleared it so that the dead entry claims nothing.
+# ---------------------------------------------------------------------------
+
+def _engine() -> DirectRestoreEngine:
+    return DirectRestoreEngine(MagicMock(), None, lambda _e: None)
+
+
+def test_the_namespace_rewrite_keeps_a_cleared_hash_cleared():
+    entry = {**_merged_away("D-THERE", "P-THERE"), "namespace": "src",
+             "primary_composite_key": {**K_D, "ns": "src"}}
+
+    out = _engine()._rewrite_namespace("registry_entries", entry, {"src": NAMESPACE})
+
+    assert out["primary_composite_key"]["ns"] == NAMESPACE
+    assert out["primary_composite_key_hash"] == ""
+    assert DirectRestoreEngine._claim_rows_for([out], MagicMock()) == []
+
+
+def test_the_namespace_rewrite_still_rehashes_a_live_key():
+    key = {**K_D, "ns": "src"}
+    entry = _entry("D-THERE", [], namespace="src", primary_composite_key=key,
+                   primary_composite_key_hash=compute_composite_key_hash(key))
+
+    out = _engine()._rewrite_namespace("registry_entries", entry, {"src": NAMESPACE})
+
+    assert out["primary_composite_key_hash"] == compute_composite_key_hash(
+        {**K_D, "ns": NAMESPACE})
+
+
+def test_the_id_rewrite_keeps_a_cleared_hash_cleared():
+    remapper = IDRemapper()
+    remapper.add_template_mapping("TPL-1", "TPL-HERE")
+    out = _engine()._rewrite_registry_entry(_merged_away("D-THERE", "P-THERE"), remapper)
+    assert out["primary_composite_key"]["template_id"] == "TPL-HERE"
+    assert out["primary_composite_key_hash"] == ""

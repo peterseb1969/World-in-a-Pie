@@ -44,6 +44,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from wip_auth.composite_key import compute_composite_key_hash
+
 logger = logging.getLogger("document_store.merge_plan")
 
 # How many keys travel in one target probe. Large enough that a delta of a few
@@ -297,6 +299,51 @@ def key_of(
     return tuple(values)
 
 
+def _merged_away_keys(
+    entities: list[dict[str, Any]],
+    spec: EntitySpec,
+    id_index: dict[tuple[Any, ...], list[dict[str, Any]]],
+) -> dict[int, tuple[Any, ...]]:
+    """The logical key a merged-away registry entry is matched on, by ``id()``.
+
+    Merging an entry away clears its primary key hash, so it has no logical
+    key of its own and would be matched by entry_id alone, which differs
+    between installs. Its primary key is still recorded, and hashing it gives
+    the key it held before the merge. Only entries the target does not hold
+    under the same entry_id need it.
+    """
+    keys: dict[int, tuple[Any, ...]] = {}
+    for entity in entities:
+        key = entity.get("primary_composite_key")
+        if (
+            not entity.get("merged_into")
+            or entity.get("primary_composite_key_hash")
+            or not isinstance(key, dict) or not key
+            or id_index.get(key_of(entity, spec.id_fields) or ())
+        ):
+            continue
+        keys[id(entity)] = (entity.get("entity_type"), compute_composite_key_hash(key))
+    return keys
+
+
+def _batches(values: list[Any]) -> Iterable[list[Any]]:
+    for start in range(0, len(values), KEY_BATCH_SIZE):
+        yield values[start:start + KEY_BATCH_SIZE]
+
+
+def _merged_from_names(
+    survivor: dict[str, Any], keys: set[tuple[Any, ...]]
+) -> dict[str, tuple[Any, ...]]:
+    """The entries ``survivor`` absorbed under one of ``keys``, by entry_id:
+    a synonym a merge gave it carries ``merged_from`` naming the entry."""
+    names: dict[str, tuple[Any, ...]] = {}
+    for syn in survivor.get("synonyms") or []:
+        key = (syn.get("entity_type"), syn.get("composite_key_hash"))
+        if key in keys and syn.get("merged_from"):
+            names[syn["merged_from"]] = key
+    return names
+
+
 class MergePlanner:
     """Classifies an archive's entities against a live target namespace.
 
@@ -331,14 +378,13 @@ class MergePlanner:
             collection, namespace, spec.id_fields,
             self._keys(entities, spec.id_fields), projection,
         )
-        logical_index = await self._fetch_by_keys(
-            collection, namespace, spec.logical_fields,
-            self._keys(entities, spec.logical_fields), projection,
+        logical_index, logical_of = await self._logical_index(
+            collection, namespace, entity_type, entities, id_index, projection
         )
 
         for entity in entities:
             id_key = key_of(entity, spec.id_fields)
-            logical_key = key_of(entity, spec.logical_fields)
+            logical_key = logical_of.get(id(entity))
             by_id = id_index.get(id_key) if id_key is not None else None
             by_logical = (
                 logical_index.get(logical_key) if logical_key is not None else None
@@ -424,6 +470,65 @@ class MergePlanner:
                     ),
                 )
         return None
+
+    async def _logical_index(
+        self,
+        collection: Any,
+        namespace: str,
+        entity_type: str,
+        entities: list[dict[str, Any]],
+        id_index: dict[tuple[Any, ...], list[dict[str, Any]]],
+        projection: dict[str, int] | None,
+    ) -> tuple[dict[tuple[Any, ...], list[dict[str, Any]]], dict[int, tuple[Any, ...]]]:
+        """The target rows by logical key, and each entity's logical key by
+        ``id()``. A merged-away registry entry is keyed on the key it held
+        before the merge (see _merged_away_keys)."""
+        spec = MERGE_ENTITY_SPECS[entity_type]
+        logical_of = {
+            id(entity): key
+            for entity in entities
+            if (key := key_of(entity, spec.logical_fields)) is not None
+        }
+        retired: dict[int, tuple[Any, ...]] = {}
+        if entity_type == "registry_entries":
+            retired = _merged_away_keys(entities, spec, id_index)
+        retired_keys = set(retired.values())
+        index = await self._fetch_by_keys(
+            collection, namespace, spec.logical_fields,
+            [*self._keys(entities, spec.logical_fields), *retired_keys], projection,
+        )
+        if retired_keys:
+            await self._add_merged_away(collection, namespace, retired_keys, index)
+        return index, {**retired, **logical_of}
+
+    @staticmethod
+    async def _add_merged_away(
+        collection: Any,
+        namespace: str,
+        keys: set[tuple[Any, ...]],
+        index: dict[tuple[Any, ...], list[dict[str, Any]]],
+    ) -> None:
+        """Add to ``index`` the target entries merged away under ``keys``.
+
+        A merged-away entry's own hash is cleared, so it is found through the
+        entry it was merged into: that entry holds the merged-away entry's
+        primary key as a synonym whose ``merged_from`` names it. A key the
+        target holds as a live primary key is already in ``index``.
+        """
+        wanted = {key for key in keys if key not in index}
+        names: dict[str, tuple[Any, ...]] = {}
+        hashes = [key_hash for _type, key_hash in wanted]
+        query = {"namespace": namespace, "synonyms.composite_key_hash": {"$in": []}}
+        for batch in _batches(hashes):
+            query["synonyms.composite_key_hash"] = {"$in": batch}
+            async for survivor in collection.find(query, {"synonyms": 1}):
+                names.update(_merged_from_names(survivor, wanted))
+        query = {"namespace": namespace, "entry_id": {"$in": []}}
+        for batch in _batches(list(names)):
+            query["entry_id"] = {"$in": batch}
+            async for row in collection.find(query):
+                row.pop("_id", None)
+                index.setdefault(names[row["entry_id"]], []).append(row)
 
     @staticmethod
     def _describe(fields: Sequence[str], key: Sequence[Any]) -> str:

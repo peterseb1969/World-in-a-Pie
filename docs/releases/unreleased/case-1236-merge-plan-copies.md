@@ -26,3 +26,14 @@ mappings like the ids in the keys, so an entry the target holds merged into
 the same entry compares identical, and an inserted entry points at the
 target's id. A missing synonym, a synonym's status and a merge into another
 entry still count.
+
+An entry merged away into another entry (`merged_into` set, its primary key
+hash cleared by the Registry) has no key of its own left, so a copy of it from
+another install was matched by `entry_id` alone, missed, and planned as an
+insert of a second retired entry. The plan now matches it through the key it
+held: the target's copy is found through the entry it was merged into, which
+holds that key as a synonym with `merged_from` naming it, or through a target
+entry still holding it as its own key. A merge's namespace and id rewrites no
+longer recompute a cleared primary key hash, so a merged-away entry an
+inserted archive carries no longer claims the key that now belongs to the
+entry it was merged into.
