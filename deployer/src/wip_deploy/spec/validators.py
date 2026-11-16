@@ -367,14 +367,17 @@ def _validate_images_resolvable(
     fail to pull from Docker Hub. Catching this up front beats waiting
     for a confusing `manifest unknown` from podman-compose.
 
-    The dev target builds from source via `build_context`, so this
-    guard doesn't apply there.
+    The dev target builds components and source-bound apps from source, so
+    there the guard covers only the apps opted into their published image
+    (`--app-from-registry`) without a checkout: those pull like compose's.
     """
     errors: list[ValidationError] = []
     target = deployment.spec.target
-    if target not in ("compose", "k8s"):
-        return errors
     if deployment.spec.images.registry is not None:
+        return errors
+    if target == "dev":
+        return _dev_registry_images_resolvable(deployment, apps)
+    if target not in ("compose", "k8s"):
         return errors
 
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
@@ -402,6 +405,49 @@ def _validate_images_resolvable(
             f"to build from local source."
         ))
     return errors
+
+
+def _dev_registry_images_resolvable(
+    deployment: Deployment, apps: list[App]
+) -> list[ValidationError]:
+    """A dev install with no registry: the enabled apps it runs from their
+    published image must not have short-name images, which would render as
+    bare `<name>:<tag>` that pulls nothing published."""
+    dev = deployment.spec.platform.dev
+    if dev is None:
+        return []
+    enabled = {a.name for a in deployment.spec.apps if a.enabled}
+    pulled = set(dev.apps_from_registry) - set(dev.app_sources)
+    unresolved = sorted(
+        a.metadata.name for a in apps
+        if a.metadata.name in enabled & pulled and "/" not in a.spec.image.name
+    )
+    if not unresolved:
+        return []
+    return [ValidationError(
+        "target='dev' runs these apps from their published image "
+        "(--app-from-registry), but this install names no image registry, so "
+        f"they would render as bare short names that pull nothing published: "
+        f"{', '.join(unresolved)}. Fix: give the install its registry with "
+        "`wip-deploy install … --registry <host> --reconcile`, or run the app "
+        "from a checkout with --app-source."
+    )]
+
+
+def _validate_dev_app_bindings(deployment: Deployment) -> list[ValidationError]:
+    """A dev app is bound to a checkout or opted into its published image,
+    never both: dev builds from the checkout, so the opt-in would name nothing."""
+    dev = deployment.spec.platform.dev
+    if deployment.spec.target != "dev" or dev is None:
+        return []
+    return [
+        ValidationError(
+            f"app {name!r} is bound to a checkout (--app-source) and opted into "
+            "its published image (--app-from-registry); dev builds from the "
+            "checkout, so the opt-in names nothing. Pass one of them."
+        )
+        for name in sorted(set(dev.apps_from_registry) & set(dev.app_sources))
+    ]
 
 
 def _validate_namespace_reservations(
@@ -599,6 +645,7 @@ def validate_all(
         _validate_oidc_client_ids_unique(components, apps, deployment)
     )
     report.errors.extend(_validate_images_resolvable(deployment, components, apps))
+    report.errors.extend(_validate_dev_app_bindings(deployment))
     report.errors.extend(_validate_namespace_reservations(deployment, apps))
     report.errors.extend(_validate_app_key_names(deployment, apps))
     report.errors.extend(_validate_provisioned_key_names(deployment, apps))

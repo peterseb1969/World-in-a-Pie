@@ -190,19 +190,34 @@ class TestAddAppFromRegistry:
 
 
 class TestRefusalNamesWhatThisVerbAccepts:
-    def test_an_app_with_no_source_offers_the_three_routes_in_add_app_form(
+    def test_an_app_not_yet_added_is_offered_the_two_routes_that_add_it(
         self, tmp_path: Path
     ) -> None:
+        # The install does not run the app: it is not "enabled", and
+        # remove-app would answer that there is nothing to remove.
         install = _write_state(tmp_path / "install")
         result, mutate = _add(install)
 
         assert result.exit_code == 2, result.output
+        assert "nothing to run" in result.output
+        assert "is enabled" not in result.output
         assert "--app-source <path-to-checkout>" in result.output
         assert "--app-from-registry" in result.output
-        assert f"remove-app {APP}" in result.output
+        assert "remove-app" not in result.output
         # `install`'s NAME=PATH form and its "re-install" are not this verb's.
         assert f"--app-source {APP}=" not in result.output
         assert "re-install" not in result.output
+        mutate.assert_not_called()
+
+    def test_an_enabled_app_with_no_source_is_also_offered_remove_app(
+        self, tmp_path: Path
+    ) -> None:
+        install = _write_state(tmp_path / "install", apps=[{"name": APP, "enabled": True}])
+        result, mutate = _add(install, "--tag", "20261113d")
+
+        assert result.exit_code == 2, result.output
+        assert f"app {APP!r} is enabled" in result.output
+        assert f"remove-app {APP}" in result.output
         mutate.assert_not_called()
 
     def test_the_case_s_command_is_refused_and_points_at_the_opt_in(
@@ -306,6 +321,78 @@ class TestContradictionsAreRefused:
 # ────────────────────────────────────────────────────────────────────
 # remove-app drops the opt-in with the app
 # ────────────────────────────────────────────────────────────────────
+
+
+class TestOneBindingPerDevApp:
+    def test_binding_a_source_replaces_an_earlier_opt_in(self, tmp_path: Path) -> None:
+        install = _write_state(
+            tmp_path / "install",
+            apps=[{"name": APP, "enabled": True}],
+            dev={"apps_from_registry": [APP]},
+        )
+        checkout = tmp_path / "wip-kb"
+        checkout.mkdir()
+        result, mutate = _add(install, "--app-source", str(checkout))
+
+        assert result.exit_code == 0, result.output
+        dev = mutate.call_args.args[0].spec.platform.dev
+        assert dev.app_sources[APP] == checkout
+        assert APP not in dev.apps_from_registry
+
+    def test_an_install_naming_an_app_both_ways_is_refused(self, tmp_path: Path) -> None:
+        from wip_deploy.spec.validators import validate_all
+
+        deployment = _reload(_write_state(
+            tmp_path / "install",
+            apps=[{"name": APP, "enabled": True}],
+            dev={"apps_from_registry": [APP], "app_sources": {APP: str(tmp_path)}},
+        ))
+        discovery = discover(WIP_ROOT)
+        report = validate_all(deployment, discovery.components, discovery.apps)
+        assert any("opt-in names nothing" in str(e) for e in report.errors), report.errors
+
+
+class TestARegistryAppNeedsTheRegistry:
+    def _errors(self, tmp_path: Path, **state) -> list[str]:
+        from wip_deploy.spec.validators import validate_all
+
+        deployment = _reload(_write_state(tmp_path / "install", **state))
+        discovery = discover(WIP_ROOT)
+        report = validate_all(deployment, discovery.components, discovery.apps)
+        return [str(e) for e in report.errors]
+
+    def test_an_opted_app_on_an_install_with_no_registry_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        errors = self._errors(
+            tmp_path, apps=[{"name": APP, "enabled": True}],
+            dev={"apps_from_registry": [APP]}, tag_overrides={APP: "20261113d"},
+        )
+        [error] = [e for e in errors if "pull nothing published" in e]
+        assert APP in error and "--registry <host> --reconcile" in error
+
+    def test_a_registry_makes_it_resolvable(self, tmp_path: Path) -> None:
+        install = _write_state(
+            tmp_path / "install", apps=[{"name": APP, "enabled": True}],
+            dev={"apps_from_registry": [APP]},
+        )
+        state = json.loads((install / STATE).read_text())
+        state["deployment"]["spec"]["images"]["registry"] = "ghcr.io/example"
+        (install / STATE).write_text(json.dumps(state))
+        from wip_deploy.spec.validators import validate_all
+
+        discovery = discover(WIP_ROOT)
+        report = validate_all(_reload(install), discovery.components, discovery.apps)
+        assert not [e for e in report.errors if "pull nothing published" in str(e)]
+
+    def test_a_dev_app_built_from_a_checkout_needs_no_registry(
+        self, tmp_path: Path
+    ) -> None:
+        errors = self._errors(
+            tmp_path, apps=[{"name": APP, "enabled": True}],
+            dev={"app_sources": {APP: str(tmp_path)}},
+        )
+        assert not [e for e in errors if "pull nothing published" in e]
 
 
 class TestRemoveAppDropsTheOptIn:

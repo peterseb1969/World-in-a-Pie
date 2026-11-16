@@ -540,9 +540,10 @@ def _app_from_registry_opt() -> typer.models.OptionInfo:
         "--app-from-registry",
         help=(
             "Dev-target only. Explicitly opt the named app into the "
-            "registry-image fallback in dev mode (CASE-355). Without "
+            "registry-image fallback in dev mode. Without "
             "this, an enabled app with no --app-source and no local "
-            "build context fails the dev install loudly. Repeatable. "
+            "build context fails the dev install loudly. The image is "
+            "pulled from --registry, which the install then needs. Repeatable. "
             "Example: --app-from-registry clintrial. "
             "Implicitly enables the named app (no separate --app "
             "needed). Ignored for target!=dev."
@@ -2811,8 +2812,12 @@ def _refuse_unworkable_dev_app(
     from_registry: bool,
     tag: str | None,
     dev_plat: DevPlatform | None,
+    enabled: bool,
 ) -> None:
     """Stop an `add-app` whose result the dev renderer cannot honour.
+
+    `enabled` says whether the install already runs the app: only then is
+    taking it out of the install (`remove-app`) a way out.
 
     A dev app is built from its `app_sources` checkout, or pulls its registry
     image only when named in `apps_from_registry`; with neither the render
@@ -2858,15 +2863,23 @@ def _refuse_unworkable_dev_app(
         raise typer.Exit(2)
 
     if checkout is None and not opted_in:
-        typer.echo(
-            f"error: app {app_name!r} is enabled but has no source for "
-            f"--target dev. Either: (a) pass --app-source <path-to-checkout> to "
-            f"bind-mount the app's source, (b) pass --app-from-registry to "
-            f"explicitly opt into the registry image, or (c) take the app out "
-            f"of the install with `wip-deploy remove-app {app_name} --name "
-            f"{install_name}`.",
-            err=True,
-        )
+        if enabled:
+            typer.echo(
+                f"error: app {app_name!r} is enabled but has no source for "
+                "--target dev. Either: (a) pass --app-source <path-to-checkout> "
+                "to bind-mount the app's source, (b) pass --app-from-registry to "
+                "run its published image, or (c) take the app out of the install "
+                f"with `wip-deploy remove-app {app_name} --name {install_name}`.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"error: app {app_name!r} has no source for --target dev, so "
+                "adding it would leave it nothing to run. Either: (a) pass "
+                "--app-source <path-to-checkout> to bind-mount the app's source, "
+                "or (b) pass --app-from-registry to run its published image.",
+                err=True,
+            )
         raise typer.Exit(2)
 
     if tag is not None and checkout is not None:
@@ -2923,7 +2936,9 @@ def add_app(
                 "stable app you are not iterating on joins a dev install. "
                 "On/off: the app is the command's argument, so no name "
                 "follows it (install takes `--app-from-registry NAME`). "
-                "Mutually exclusive with `--app-source`."
+                "Mutually exclusive with `--app-source`. The image is pulled "
+                "from the install's registry (`install --registry`), which a "
+                "dev install made without one does not have."
             ),
         ),
     ] = False,
@@ -3066,6 +3081,7 @@ def add_app(
             from_registry=from_registry,
             tag=tag,
             dev_plat=deployment.spec.platform.dev,
+            enabled=existing is not None and existing.enabled,
         )
 
     # An app the install does not run yet gets a key of its own made for it
@@ -3093,6 +3109,11 @@ def add_app(
             )
             raise typer.Exit(2)
         deployment.spec.platform.dev.app_sources[app_name] = source
+        # Dev builds a source-bound app from its checkout, so an earlier
+        # registry opt-in would name nothing; the checkout replaces it.
+        deployment.spec.platform.dev.apps_from_registry = [
+            n for n in deployment.spec.platform.dev.apps_from_registry if n != app_name
+        ]
 
     if from_registry:
         if deployment.spec.platform.dev is None:
