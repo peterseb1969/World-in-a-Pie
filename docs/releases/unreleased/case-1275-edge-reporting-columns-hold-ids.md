@@ -21,5 +21,16 @@ references entry — keeps its stored string ref, which still joins against a
 document whose `document_id` equals it, and an endpoint that is neither resolved
 nor a string leaves the column empty rather than claiming a non-id as an id.
 
-**Action:** none required. Re-run a batch sync for an edge type whose rows went
-missing (`POST /api/reporting-sync/sync/batch/<EDGE_TYPE>`) to fill them in.
+**Action:** for an edge type batch-synced before this change, in each of its
+namespaces:
+
+- Rows that never reached PostgreSQL (an endpoint written as a business key)
+  are filled in by a plain batch sync:
+  `POST /api/reporting-sync/sync/batch/<EDGE_TYPE>?namespace=<ns>`.
+- Rows that did land, with an endpoint stored as a synonym spelling (`ns:VALUE`,
+  `hash:…`, a value) in place of the id, are not rewritten by that run: a row
+  is only replaced by a higher revision, and the documents have not changed.
+  Rebuild them with
+  `POST /api/reporting-sync/sync/batch/<EDGE_TYPE>?force=true&namespace=<ns>`,
+  which drops and rebuilds the edge type's reporting tables in that namespace.
+  SQL readers see no table for that type until the job completes.
