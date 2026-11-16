@@ -25,6 +25,10 @@ export interface RetryConfig {
 
 const DEFAULT_TIMEOUT = 30_000
 const DEFAULT_RETRY: RetryConfig = { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000 }
+// The statuses a retried GET can clear: a gateway or service briefly unable to
+// answer. 505 and above (an unsupported version, storage, a loop, a captive
+// portal) do not clear, so they fail at once.
+const RETRY_STATUSES = new Set([502, 503, 504])
 
 /** The request's own timeout (or the caller's signal) aborted it. */
 function isAbort(err: unknown): boolean {
@@ -152,7 +156,7 @@ export class FetchTransport {
           const error = await this.mapResponseError(response)
           if (error instanceof WipAuthError) this.handleAuthError(error)
           // Retry on 502/503/504 for GET
-          if (isRetryable && attempt < maxAttempts - 1 && response.status >= 502) {
+          if (isRetryable && attempt < maxAttempts - 1 && RETRY_STATUSES.has(response.status)) {
             lastError = error
             continue
           }

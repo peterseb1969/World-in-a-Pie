@@ -30,6 +30,14 @@ describe('retries', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it.each([505, 507, 511])('a GET answered %i is not retried: it does not clear', async (status) => {
+    const fetchMock = vi.fn().mockImplementation(async () => json({ detail: 'no' }, status))
+    vi.stubGlobal('fetch', fetchMock)
+    const t = new FetchTransport({ baseUrl: 'http://localhost', retry: { maxRetries: 2, baseDelayMs: 1 } })
+    await expect(t.request('GET', '/x')).rejects.toBeInstanceOf(WipServerError)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it.each([502, 503, 504])('a GET answered %i is still retried', async (status) => {
     const fetchMock = vi.fn().mockResolvedValueOnce(json({}, status)).mockResolvedValueOnce(json({ ok: 1 }))
     vi.stubGlobal('fetch', fetchMock)

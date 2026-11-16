@@ -843,7 +843,7 @@ All errors extend `WipError`:
 | Error Class | HTTP Status | When |
 |-------------|------------|------|
 | `WipNotFoundError` | 404 | Entity doesn't exist |
-| `WipValidationError` | 400, 422 | Invalid request data (note: `err.statusCode` always reads 422, even when the server returned 400) |
+| `WipValidationError` | 400, 422 | Invalid request data; `err.statusCode` is the status the server answered, 400 or 422 |
 | `WipConflictError` | 409 | Conflict (rare — most conflicts are per-item in BulkResponse) |
 | `WipAuthError` | 401, 403 | Bad/missing credentials or insufficient permissions |
 | `WipServerError` | 5xx | Server-side error |
@@ -961,12 +961,14 @@ const result = await bulkImport(
     batchSize: 500,            // items per API call (default: 100)
     concurrency: 1,            // parallel batches (default: 1 — safe for Pi)
     continueOnError: true,     // keep going on failures (default: true)
-    onProgress: ({ processed, total, succeeded, failed }) => {
-      console.log(`${processed}/${total} (${failed} errors)`)
+    onProgress: ({ processed, total, succeeded, failed, rejected }) => {
+      console.log(`${processed}/${total} (${failed} errors, ${rejected.length} failed requests)`)
     },
   },
 )
-// result: { processed: 10000, total: 10000, succeeded: 9998, failed: 2 }
+// result: { processed: 10000, total: 10000, succeeded: 9998, failed: 2, rejected: [] }
+// A batch whose request fails is counted in `failed` and listed in `rejected`
+// ({ offset, size, error }); bulkImport resolves either way.
 ```
 
 **Concurrency guidance:**

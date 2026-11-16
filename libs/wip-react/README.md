@@ -637,6 +637,8 @@ function ImportTerms({ terminologyId }: { terminologyId: string }) {
       {data && (
         <div>
           Done: {data.succeeded}/{data.total} imported
+          {data.failed > 0 && ` — ${data.failed} failed`}
+          {data.rejected.length > 0 && ` (${data.rejected.length} batch requests failed)`}
         </div>
       )}
     </div>
@@ -647,11 +649,11 @@ function ImportTerms({ terminologyId }: { terminologyId: string }) {
 **Options:**
 - `writeFn: (batch: T[]) => Promise<BulkResponse>` — the API call for each batch
 - `batchSize?: number` — items per batch (default: 100)
-- `continueOnError?: boolean` — keep processing batches after items fail (default: true). A batch whose request fails (a transport error) always stops the run
+- `continueOnError?: boolean` — keep processing batches after items fail (default: true). A batch whose request fails counts all its items as failed and is listed in `rejected`; it stops the run only when `continueOnError` is false. Either way the mutation settles as a success: read `data.failed` and `data.rejected`, not `isError`, to see what did not land
 - `invalidateKeys?: readonly unknown[]` — query keys to invalidate when the run settles, failure included: batches written before a failure stay written (default: `wipKeys.all`)
 
 **Returns** (extends `UseMutationResult`):
-- `progress: BulkImportProgress | null` — live progress: `{ processed, total, succeeded, failed }`
+- `progress: BulkImportProgress | null` — live progress: `{ processed, total, succeeded, failed, rejected }`, where `rejected` lists each batch whose request failed (`{ offset, size, error }`)
 - `reset()` — clear progress and mutation state
 
 Progress is cleared automatically 2 seconds after completion.

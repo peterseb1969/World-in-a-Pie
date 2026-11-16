@@ -6,7 +6,7 @@
  *   useTerms (params.namespace), useTerm (namespace, terminology) and
  *   useTerminology (namespace) forward the scope, and two scopes of one id
  *   are two cache entries;
- * - useBulkImport invalidates when a batch throws, not only on success;
+ * - useBulkImport invalidates when a batch request fails, not only when every item lands;
  * - useTriggerBatchSyncAll forwards namespace, which force requires;
  * - useDeleteNamespace invalidates every cache, not only the registry's.
  */
@@ -15,14 +15,6 @@ import { renderHook, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import type { WipClient } from '@wip/client'
-
-vi.mock('@wip/client', async () => {
-  const actual = await vi.importActual<typeof import('@wip/client')>('@wip/client')
-  return {
-    ...actual,
-    bulkImport: vi.fn(async (items: unknown[], writeFn: (b: unknown[]) => Promise<unknown>) => writeFn(items)),
-  }
-})
 
 import { WipProvider } from '../src/provider'
 import { wipKeys } from '../src/utils/keys'
@@ -131,7 +123,7 @@ describe('read hooks forward the scope and key on it', () => {
 })
 
 describe('invalidation where a failure leaves writes behind', () => {
-  it('useBulkImport invalidates when a batch throws', async () => {
+  it('useBulkImport invalidates when a batch request fails, and reports the batch', async () => {
     const client = createMockClient()
     const { Wrapper, queryClient } = createWrapper(client)
     const spy = vi.spyOn(queryClient, 'invalidateQueries')
@@ -140,7 +132,10 @@ describe('invalidation where a failure leaves writes behind', () => {
     await act(async () => {
       result.current.mutate([{ a: 1 }])
     })
-    await waitFor(() => expect(result.current.isError).toBe(true))
+    // The real bulkImport resolves: the failed batch is counted and listed.
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data?.failed).toBe(1)
+    expect(result.current.data?.rejected).toHaveLength(1)
     expect(spy).toHaveBeenCalledWith({ queryKey: wipKeys.all })
   })
 

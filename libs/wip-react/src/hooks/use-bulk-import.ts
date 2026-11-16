@@ -35,8 +35,9 @@ export function useBulkImport<T>(options: UseBulkImportOptions<T>) {
         onProgress: setProgress,
       }),
     onSettled: () => {
-      // On failure too: a batch that throws rejects the run after the
-      // batches before it were written, and the cache must show them.
+      // On settle, success included: a run whose batches failed (items
+      // refused, or a request that failed, listed in `progress.rejected`)
+      // still wrote the batches before them, and the cache must show them.
       const keys = options.invalidateKeys ?? wipKeys.all
       queryClient.invalidateQueries({ queryKey: keys as unknown[] })
 
