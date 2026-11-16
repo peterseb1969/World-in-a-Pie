@@ -1,5 +1,5 @@
 /**
- * Runtime app config (CASE-551).
+ * Runtime app config.
  *
  * Client-visible per-deployment values (the WIP namespace, feature flags, …)
  * come from the server at runtime — `GET <base>/api/app-config` — NOT from

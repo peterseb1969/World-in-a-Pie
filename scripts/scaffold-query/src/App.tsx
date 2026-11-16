@@ -3,12 +3,12 @@ import HomePage from './pages/HomePage'
 import SettingsPage from './pages/SettingsPage'
 import AskBar from './components/AskBar'
 
-// Path-prefix-ready for k8s/ingress (CASE-370): without this basename, React
+// Path-prefix-ready for k8s/ingress: without this basename, React
 // Router's <Link>/navigate() drop the deploy prefix and reloads 404 at the
 // ingress. Net-zero for local dev — BASE_URL is '/' → basename '/'.
 const BASENAME = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || '/'
 
-// CASE-472: surface which build is running. VITE_BUILD_STAMP / VITE_BUILD_SHA
+// Surface which build is running. VITE_BUILD_STAMP / VITE_BUILD_SHA
 // are baked at image-build time via the Dockerfile's `--build-arg` (see
 // Dockerfile + .env.example). They are 'dev'/undefined for local builds, in
 // which case the stamp is hidden. The scaffold has no @wip/react dependency,
@@ -37,7 +37,7 @@ export default function App() {
     <BrowserRouter basename={BASENAME}>
       <Routes>
         <Route path="/" element={<HomePage />} />
-        {/* Admin-only runtime config — set/rotate the Anthropic key (CASE-509).
+        {/* Admin-only runtime config — set/rotate the Anthropic key.
             The server gates /api/config with requireAdmin; non-admins see a
             "forbidden" message rather than the form. */}
         <Route path="/settings" element={<SettingsPage />} />

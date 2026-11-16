@@ -3,14 +3,14 @@
 # Built by wip-deploy when invoked with:
 #   wip-deploy install --target dev --app <name> --app-source <name>=<path>
 #
-# Canonical CASE-58 pattern: the entrypoint populates the named
+# The canonical dev-container pattern: the entrypoint populates the named
 # /app/node_modules volume on first start and re-runs npm ci when the host
 # package-lock.json hash changes. The CMD then runs `npm run dev` (concurrently:
 # tsx watch → Express on PORT 3001, and Vite dev server + HMR on 5173). Vite
 # binds host: '0.0.0.0' so a containerizing Caddy / ingress can reach it (see
 # vite.config.ts).
 #
-# Why this file matters (CASE-370): without Dockerfile.dev the dev_simple
+# Why this file matters: without Dockerfile.dev the dev_simple
 # renderer falls back to the production Dockerfile, NODE_ENV is forced to
 # development, and the SPA static-asset block (guarded behind
 # NODE_ENV === 'production') is disabled → 404 at the app's origin.

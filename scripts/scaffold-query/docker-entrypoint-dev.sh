@@ -1,6 +1,6 @@
 #!/bin/sh
-# Canonical dev-container entrypoint (CASE-58 pattern, CT-YAC's design via RC's
-# reference impl). Used by Dockerfile.dev for wip-deploy's --app-source flow.
+# Canonical dev-container entrypoint (the pattern React Console's reference
+# implementation uses). Used by Dockerfile.dev for wip-deploy's --app-source flow.
 #
 # Handles:
 #   1. First-start populate: named volume /app/node_modules is empty → npm ci.

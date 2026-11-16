@@ -15,10 +15,12 @@ author from git (so a commit someone makes by hand in an agent's clone is
 not attributed to the agent). An entry whose hash is already listed is not
 written again. A clone without a session sentinel logs nothing.
 
-An amend replaces the entry of the commit it rewrote, so the log never keeps
-an entry for a commit no ref reaches: when the last entry's commit has the
-same parents as the new one and no branch or tag contains it any more, the
-new entry takes its place. The file is rewritten atomically (a temporary
+An amend replaces the entry of the commit it rewrote: when the last entry's
+commit has the same parents as the new one and no ref contains it any more
+(no branch, tag or remote-tracking branch), the new entry takes its place.
+An amend of a commit already pushed keeps both entries, since the remote
+branch still contains the old one; after a force-push that older entry
+names a commit no ref reaches. The file is rewritten atomically (a temporary
 file renamed over it), so an interrupted write never costs the log.
 
 A commit that changes only files under reports/ is bookkeeping (a session
@@ -129,8 +131,8 @@ def entry(root: Path, rev: str, why_override: str | None) -> tuple[str, str]:
 
 
 def amended_away(root: Path, old: str, rev: str) -> bool:
-    """True when `old` is the commit `rev` amended: same parents, and no
-    branch or tag reaches it any more."""
+    """True when `old` is the commit `rev` amended: same parents, and no ref
+    (branch, tag or remote-tracking branch) reaches it any more."""
     try:
         parents = git(root, "rev-parse", f"{old}^@").split()
         if parents != git(root, "rev-parse", f"{rev}^@").split():

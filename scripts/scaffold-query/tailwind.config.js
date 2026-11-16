@@ -1,5 +1,5 @@
 /** @type {import('tailwindcss').Config} */
-// Brand tokens per docs/ui-guidance.md (CASE-302). The four-app converged
+// Brand tokens per docs/ui-guidance.md. The four-app converged
 // palette + Inter. Apps SHOULD NOT introduce inline hex colors — extend
 // this config or use the named tokens. Dark mode is a future cross-app
 // project (not in v1).

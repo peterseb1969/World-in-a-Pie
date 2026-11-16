@@ -46,7 +46,7 @@ router.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
-// --- Runtime app config (CASE-551): the single source of truth for
+// --- Runtime app config: the single source of truth for
 // client-visible per-deployment values. The SPA fetches this at boot
 // (src/lib/app-config.ts) instead of baking VITE_* vars into the bundle —
 // a build-time bake and the server's runtime env drift silently.
@@ -78,7 +78,7 @@ router.post('/api/ask', async (req, res) => {
 })
 
 // --- Runtime config (admin-only): set/rotate the Anthropic key without a
-// redeploy (CASE-509). requireAdmin gates on ADMIN_GROUPS; open in dev mode. ---
+// redeploy. requireAdmin gates on ADMIN_GROUPS; open in dev mode. ---
 router.use('/api/config', requireAdmin(), configRoutes)
 
 // --- User info (for authenticated apps) ---
@@ -91,7 +91,7 @@ router.get('/api/me', (req, res) => {
 })
 
 // --- Production: serve the built SPA from this router so the app is
-// self-contained behind the ingress (CASE-370). Dev serves the SPA via Vite. ---
+// self-contained behind the ingress. Dev serves the SPA via Vite. ---
 if (process.env.NODE_ENV === 'production') {
   const distDir = path.resolve(__dirname, '..', 'dist')
   router.use(express.static(distDir))

@@ -147,17 +147,25 @@ def common_git_dir(project: Path) -> Path | None:
 
 
 def ensure_git_excluded(project: Path, rel: str) -> None:
-    """Add `rel` to the repository's info/exclude unless already listed."""
-    git_dir = common_git_dir(project)
-    if git_dir is None or not git_dir.is_dir():
+    """Add `rel` to the repository's info/exclude unless already listed.
+
+    Best-effort: the exclude only keeps the file out of `git status`, and the
+    write it precedes (the context file, the activity record) must happen
+    anyway. An exclude file that cannot be written (a shared git dir another
+    user owns) or read as text (not UTF-8) is left as it is."""
+    try:
+        git_dir = common_git_dir(project)
+        if git_dir is None or not git_dir.is_dir():
+            return
+        exclude = git_dir / "info" / "exclude"
+        text = read_text(exclude)
+        if f"/{rel}" in text.splitlines():
+            return
+        exclude.parent.mkdir(exist_ok=True)
+        with exclude.open("a") as fh:
+            fh.write(("\n" if text else "") + f"/{rel}\n")
+    except (OSError, ValueError):
         return
-    exclude = git_dir / "info" / "exclude"
-    text = read_text(exclude)
-    if f"/{rel}" in text.splitlines():
-        return
-    exclude.parent.mkdir(exist_ok=True)
-    with exclude.open("a") as fh:
-        fh.write(("\n" if text else "") + f"/{rel}\n")
 
 
 def write_activity(cdir: Path, text: str) -> None:

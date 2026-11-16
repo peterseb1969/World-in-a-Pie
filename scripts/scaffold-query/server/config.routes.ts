@@ -1,5 +1,5 @@
 /**
- * Runtime configuration endpoints (CASE-509, generalized from CASE-508).
+ * Runtime configuration endpoints.
  *
  * Admin-only — gated by requireAdmin() at the mount in index.ts. Lets an
  * operator set/rotate the Anthropic API key in a running app without a

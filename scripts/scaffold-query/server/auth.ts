@@ -30,7 +30,7 @@ const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS
   : []
 
 /** Comma-separated Dex groups treated as admins for privileged config endpoints
- *  (e.g. setting the runtime Anthropic key — CASE-509). Defaults to wip-admins. */
+ *  (e.g. setting the runtime Anthropic key). Defaults to wip-admins. */
 const ADMIN_GROUPS = process.env.ADMIN_GROUPS
   ? process.env.ADMIN_GROUPS.split(',').map(g => g.trim()).filter(Boolean)
   : ['wip-admins']

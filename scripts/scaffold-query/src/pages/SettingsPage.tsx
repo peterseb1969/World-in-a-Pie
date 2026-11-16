@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 
-// Admin-only runtime settings (CASE-509). The Anthropic key control sets/rotates
+// Admin-only runtime settings. The Anthropic key control sets/rotates
 // the askBar agent's key without a redeploy. The key is write-only here — the
 // server never returns it, so we display only configured/source/last-4.
 const API = `${import.meta.env.BASE_URL}api`

@@ -89,17 +89,26 @@ class Surface:
 
 
 def _write_mode(dest: Path, executable: bool) -> int:
-    """The mode a plain shell write would leave: an existing file keeps its
-    own, a new one gets what the umask leaves of 0o666 (0o777 when
-    executable). mkstemp creates owner-only (0600) whatever the umask, so
-    without this every generated file would land unreadable to group and
-    other, and every executable 0700."""
-    umask = os.umask(0)
-    os.umask(umask)
+    """The mode a plain shell write would leave: a new file gets what the
+    umask leaves of 0o666 (0o777 when executable). mkstemp creates owner-only
+    (0600) whatever the umask, so without this every generated file would land
+    unreadable to group and other, and every executable 0700.
+
+    An existing file keeps its mode: a refresh never widens what group and
+    other may do, including the owner-only 0600 (and 0711 for executables) an
+    engine before this rule left; such a file is widened by hand, with chmod,
+    if anyone else needs to read it. The one bit a refresh sets is the
+    owner's execute bit on an executable surface: a hook that lost it would
+    otherwise stop running without a word, and the pre-commit gate is one."""
     try:
         mode = dest.stat().st_mode & 0o7777
     except FileNotFoundError:
-        mode = 0o666 & ~umask
+        pass
+    else:
+        return mode | stat.S_IXUSR if executable else mode
+    umask = os.umask(0)
+    os.umask(umask)
+    mode = 0o666 & ~umask
     if executable:
         # Whoever may read it may run it, and the owner always may.
         mode |= stat.S_IXUSR | (0o111 & ~umask)

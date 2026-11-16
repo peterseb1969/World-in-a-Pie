@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic session rollover — Step A of /wip-wake and /wip-setup's mint.
 
-CASE-604: session rollover is a mechanical state machine (read a field,
+Session rollover is a mechanical state machine (read a field,
 compute a timestamp, write a file) that agents used to hand-walk in ~7-8
 tool calls from prose instructions. This script IS that state machine; the
 slash-command prose now says "run this, then do context recovery (Step B)

@@ -1,4 +1,4 @@
-# Two-stage build for a wip-deploy-installable query app (CASE-370).
+# Two-stage build for a wip-deploy-installable query app.
 # Stage 1 builds the SPA; stage 2 runs the Express server (via tsx), which in
 # production also serves the built SPA from ./dist. The app is served at the
 # root of its own origin (https://<label>.<hostname>/), so it is built and
@@ -9,7 +9,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
-# CASE-472: bake a build-stamp into the SPA so a running app shows which build
+# Bake a build-stamp into the SPA so a running app shows which build
 # it is. The image builder (CI / wip-deploy) supplies these via --build-arg,
 # e.g. `--build-arg VITE_BUILD_STAMP=$(date -u +%FT%TZ) --build-arg
 # VITE_BUILD_SHA=$(git rev-parse --short HEAD)`. Default 'dev' means an

@@ -2,11 +2,11 @@
 
 interface ImportMetaEnv {
   /**
-   * Build timestamp baked at image-build time via `--build-arg` (CASE-472).
+   * Build timestamp baked at image-build time via `--build-arg`.
    * 'dev' (or unset) for local/unstamped builds — the UI hides the stamp then.
    */
   readonly VITE_BUILD_STAMP?: string
-  /** Short git SHA baked at image-build time via `--build-arg` (CASE-472). */
+  /** Short git SHA baked at image-build time via `--build-arg`. */
   readonly VITE_BUILD_SHA?: string
 }
 

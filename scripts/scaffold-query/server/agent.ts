@@ -10,7 +10,7 @@ import { backoffMs, errorStatus, retryDecision } from './lib/agent-retry.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// CASE-495: resolve the runtime key from WIP_API_KEY_FILE (the live wip-deploy
+// Resolve the runtime key from WIP_API_KEY_FILE (the live wip-deploy
 // secrets file the MCP config also uses) when no literal WIP_API_KEY is set —
 // so a key rotation / target-redeploy is picked up on restart instead of
 // stranding a baked, stale .env value.
@@ -42,7 +42,7 @@ const env = () => ({
   MCP_MODULE: process.env.MCP_MODULE || 'wip_mcp',
   CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-4-5',
   WIP_NAMESPACE: process.env.WIP_NAMESPACE || '',
-  // CASE-312 reopen: HTTP/SSE transports need to carry the API key on every
+  // HTTP/SSE transports need to carry the API key on every
   // request. The MCP SDK's transports don't auto-read process.env — they take
   // explicit requestInit.headers. Without this, the platform's auth middleware
   // 401s the initialize handshake and the agent crashes at startup.
@@ -51,11 +51,11 @@ const env = () => ({
   SESSION_TTL_MS: parseInt(process.env.SESSION_TTL_MINUTES || '30') * 60_000,
 })
 
-// ---------- Anthropic key resolution (CASE-508 / CASE-509) ----------
+// ---------- Anthropic key resolution ----------
 // process.env is frozen at process start, so an env-only key can't be rotated
 // without a redeploy. Resolve in priority order so the key is settable in a
 // running app: runtime override (set via the admin /api/config endpoint) → key
-// file (ANTHROPIC_API_KEY_FILE, mirroring the WIP apiKeyFile pattern, CASE-495)
+// file (ANTHROPIC_API_KEY_FILE, mirroring the WIP apiKeyFile pattern)
 // → env. The key is a secret — it is never written to a WIP document and never
 // returned to a caller (only configured/source/last-4 are exposed).
 //
@@ -132,7 +132,7 @@ export async function setAnthropicKey(
     writeFileSync(f, key, { mode: 0o600 })
     // writeFileSync's mode only applies when CREATING the file; an existing key
     // file keeps its prior perms. chmod explicitly so a rotation always lands at
-    // 0600 regardless of how the file got there (CASE-509 hardening).
+    // 0600 regardless of how the file got there.
     chmodSync(f, 0o600)
     persisted = true
   }
@@ -194,7 +194,7 @@ function createTransport() {
   if (e.MCP_URL) {
     const url = new URL(e.MCP_URL)
 
-    // CASE-312 reopen: inject the API key into the transport's requestInit
+    // Inject the API key into the transport's requestInit
     // headers. The MCP SDK doesn't read process.env on its own. Without this,
     // initialize POSTs to a deployed wip-deploy install hit the platform's
     // ApiKeyMiddleware and 401 — the agent crashes before the askBar can
@@ -299,7 +299,7 @@ async function connectAgent() {
       input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
     }))
 
-  // CASE-352: surface ALLOWED_TOOLS drift loudly. Each MCP-server tool
+  // Surface ALLOWED_TOOLS drift loudly. Each MCP-server tool
   // rename invalidates whatever names this scaffold's whitelist pinned;
   // before this warning, scaffolds silently dropped renamed entries and
   // ran with degraded capabilities. The warning makes the next drift
@@ -374,7 +374,7 @@ export async function ask(
     const response = await anthropic.messages.create({
       model: e.CLAUDE_MODEL,
       max_tokens: 4096,
-      // CASE-308 — prompt caching on the static blocks. The system prompt and
+      // Prompt caching on the static blocks. The system prompt and
       // tool definitions don't change across turns within a session; marking
       // them as cache breakpoints lets turn 2+ within the 5-minute TTL hit
       // cache instead of re-reading the same tokens. The cache_control on

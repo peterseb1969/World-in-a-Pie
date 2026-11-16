@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "src" / "yac_status.py"
 
 SESSION = "BE-YAC-20261025-001010"
@@ -452,3 +454,33 @@ def test_qwen_skill_tool_shows_the_skill(tmp_path):
         "hook_event_name": "PreToolUse", "tool_name": "skill", "tool_input": {"skill": "wip-case"},
     }).returncode == 0
     assert "wip-case" in line(root)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only directory")
+def test_an_exclude_that_cannot_be_written_never_stops_the_writes(tmp_path):
+    """The exclude only keeps the files out of `git status`: a git dir whose
+    info/ cannot be written (shared, another user's) must not stop the
+    context file or the activity record."""
+    root = git_project(tmp_path)
+    info = root / ".git" / "info"
+    info.mkdir(exist_ok=True)
+    (info / "exclude").unlink(missing_ok=True)
+    info.chmod(0o555)
+    try:
+        prompt(root, "/wip-case read 12")
+        assert "reading CASE-12" in line(root)
+        assert (root / ".claude-context-pct").exists()
+        assert (root / ".claude" / ".yac-activity").exists()
+    finally:
+        info.chmod(0o755)
+
+
+def test_an_exclude_that_is_not_text_never_stops_the_writes(tmp_path):
+    root = git_project(tmp_path)
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    exclude.write_bytes(b"\xff\xfe not utf-8\n")
+    prompt(root, "/wip-case read 12")
+    assert "reading CASE-12" in line(root)
+    assert (root / ".claude-context-pct").exists()
+    assert exclude.read_bytes() == b"\xff\xfe not utf-8\n"

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from wip_scaffold.engine import Context, Policy, Surface, run_surfaces
 from wip_scaffold.render import render, substitute, tier_filter
-from wip_scaffold.surfaces import APP_REFERENCE_DOCS, app_surfaces, backend_surfaces
+from wip_scaffold.surfaces import APP_REFERENCE_DOCS, app_surfaces, backend_surfaces, query_scaffold_surfaces
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -207,6 +207,18 @@ def test_an_overwritten_file_keeps_its_mode(tmp_path):
     run_surfaces([_surface()], _ctx(tmp_path))
     assert (tmp_path / "out.txt").read_bytes() == b"data"
     assert stat.S_IMODE(os.stat(tmp_path / "out.txt").st_mode) == 0o640
+
+
+@pytest.mark.parametrize("before, after", [(0o600, 0o700), (0o644, 0o744), (0o711, 0o711)])
+def test_an_overwritten_executable_gains_only_the_owners_execute_bit(tmp_path, before, after):
+    """A refresh never widens group or other: an owner-only 0600 hook an
+    earlier engine left stays owner-only (it used to become 0711, executable
+    by others who cannot read it). The owner's execute bit is always set, so
+    a hook that lost it still runs."""
+    (tmp_path / "hook").write_bytes(b"old")
+    os.chmod(tmp_path / "hook", before)
+    run_surfaces([_surface(files={"hook": b"new"}, executable=True)], _ctx(tmp_path))
+    assert stat.S_IMODE(os.stat(tmp_path / "hook").st_mode) == after
 
 
 def test_render_refresh_create_writes_target(tmp_path):
@@ -1245,6 +1257,35 @@ def test_slim_hook_falls_back_to_the_invariant_when_no_card_text_is_left(tmp_pat
         (tmp_path / "docs/cards/core.md").write_text(card)
     out = _run_slim_hook(tmp_path)
     assert "missing or empty" in out and "metadata.* is never identity" in out
+
+
+def test_no_generated_surface_carries_a_case_token(tmp_path):
+    """Every file the engine writes into a clone or an app, the query preset
+    included, is read where there may be no KB: a case number there is a dead
+    link, and provenance belongs in commit messages. The status line's own
+    examples ("implementing CASE-345") show what it prints, not a citation.
+
+    Not checked: the reference docs and playbooks, which are this repo's own
+    documents copied byte for byte. They carry the repo's provenance, and a
+    case number in them is the repo's convention, not scaffold text."""
+    import re
+
+    copied_repo_docs = {"reference-docs", "playbooks"}
+    ctx = _ctx(tmp_path, tier3=True, tokens=dict(_APP_TOKENS), role_prefix="APP-XY")
+    surfaces = [
+        *backend_surfaces(),
+        *app_surfaces(dict(_APP_TOKENS)),
+        *app_surfaces(dict(_APP_TOKENS), profile="slim"),
+        *query_scaffold_surfaces("x", "x", "x"),
+    ]
+    cited = []
+    for s in surfaces:
+        if s.name in copied_repo_docs:
+            continue
+        for rel, data in s.produce(ctx).items():
+            if re.search(rb"(?<!implementing )CASE-\d", data):
+                cited.append(f"{s.name}: {rel}")
+    assert cited == []
 
 
 @pytest.mark.parametrize("profile", ["full", "slim"])

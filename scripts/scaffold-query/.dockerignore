@@ -1,4 +1,4 @@
-# Build context excludes (CASE-370). Keep this lean so `docker build .` is fast.
+# Build context excludes. Keep this lean so `docker build .` is fast.
 node_modules
 dist
 .env
