@@ -165,13 +165,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Startup integrity check failed: {e}")
 
-    # Versions stored before referent_identity_paths existed get it now. A
+    # Versions stored before referent_identity_paths existed get it now, and
+    # every version with a nested identity path has it derived again (a stamp
+    # from before nested templates had to be pinned can leave a path out). A
     # nested identity path cannot be hashed without it; nothing else changes.
+    # A version it cannot be derived for is logged per version ("left unset").
     try:
         from .services.referent_paths import backfill as backfill_referent_paths
         stamped = await backfill_referent_paths()
         if stamped:
-            logger.info(f"referent_identity_paths: filled in on {stamped} template version(s)")
+            logger.info(f"referent_identity_paths: filled in or corrected on {stamped} template version(s)")
     except Exception as e:
         logger.warning(f"referent_identity_paths backfill failed: {e}")
 

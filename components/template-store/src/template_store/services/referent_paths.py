@@ -102,25 +102,56 @@ async def referent_identity_paths(
     ]
 
 
+async def _has_nested_identity_path(template: Template) -> bool:
+    try:
+        identity_fields, _ = await _resolved(template, None)
+    except InheritanceError:
+        return True  # cannot tell; re-deriving reports it
+    return any("." in path for path in identity_fields)
+
+
 async def backfill() -> int:
-    """Stamp every non-draft version stored without the field.
+    """Stamp every non-draft version stored without the field, and re-derive
+    the stamp of every version with a nested identity path.
 
     Versions written before the field existed. Only a nested identity path
     needs it (every other path is classified from the top-level field), so
     a version that cannot be resolved is logged and left for the next start
-    rather than failing startup. Returns the number of versions stamped.
+    rather than failing startup.
+
+    A stamp written before a nested template had to be pinned may leave out a
+    path into an unpinned one, so the offline hashers would hash that path's
+    spelling. Every version with a nested identity path is therefore derived
+    again: a stamp that differs is replaced, and one that can no longer be
+    derived is removed, so the version's documents are refused rather than
+    hashed from a spelling. Returns the number of versions stamped or
+    restamped.
     """
     stamped = 0
-    query = {"referent_identity_paths": None, "status": {"$ne": "draft"}}
+    query = {
+        "status": {"$ne": "draft"},
+        "$or": [
+            {"referent_identity_paths": None},
+            {"identity_fields": {"$elemMatch": {"$regex": r"\."}}},
+            {"extends": {"$ne": None}},
+        ],
+    }
     async for template in Template.find(query):
+        stored = template.referent_identity_paths
+        if stored is not None and not await _has_nested_identity_path(template):
+            continue
         try:
-            template.referent_identity_paths = await referent_identity_paths(template)
+            derived: list[str] | None = await referent_identity_paths(template)
         except InheritanceError as exc:
             logger.warning(
                 "referent_identity_paths: %s v%s left unset (%s)",
                 template.value, template.version, exc,
             )
+            derived = None
+        if derived == stored:
             continue
+        template.referent_identity_paths = derived
         await template.save()
-        stamped += 1
+        if derived is not None:
+            stamped += 1
     return stamped

@@ -197,6 +197,81 @@ async def test_backfill_leaves_an_unclassifiable_version_unstamped(
 
 
 @pytest.mark.asyncio
+async def test_backfill_removes_a_stamp_that_can_no_longer_be_derived(
+    client: AsyncClient, auth_headers: dict,
+):
+    """A version stamped before nested templates had to be pinned carries a
+    list that leaves the unpinned path out, so the offline hashers would hash
+    that path's spelling. The backfill derives it again and, since it can no
+    longer be derived, removes the stamp: the version's documents are refused
+    instead."""
+    address = await _address(client, auth_headers, "ADDR_1374_A")
+    person = await _create(client, auth_headers, _person(
+        "PERSON_1374_A", address, ["name", "address.country"],
+    ))
+    stored = _unpin_nested(
+        await Template.find_one({"template_id": person["id"], "version": 1}), "address",
+    )
+    stored.referent_identity_paths = []  # the old backfill's "no referent"
+    await stored.save()
+
+    await backfill()
+
+    refreshed = await Template.find_one({"template_id": person["id"], "version": 1})
+    assert refreshed.referent_identity_paths is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inherited", [False, True])
+async def test_backfill_replaces_a_stamp_that_differs_from_the_derivation(
+    client: AsyncClient, auth_headers: dict, inherited: bool,
+):
+    """A stored stamp on a version with a nested identity path, own or
+    inherited, is checked against a fresh derivation, not trusted."""
+    suffix = "I" if inherited else "O"
+    address = await _address(client, auth_headers, f"ADDR_1374_{suffix}")
+    person = await _create(client, auth_headers, _person(
+        f"PERSON_1374_{suffix}", address, ["name", "address.country"],
+    ))
+    target = person["id"]
+    if inherited:
+        child = await _create(client, auth_headers, {
+            "namespace": "wip", "value": f"EMPLOYEE_1374_{suffix}", "label": "Employee",
+            "extends": person["id"], "extends_version": 1,
+            "fields": [{"name": "employee_no", "label": "No", "type": "string"}],
+        })
+        target = child["id"]
+    stored = await Template.find_one({"template_id": target, "version": 1})
+    stored.referent_identity_paths = []
+    await stored.save()
+
+    assert await backfill() >= 1
+
+    refreshed = await Template.find_one({"template_id": target, "version": 1})
+    assert refreshed.referent_identity_paths == ["address.country"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_rewrite_a_stamp_that_is_right(
+    client: AsyncClient, auth_headers: dict, monkeypatch,
+):
+    address = await _address(client, auth_headers, "ADDR_1374_R")
+    person = await _create(client, auth_headers, _person(
+        "PERSON_1374_R", address, ["name", "address.country"],
+    ))
+    saved: list[tuple[str, int]] = []
+    original = Template.save
+
+    async def recording_save(self, *args, **kwargs):
+        saved.append((self.template_id, self.version))
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Template, "save", recording_save)
+    await backfill()
+    assert (person["id"], 1) not in saved
+
+
+@pytest.mark.asyncio
 async def test_an_unpinned_nested_path_refuses_the_write_as_a_reference_violation(
     client: AsyncClient, auth_headers: dict, monkeypatch,
 ):
