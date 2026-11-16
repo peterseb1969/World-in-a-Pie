@@ -84,7 +84,7 @@ async def test_streamed_documents_flush_in_batches_then_overwrite_clashes(engine
         ("insert", "documents", ["a1", "a2", "b1"]),
         ("insert", "documents", ["c1", "c2", "c3"]),
         ("insert", "documents", ["d1"]),
-        ("emit", "phase_documents", "[ns] inserted 7 documents"),
+        ("emit", "phase_documents", "[ns] inserted 4 documents (7 versions)"),
     ]
     if on_clash == "overwrite":
         expected.append(("overwrite", "overwrite", "retire", "SOURCES", 3))
@@ -100,7 +100,7 @@ async def test_in_memory_documents_bring_their_chains_and_overwrite_without_sour
     assert engine.calls == [
         ("insert", "documents", ["x1", "x2"]),
         ("insert", "documents", ["x3"]),
-        ("emit", "phase_documents", "[ns] inserted 3 documents"),
+        ("emit", "phase_documents", "[ns] inserted 1 document (3 versions)"),
         ("overwrite", "newer", "keep", None, None),
         ("recount", "ns"),
     ]

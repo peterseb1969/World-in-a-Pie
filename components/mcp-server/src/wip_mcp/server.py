@@ -467,7 +467,8 @@ API and MCP tool calls.
 
 **A key's access is its grants.** The `namespaces` list caps where a key may
 act and gives nothing itself; creating a key writes a grant on each listed
-namespace (`grant_permission`, else read). Revoking the grant ends the access.
+namespace (`admin` on a namespace the key reserves, else `grant_permission`,
+else read). Revoking the grant ends the access.
 
 **A new key reaches the other services shortly after the Registry.** The
 Registry accepts a key it just created at once. Every other service learns of
@@ -1816,8 +1817,8 @@ async def list_api_keys(page: int = 1, page_size: int = 50) -> str:
 async def revoke_api_key(name: str) -> str:
     """Revoke (hard-delete) a runtime API key. Keys wip-deploy manages (from the install's key file) cannot be revoked here.
 
-    The Registry refuses the key at once; the other services within about a
-    second where the install runs NATS, otherwise within one key sync (up to 30 s).
+    The Registry refuses the key at once; the other services within a few
+    seconds where the install runs NATS, otherwise within one key sync (up to 30 s).
 
     Args:
         name: Name of the runtime key to revoke

@@ -807,8 +807,8 @@ async def delete_api_key(
 ) -> dict:
     """Hard-delete a runtime API key and its namespace grants.
 
-    The Registry refuses the key at once; the other services within about a
-    second where the install runs NATS, otherwise within one key sync (up to 30 s).
+    The Registry refuses the key at once; the other services within a few
+    seconds where the install runs NATS, otherwise within one key sync (up to 30 s).
 
     Config-file keys cannot be deleted. The response lists the namespaces
     whose grants to the key were revoked with it (`revoked_grants`). The

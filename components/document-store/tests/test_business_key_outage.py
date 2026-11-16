@@ -161,6 +161,9 @@ async def test_a_write_whose_business_key_meets_a_registry_outage_is_not_a_missi
     as reference_not_found."""
     created = await _post(client, auth_headers, [{"template_id": "CHAPTER_Q", "data": {"title": "Outage"}}])
     assert created.status_code == 200, created.text
+    # Bulk-first: 200 holds per-item failures, so the referent's existence is
+    # read from the item, or a failed create would let this pass vacuously.
+    assert created.json()["results"][0]["status"] == "created", created.text
 
     async def down(self, namespace, template_id, identity_hash):
         raise RegistryUnavailableError("Registry unavailable (document key lookup): HTTP 503")

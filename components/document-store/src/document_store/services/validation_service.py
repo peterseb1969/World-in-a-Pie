@@ -2606,8 +2606,15 @@ class ValidationService:
         document), and the document is looked up by its Registry primary key
         (namespace, template_id, identity_hash) in the referencing document's
         namespace. Returns (document, None), (None, None) when nothing
-        matches, or (None, error) for a key that names no target template's
-        identity or that matches documents under several templates.
+        matches, or (None, error) for a field with no target_templates, a key
+        that names no target template's identity or matches documents under
+        several templates, or a target template the template store refuses to
+        serve (template_error).
+
+        An outage is never an answer: a template store or Registry that
+        cannot answer raises (dependency_unavailable, RegistryUnavailableError),
+        and a target_templates entry naming several templates raises
+        AmbiguousIdentifierError.
         """
         from ..models.document import Document, DocumentStatus
 

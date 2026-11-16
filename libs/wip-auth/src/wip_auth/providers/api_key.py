@@ -527,7 +527,9 @@ class APIKeyProvider:
                     # removed this very key and rebuilt the cache without
                     # it, and caching it now would let it authenticate until
                     # the next rebuild. Every change replaces the list (or
-                    # the salt), so an unchanged list is an exact test.
+                    # the salt), so an unchanged list means nothing changed.
+                    # A sync replaces it even when nothing did, so the test
+                    # can only over-report: a skipped cache write, a re-check.
                     current = self._keys is keys and self.runtime_salt == runtime_salt
                     if current:
                         self._verified_cache[fingerprint] = record
@@ -540,6 +542,10 @@ class APIKeyProvider:
                             f"of {_attempt} checks; retry shortly"
                         )
                     return self._validate_key(api_key, _attempt + 1)
+                if not is_config and self.runtime_keys_expired():
+                    # The deadline passed while bcrypt ran: past it only
+                    # config keys answer, however this key matched.
+                    raise self._unverifiable()
                 return record, None
 
         # Matching no config key is true whatever the Registry says, so the
@@ -548,11 +554,14 @@ class APIKeyProvider:
         # meanwhile may have brought this very key, and recording the
         # rejection after it cleared the cache would refuse the new key until
         # the next sync. Every change replaces the list (or the salt), so an
-        # unchanged list is an exact test.
+        # unchanged list means nothing changed (a sync with no change also
+        # replaces it, which only skips this cache write).
         with self._lock:
             if self._keys is keys and self.runtime_salt == runtime_salt:
                 self._reject(fingerprint)
-        if expired:
+        # The deadline is read again: the sweep can take a while, and a copy
+        # that went past it meanwhile cannot say "invalid" either.
+        if expired or self.runtime_keys_expired():
             raise self._unverifiable()
         return None, self._invalid_message()
 

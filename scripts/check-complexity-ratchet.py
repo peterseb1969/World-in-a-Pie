@@ -5,8 +5,10 @@ The quality audit measures cyclomatic complexity (radon) only when a release
 is tagged, so nothing on develop noticed functions growing between releases:
 a function decomposed from CC 63 in May was back at CC 55 six months later,
 and the count of functions ranked C or worse doubled against its baseline.
-This check runs on every commit instead, over the files the commit changes,
-and compares them before and after on two numbers:
+This check runs between releases instead, over the files a change touches,
+and compares them before and after on two numbers. CI runs it over each push
+as a whole (from the commit the branch was at before it to the pushed tip);
+the opt-in pre-commit hook runs it over each commit:
 
 - **C+ blocks**: functions, methods and classes radon ranks C or worse
   (CC above 10), counted exactly as the audit counts them;
@@ -19,8 +21,10 @@ and compares them before and after on two numbers:
 The commit fails when the count rises without the excess falling (a new
 C+ function that splits nothing), or when the excess rises by more than
 EXCESS_SLACK. The slack lets a fix add a guard branch or an `and x` check to a
-function that is already complex (radon counts each as +1) without having to
-refactor it in the same commit; growth past it does not pass. The numbers are summed over all changed files together, not per file,
+function that is already complex (ranked C, CC 11 or more; radon counts each as
++1) without having to refactor it in the same commit; growth past it does not
+pass. A function that crosses from CC 10 to 11 is a new C+ block, and fails
+whatever the slack. The numbers are summed over all changed files together, not per file,
 so moving a function into a new module is not new complexity. A file a
 commit deletes or renames counts on the "before" side under its old path.
 

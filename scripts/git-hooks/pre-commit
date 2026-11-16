@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Pre-commit: run CI's complexity ratchet on what is about to be committed.
 #
-# CI's lint job runs scripts/check-complexity-ratchet.py on each pushed head
-# commit (--base HEAD~1 --head HEAD). Over the audited files the commit
+# CI's lint job runs scripts/check-complexity-ratchet.py over each push as a
+# whole (--base <the branch before the push> --head <the pushed tip>; the tip's
+# parent for a new branch or a pull request). Over the audited files the push
 # changes, it fails when the count of blocks ranked C or worse rises while the
 # excess does not fall (a new C+ function that split nothing), or when the
 # excess rises by more than 3. The script compares commits and never reads the
@@ -17,8 +18,8 @@
 # On `git commit --amend` the base is still HEAD — the commit being replaced —
 # so the hook judges the amendment by itself and never sees what the earlier
 # version of this commit already added. Two amendments that each spend some of
-# the slack can pass here and fail CI, which compares the amended commit against
-# its parent: after an amend, CI's number is the one that counts.
+# the slack can pass here and fail CI, which compares the whole push: after an
+# amend, CI's number is the one that counts.
 
 set -euo pipefail
 

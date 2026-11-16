@@ -11,7 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # Full history: the complexity ratchet compares the whole push, whose
+          # first commit can be any number of commits back.
+          fetch-depth: 0
 
       - name: Set up Python venv
         run: |
@@ -26,9 +28,22 @@ jobs:
           pip install ruff shellcheck-py radon==6.0.1
 
       - name: Complexity ratchet (changed files only)
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           . .venv/bin/activate
-          python3 scripts/check-complexity-ratchet.py --base HEAD~1 --head HEAD
+          # A push is ratcheted as a whole, from the commit the branch was at
+          # before it: comparing only the tip with its parent let a C+ block
+          # added by an earlier commit of the same push through. A new branch
+          # (all-zero before), a pull request, or a before commit no longer in
+          # the history (a force push) falls back to the tip's parent.
+          BASE=HEAD~1
+          if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            BASE="$PUSH_BEFORE"
+          fi
+          echo "ratchet base: $BASE"
+          python3 scripts/check-complexity-ratchet.py --base "$BASE" --head HEAD
 
       - name: Release-note fragments
         run: |

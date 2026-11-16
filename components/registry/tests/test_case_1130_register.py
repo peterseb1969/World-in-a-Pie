@@ -187,12 +187,12 @@ def _unwritten_entry(tag: str, key: dict) -> RegistryEntry:
     )
 
 
-async def _gate_one(entry: RegistryEntry, token: str) -> tuple[list, dict, int, int]:
+async def _gate_one(entry: RegistryEntry, token: str) -> tuple[list, dict]:
     results: list = [None]
-    gated, _, exists, errors = await entries_api._gate_on_claims(
+    gated, _ = await entries_api._gate_on_claims(
         [entry], [0], [None], results, token,
     )
-    return gated, results[0], exists, errors
+    return gated, results[0]
 
 
 @pytest.mark.asyncio
@@ -213,9 +213,9 @@ async def test_a_key_the_same_batch_holds_is_answered_without_the_holder_wait(
     assert claim is not None
     pauses = _holder_pauses(monkeypatch)
 
-    gated, answer, exists, errors = await _gate_one(_unwritten_entry(tag, key), token)
+    gated, answer = await _gate_one(_unwritten_entry(tag, key), token)
 
-    assert gated == [] and exists == 0 and errors == 1
+    assert gated == []
     assert answer.status == "error" and answer.details["rule"] == "key_claimed"
     assert pauses == [], "a same-batch claim must not wait out the holder window"
     await CompositeKeyClaim.get_motor_collection().delete_many({"claim_token": token})
@@ -236,9 +236,9 @@ async def test_a_key_another_request_holds_is_still_given_the_holder_window(
     )
     pauses = _holder_pauses(monkeypatch)
 
-    gated, answer, exists, errors = await _gate_one(_unwritten_entry(tag, key), token)
+    gated, answer = await _gate_one(_unwritten_entry(tag, key), token)
 
-    assert gated == [] and exists == 0 and errors == 1
+    assert gated == []
     assert answer.status == "error" and answer.details["rule"] == "key_claimed"
     assert len(pauses) == entries_api._HOLDER_WAIT_ATTEMPTS - 1, pauses
     await CompositeKeyClaim.get_motor_collection().delete_many({

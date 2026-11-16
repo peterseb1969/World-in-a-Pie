@@ -594,11 +594,25 @@ async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
                 report.keys_created, report.keys_updated, report.keys_removed,
                 report.grants_changed, report.reservations_changed, report.taken_over,
             )
-        if any(changes[:5]):
+        announce, keys_changed = _access_announcement(report)
+        if announce:
             from .event_bus import access_changed
 
-            await access_changed(keys=any(changes[:4]))
+            await access_changed(keys=keys_changed)
         return report
+
+
+def _access_announcement(report: ImportReport) -> tuple[bool, bool]:
+    """(announce at all, the runtime key set changed) for an import pass.
+
+    A key taken over is also counted as updated, so the key set changed
+    exactly when a key was created, updated or removed. A grant taken over
+    changes access as a grant change does; a reservation taken over does not
+    (the services cache no reservations), like a plain reservation change.
+    """
+    keys_changed = bool(report.keys_created or report.keys_updated or report.keys_removed)
+    access_taken_over = any(not t.startswith("reservation:") for t in report.taken_over)
+    return keys_changed or access_taken_over or bool(report.grants_changed), keys_changed
 
 
 async def ensure_current(provider: APIKeyProvider | None = None) -> None:

@@ -436,7 +436,7 @@ wip-deploy app-namespace remove wip-kb kb-research
 ```
 
 - The addition is kept in the install's saved spec, so `redeploy` keeps it. Other installs and the app's manifest are untouched.
-- Nothing restarts: the app keeps its key, and its scope changes in the key file. The Registry re-imports it within about 10 seconds (about a minute on k8s, while the Secret propagates), and the other services follow within one key sync (30 seconds). The Registry reads the reservation on the next upsert.
+- Nothing restarts: the app keeps its key, and its scope changes in the key file. The Registry re-imports it within about 10 seconds (about a minute on k8s, while the Secret propagates), and the other services follow within a few seconds where the install runs NATS, otherwise within one key sync (30 seconds). The Registry reads the reservation on the next upsert.
 - An owned namespace may be created by the app's own key, with the settings given here (`--setting deletion_mode=full`, `--setting isolation_mode=strict`, `--setting allowed_external_refs=a,b`, `--setting id_config=<json>`). The app may send its own description; any other setting must match. Or create it yourself with the master key and let the app use it.
 - `remove` takes the namespace away from the app at once, even while it holds the app's data. The namespace and its data stay; deleting them is a separate admin action.
 - An app holding the master key (`privileged_key`) takes no additions, and a namespace its manifest already declares cannot be added again.

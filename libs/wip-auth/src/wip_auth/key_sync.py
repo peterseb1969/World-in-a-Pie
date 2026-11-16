@@ -14,8 +14,8 @@ sync the runtime keys count as unconfirmed.
 
 Between polls, a service also syncs at once when the Registry announces over
 NATS that keys changed (``cache_events.ACCESS_CHANGED_SUBJECT``): a key the
-Registry just created, narrowed or revoked reaches the service in about a
-second. Announcements that overlap a running sync are folded into one more
+Registry just created, narrowed or revoked reaches the service within a few
+seconds. Announcements that overlap a running sync are folded into one more
 sync after it. Without NATS, the poll is the whole mechanism.
 
 The response carries the salt the Registry hashes runtime keys with, in the

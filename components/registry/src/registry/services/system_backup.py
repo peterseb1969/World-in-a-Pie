@@ -1148,12 +1148,19 @@ async def _salt_to_adopt(
     made under another runtime-key salt.
 
     The salt can be adopted only when it is known (carried by the archive,
-    or the configured one it names by fingerprint) and this stack holds no
-    API keys of its own that adopting it would invalidate; otherwise the
-    restore cannot go on (SaltMismatch). With refusals pending (a dry run
-    only), the decision waits for them and the note says so.
+    or the configured one it names by fingerprint) and no key left after the
+    restore depends on this stack's salt: none of its own (for a mirror,
+    each is removed or rewritten from the archive's record, _fresh_after),
+    and every managed key re-hashable from the key file's plaintext
+    (_managed_keys_kept_hashed). Otherwise the restore cannot go on
+    (SaltMismatch). An unknown salt is refused at once; with refusals
+    pending (a dry run only), the freshness decision waits for them and the
+    note says so.
     """
-    archive_salt = archive.source.salt
+    # An empty salt is no salt: adopting "" would leave every restored key
+    # hashed under a salt nobody holds, so it is judged by fingerprint like
+    # an archive that carries none.
+    archive_salt = archive.source.salt or None
     if archive_salt is None:
         # An archive made before archives carried the salt names it only by
         # fingerprint. Under the configured salt (every stack's default
@@ -1161,7 +1168,7 @@ async def _salt_to_adopt(
         configured = get_auth_config().api_key_hash_salt
         if archive.source.salt_fingerprint == salt_fingerprint(configured):
             archive_salt = configured
-    if archive_salt is None:
+    if not archive_salt:
         raise SaltMismatch(
             "The archive's key hashes were made under a different runtime-key salt, "
             "and the archive does not carry the salt itself, so it cannot be "
@@ -1182,9 +1189,11 @@ async def _salt_to_adopt(
     if not fresh:
         raise SaltMismatch(
             "The archive's key hashes were made under a different runtime-key salt, "
-            "and this stack already holds API keys of its own (not managed by its "
-            "key file), which adopting the archive's salt would invalidate. Restore "
-            "onto a fresh stack, or revoke this stack's own keys first."
+            "and this stack holds API keys hashed under its own salt that adopting "
+            "the archive's would invalidate: keys of its own (not managed by its key "
+            "file), or managed keys its key file gives by hash rather than plaintext. "
+            "Restore onto a fresh stack, or revoke this stack's own keys (and give "
+            "managed keys by plaintext) first."
         )
     return archive_salt, None
 
@@ -1200,7 +1209,7 @@ def _restore_report(
 ) -> SystemRestoreReport:
     """The report a restore starts from: its refusals and, for a mirror, the
     records the plan removes and the plan's digest."""
-    report = SystemRestoreReport(dry_run=dry_run, mode=mode, salt_adopted=adopt is not None)
+    report = SystemRestoreReport(dry_run=dry_run, mode=mode, salt_adopted=bool(adopt))
     report.refused = refused
     if plan is not None:
         report.plan_digest = plan.digest

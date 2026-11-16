@@ -1675,6 +1675,13 @@ def _left_out_record(left_out: list[tuple[str, int]]) -> list[dict[str, Any]] | 
     return [{"template_id": tid, "version": v} for tid, v in sorted(left_out)] or None
 
 
+def _documents_said(documents: int, versions: int) -> str:
+    """How a progress line counts inserted documents: each document brings
+    its whole version chain, so the rows written are versions."""
+    noun = "document" if documents == 1 else "documents"
+    return f"{documents} {noun} ({versions} version{'' if versions == 1 else 's'})"
+
+
 def _archive_holds_every_version(
     ns_entries: list[NamespaceEntry], include_documents: bool,
 ) -> bool:
@@ -6491,7 +6498,10 @@ class DirectRestoreEngine:
             for head in plan.to_insert
             for row in doc_groups.get(head.get("document_id", ""), [head])
         ]
-        await self._merge_insert_rows(namespace, collection, "documents", rows, batch_size)
+        await self._merge_insert_rows(
+            namespace, collection, "documents", rows, batch_size,
+            said=_documents_said(len(plan.to_insert), len(rows)),
+        )
         if overwrites:
             await self._overwrite_documents(
                 namespace, plan, doc_groups,
@@ -6505,14 +6515,17 @@ class DirectRestoreEngine:
         entity_type: str,
         rows: list[dict[str, Any]],
         batch_size: int,
+        *,
+        said: str | None = None,
     ) -> None:
-        """Insert rows in batches of ``batch_size``, and say how many."""
+        """Insert rows in batches of ``batch_size``, and say how many: ``said``
+        when a row is not one entity (a document's rows are its versions)."""
         for start in range(0, len(rows), batch_size):
             await self._insert_batch(collection, rows[start:start + batch_size], entity_type)
         if rows:
             self._emit(
                 f"phase_{entity_type}",
-                f"[{namespace}] inserted {len(rows)} {entity_type}",
+                f"[{namespace}] inserted {said or f'{len(rows)} {entity_type}'}",
             )
 
     async def _merge_insert_streamed(
@@ -6522,11 +6535,15 @@ class DirectRestoreEngine:
         streamed: _StreamedDocuments,
         batch_size: int,
     ) -> None:
-        """Insert the streamed inserted chains, whole chains at a time, in
-        batches of at least ``batch_size`` rows, and say how many."""
+        """Insert the streamed inserted chains, whole chains at a time, and say
+        how many documents and versions. A batch is flushed once it holds
+        ``batch_size`` rows, so it can run over by up to one chain, and the
+        last batch holds what is left."""
         inserted = 0
+        documents = 0
         batch: list[dict[str, Any]] = []
         for chain in streamed.inserted_chains():
+            documents += 1
             batch.extend(chain)
             if len(batch) >= batch_size:
                 await self._insert_batch(collection, batch, "documents")
@@ -6536,7 +6553,10 @@ class DirectRestoreEngine:
             await self._insert_batch(collection, batch, "documents")
             inserted += len(batch)
         if inserted:
-            self._emit("phase_documents", f"[{namespace}] inserted {inserted} documents")
+            self._emit(
+                "phase_documents",
+                f"[{namespace}] inserted {_documents_said(documents, inserted)}",
+            )
 
     @staticmethod
     def _as_timestamp(value: Any) -> datetime | None:

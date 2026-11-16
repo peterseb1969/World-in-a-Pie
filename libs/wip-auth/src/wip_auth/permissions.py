@@ -47,6 +47,12 @@ GRANT_CACHE_TTL = 30.0  # seconds
 _grant_cache: TTLCache = TTLCache(maxsize=1024, ttl=GRANT_CACHE_TTL)
 _accessible_cache: TTLCache = TTLCache(maxsize=256, ttl=GRANT_CACHE_TTL)
 
+# Bumped by every clear. A check reads it before asking the Registry and
+# caches the answer only if no clear came in while it waited: an answer
+# fetched before a grant change must not land in the cache after the change
+# dropped it, or the change is undone for the rest of the TTL.
+_cache_generation = 0
+
 # Permission hierarchy
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
 
@@ -219,9 +225,11 @@ async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     if cached is not None:
         return cached
 
-    # Fetch from Registry; cache only a definitive answer.
+    # Fetch from Registry; cache only a definitive answer, and only if no
+    # clear arrived while the fetch was in flight (see _cache_generation).
+    generation = _cache_generation
     permission = await _fetch_permission_from_registry(identity, namespace)
-    if permission != PERMISSION_UNAVAILABLE:
+    if permission != PERMISSION_UNAVAILABLE and generation == _cache_generation:
         _grant_cache[cache_key] = permission
     return permission
 
@@ -485,10 +493,12 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str]:
     if cached is not None:
         return cached
 
+    generation = _cache_generation
     namespaces = await _fetch_accessible_from_registry(identity)
     if namespaces is _UNAVAILABLE_LIST:
         raise HTTPException(503, _UNAVAILABLE_DETAIL)
-    _accessible_cache[cache_key] = namespaces
+    if generation == _cache_generation:
+        _accessible_cache[cache_key] = namespaces
     return namespaces
 
 
@@ -530,6 +540,10 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
 
 
 def clear_permission_cache() -> None:
-    """Clear the permission cache (for testing)."""
+    """Drop every cached grant answer: on a grant change the Registry
+    announces (cache_events), and in tests. A check already waiting on the
+    Registry when this runs answers its caller but does not cache."""
+    global _cache_generation
+    _cache_generation += 1
     _grant_cache.clear()
     _accessible_cache.clear()

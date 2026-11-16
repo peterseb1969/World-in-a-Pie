@@ -313,3 +313,23 @@ async def test_a_stack_whose_managed_key_is_given_by_hash_refuses_another_salt(
     assert resp.json()["error_code"] == "salt_mismatch"
     assert key_salt.current_salt() == new_salt
     assert await _authenticates(client, "pt-" + managed)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_archive_salt_is_no_salt_and_cannot_be_adopted(
+    client, auth_headers, provider,
+):
+    """An empty salt with a fingerprint that matches it passes the model
+    check, but it is not a salt anyone holds: it used to be reported as
+    adopted while nothing was adopted, and the restore went on with key
+    hashes that could never authenticate. It is refused like an archive
+    that carries none."""
+    await StoredAPIKey.delete_all()
+    archive = (await client.post(BACKUP, headers=auth_headers)).json()
+    archive["source"]["salt"] = ""
+    archive["source"]["salt_fingerprint"] = salt_fingerprint("")
+
+    resp = await client.post(RESTORE, json=archive, headers=auth_headers)
+
+    assert resp.status_code == 409, resp.text
+    assert "does not carry the salt" in resp.json()["detail"]

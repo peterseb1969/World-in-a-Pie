@@ -586,7 +586,7 @@ async def register_keys(
     # with that request's entry.
     laps.lap("3_build_entries")
     token = new_claim_token()
-    gated_entries, gated_indices, _, _ = await _gate_on_claims(
+    gated_entries, gated_indices = await _gate_on_claims(
         plan.entries, plan.indices, identity_hashes, results, token,
     )
     laps.lap("3b_claim_keys")
@@ -965,16 +965,15 @@ def _carries_key(holder: RegistryEntry, entry: RegistryEntry) -> bool:
 async def _gate_on_claims(
     entries: list[RegistryEntry], indices: list[int], identity_hashes: list[str | None],
     results: list[RegisterKeyResponse | None], token: str,
-) -> tuple[list[RegistryEntry], list[int], int, int]:
+) -> tuple[list[RegistryEntry], list[int]]:
     """Claim every entry's keys pending; answer the items that cannot have
     them. An item whose own key another request registered meanwhile is
     answered already_exists with that request's entry; any other conflict is
     a key_claimed error — including one against another item of this batch,
     whose entry is not written yet. Returns (entries to insert, their item
-    indices, already_exists, errors) counted."""
+    indices); the response counts statuses from the answers."""
     gated: list[RegistryEntry] = []
     gated_indices: list[int] = []
-    exists = errors = 0
     conflicts = await claim_entries_keys_pending(entries, token)
     for entry, idx, conflict in zip(entries, indices, conflicts, strict=True):
         if conflict is None:
@@ -988,24 +987,20 @@ async def _gate_on_claims(
                 namespace=holder.namespace, entity_type=holder.entity_type,
                 identity_hash=identity_hashes[idx],
             )
-            exists += 1
         else:
             results[idx] = RegisterKeyResponse(
                 index=idx, status="error", error=conflict,
                 error_code="already_exists", details={"rule": "key_claimed"},
             )
-            errors += 1
-    return gated, gated_indices, exists, errors
+    return gated, gated_indices
 
 
 def _answer_duplicates(
     results: list[RegisterKeyResponse | None], duplicates: list[tuple[int, int, str | None]],
-) -> tuple[int, int]:
+) -> None:
     """Answer each later item of a batch that repeats an earlier item's key
     from what became of the earlier one: already_exists with its entry when
-    it was created or found, its error otherwise. Returns (already_exists,
-    errors) counted."""
-    exists = errors = 0
+    it was created or found, its error otherwise."""
     for i, first, id_hash in duplicates:
         answer = cast(RegisterKeyResponse, results[first])
         if answer.status in ("created", "already_exists"):
@@ -1014,11 +1009,8 @@ def _answer_duplicates(
                 namespace=answer.namespace, entity_type=answer.entity_type,
                 identity_hash=id_hash,
             )
-            exists += 1
         else:
             results[i] = answer.model_copy(update={"index": i})
-            errors += 1
-    return exists, errors
 
 
 @router.post(
