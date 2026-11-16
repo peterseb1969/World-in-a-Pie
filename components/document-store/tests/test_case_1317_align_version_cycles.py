@@ -254,7 +254,11 @@ async def test_an_aligned_draft_against_an_active_version_refuses_the_pair(db):
     """align_templates mapped an archive draft onto an identical active target
     version and discarded the status difference, so the draft was absorbed
     without a word: the rule every other template pair follows (a draft is a
-    real difference) never ran on this path (CASE-1275, f331b9ca review R1)."""
+    real difference) never ran on this path (CASE-1275, f331b9ca review R1).
+
+    The planner here takes every archived version as used; an archive draft
+    that documents use is refused, mapped or not (CASE-1409). One nothing uses
+    is history and never judged (test_case_1409_alignment)."""
     plan = await _plan(
         db,
         target=[_tpl("T-d", "DOC", 1, NOTE)],
@@ -263,7 +267,8 @@ async def test_an_aligned_draft_against_an_active_version_refuses_the_pair(db):
 
     assert not plan.compatible
     (issue,) = plan.incompatibilities
-    assert "status" in str(issue) and "DOC v1 (as v1)" in str(issue)
+    assert issue.name == "DOC v1" and "draft" in issue.reason
+    assert plan.alignment["A-d"].versions[1].target_version is None
     assert plan.aligned == 0
 
 

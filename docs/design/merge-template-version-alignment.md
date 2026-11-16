@@ -68,9 +68,14 @@ templates as follows.
    target template) is not written, so it neither decides whether a version
    can be placed nor is listed (`held_by_target_count`).
 4. **History versions are not definitions to add.** An archive version that
-   no arriving document pins (normally the source's retired history) is
-   neither compared nor added. A version some arriving document pins is
-   handled by step 2 whatever its status.
+   no arriving document pins (normally the source's retired history, or a
+   draft nobody activated) is neither compared nor added, whatever its
+   status. The versions decided are the ones arriving documents pin, and the
+   versions of aligned templates those name (an `extends_version`, a
+   `template_ref_version`), transitively. Among them, a target draft is never
+   a version to map onto, and an archived draft is refused (no document can
+   be written against a draft, so an archive whose documents pin one does
+   not hold what it claims). See *Settling order and scope* below.
 5. **Different identity is still a fork.** An archive template whose
    `identity_fields` differ from the target's is refused, as today; that is a
    different template, not a version of this one.
@@ -79,10 +84,15 @@ The dry run reports the whole alignment: per template, which archive versions
 map to which target versions, which are history, and which documents cannot
 be placed. It is on the job's result under
 `namespaces.<ns>.template_alignment` (`templates[].versions[]` with
-`archive_version`, `target_version`, `rows`, `history`, `reason`;
+`archive_version`, `target_version`, `outcome`, `rows`, `held_rows`,
+`history`, `reason`; `outcome` is one of `mapped`, `unplaced` (used, no target
+version takes it: its documents are left out), `held` (used only by documents
+the target already holds), `history` (used by nothing that arrives) and
+`refused`;
 `unplaceable_documents`, capped at 200, with `unplaceable_count`,
 `unplaceable_truncated` and `held_by_target_count`), and on the merge's
-restore provenance. A merge with `skip_documents` settles the versions
+restore provenance. A merge the alignment refuses carries the same account on
+its refusal (`template_alignment` beside `incompatibilities`). A merge with `skip_documents` settles the versions
 against no documents, so it lists none.
 
 ## What this does not do
@@ -154,6 +164,9 @@ These follow from the decisions above; the design did not spell them out.
   until nothing is dropped. Each version then takes a candidate, preferred
   first, backing out of a choice that leaves another version with none, so a
   mapping is not missed because the first preference did not work out. Every
+  version may also stay unplaced, as its last option, and the assignment kept
+  is the one that places the most versions, so one version that fits nowhere
+  never costs the others their mapping. Every
   mapping is written before any version is compared, and each mapped version
   is checked against its target version with the other mappings in place,
   which unmaps one that no longer holds: **every version reported as mapped is
@@ -162,3 +175,38 @@ These follow from the decisions above; the design did not spell them out.
   those numbers are another install's — it is reported unplaceable, with the
   reason: that its version references do not line up with the other
   templates', or what differs from the target's preferred version.
+
+## Settling order and scope (Peter, 2026-11-16)
+
+Alignment drew findings in five places within two days, each from deciding
+one condition on the evidence pass 1 happened to have. Pass 1 sees template
+rows only. Which versions the arriving documents pin is known once the
+documents are read, and which documents the target already holds is known
+only once pass 2 has matched files and documents to a fixed point: a
+document identity can hash another archived document's id, or a file's,
+which only that matching turns into the id the target holds. So:
+
+1. **Pass 1 matches aligned templates by value and decides no version.** The
+   template-level refusal (different `identity_fields`, `usage`,
+   `versioned`) stays in pass 1.
+2. **Held documents come from pass 2's own matching.** Under
+   `on_clash=skip` the merge plans files and documents against the target on
+   copies, as pass 2 does, and takes the documents it finds as clashes. That
+   is the only rehash; nothing else hashes identities ahead of it. Re-pinning
+   changes only `template_version`, and the identity hash has no version in
+   it, so the matching never depends on the version mapping.
+3. **Then the versions are decided:** the ones the non-held arriving rows pin,
+   and the versions those name, transitively. Everything else is history.
+4. **Status is judged on those versions only.** A target draft is never a
+   candidate; an archived draft among them refuses the merge; active against
+   inactive maps, and the target's status is kept and reported.
+5. **The search places as many versions as it can.** Each version may stay
+   unplaced as its last option; a version that fits nowhere is reported
+   `unplaced` and does not stop the search for the others.
+6. **One account per version.** Every archived version of an aligned
+   template is reported with its `outcome` and reason, on the merge's result
+   and on a refusal alike.
+
+The cost: under `on_clash=skip` with `align_templates`, files and documents
+are planned twice, once to find the held documents and once for the merge.
+

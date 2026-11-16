@@ -299,9 +299,13 @@ export interface RestoreOptions {
    * Merge only — for an archive from another install, whose template version
    * numbers do not line up with the target's. Templates match by value; each
    * archive version maps onto the target version whose schema can take its
-   * documents, and documents are re-pinned to it. Documents no target version
-   * can take are listed on the job (`result.namespaces[ns].template_alignment
-   * .unplaceable_documents`) and not merged. A template that is the same on
+   * documents, and documents are re-pinned to it. Only versions the arriving
+   * documents use are decided (with the versions those name); the rest are
+   * history, never judged. Documents no target version can take are listed
+   * on the job (`result.namespaces[ns].template_alignment
+   * .unplaceable_documents`) and not merged; each version's `outcome`
+   * (`mapped`, `unplaced`, `held`, `history`, `refused`) is on
+   * `template_alignment.templates[].versions[]`. A template that is the same on
    * both sides (one install minted it) is matched by version number, as
    * without the option. Dry-run first.
    */

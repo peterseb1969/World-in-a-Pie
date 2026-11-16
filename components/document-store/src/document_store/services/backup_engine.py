@@ -2413,16 +2413,28 @@ def _check_advance_answer(resp: Any, batch: list[str]) -> None:
         )
 
 
+def _count_rows(chain: list[dict[str, Any]], counts: dict[tuple[str, int], int] | None) -> None:
+    """Add a chain's rows to ``counts`` per (template_id, template_version)."""
+    if counts is None:
+        return
+    for row in chain:
+        key = (str(row.get("template_id")), int(row.get("template_version") or 1))
+        counts[key] = counts.get(key, 0) + 1
+
+
 def _alignment_rows(
     alignment: dict[str, Any], chains: Any, held: set[str],
+    held_rows: dict[tuple[str, int], int] | None = None,
 ) -> tuple[dict[tuple[str, int], list[str]], dict[tuple[str, int], dict[str, int]]]:
     """Per (template, version) of the alignment: the documents with a row
     pinned to it, and how many of its rows fill each field the target
-    version lacks. A held document's chain is not counted."""
+    version lacks. A held document's chain is not counted; its rows are
+    counted per version into ``held_rows`` when given."""
     rows_per_version: dict[tuple[str, int], list[str]] = {}
     carrying: dict[tuple[str, int], dict[str, int]] = {}
     for chain in chains:
         if chain and str(chain[0].get("document_id")) in held:
+            _count_rows(chain, held_rows)
             continue
         for row in chain:
             template_id = str(row.get("template_id"))
@@ -2441,14 +2453,32 @@ def _alignment_rows(
     return rows_per_version, carrying
 
 
+def _alignment_outcome(version: Any, held_rows: int) -> str:
+    """What alignment did with one archive version: ``mapped`` onto a target
+    version; ``refused`` (arriving documents use a version that cannot be
+    merged, which refuses the merge); ``unplaced`` (used, but no target
+    version takes it: its documents are left out); ``held`` (used only by
+    documents the target already holds, so not decided); ``history`` (used
+    by nothing that arrives, so not decided)."""
+    if version.refused:
+        return "refused"
+    if version.target_version is not None:
+        return "mapped"
+    if version.history:
+        return "held" if held_rows else "history"
+    return "unplaced"
+
+
 def _alignment_report(
     alignment: dict[str, Any],
     rows_per_version: dict[tuple[str, int], list[str]],
     unplaceable: dict[str, dict[str, Any]],
     held: set[str],
+    held_rows: dict[tuple[str, int], int] | None = None,
 ) -> dict[str, Any]:
-    """The job's account of a template alignment: where each archive version
-    went, and which documents stay out."""
+    """The job's account of a template alignment: per archive version, what
+    alignment did with it and why, and which documents stay out."""
+    held_rows = held_rows or {}
     return {
         "templates": [
             {
@@ -2458,7 +2488,11 @@ def _alignment_report(
                     {
                         "archive_version": number,
                         "target_version": version.target_version,
+                        "outcome": _alignment_outcome(
+                            version, held_rows.get((archive_id, number), 0),
+                        ),
                         "rows": len(rows_per_version.get((archive_id, number), [])),
+                        "held_rows": held_rows.get((archive_id, number), 0),
                         "history": (archive_id, number) not in rows_per_version,
                         "reason": version.reason,
                     }
@@ -2476,18 +2510,17 @@ def _alignment_report(
     }
 
 
-def _aligned_heads(
+def _pinned_versions(
     alignment: dict[str, Any], reader: ArchiveReader, src: str,
-    doc_groups: dict[str, list[dict[str, Any]]] | None,
-) -> list[dict[str, Any]]:
-    """The head row of every archived document on an aligned template."""
+    doc_groups: dict[str, list[dict[str, Any]]] | None, held: set[str],
+) -> set[tuple[str, int]]:
+    """The (archive template_id, version) pairs of aligned templates that the
+    arriving documents' rows pin. A held document arrives as nothing."""
     chains: Any = (
         doc_groups.values() if doc_groups is not None else iter_chains(reader, src)
     )
-    return [
-        chain[0] for chain in chains
-        if chain and str(chain[0].get("template_id")) in alignment
-    ]
+    rows_per_version, _carrying = _alignment_rows(alignment, chains, held)
+    return set(rows_per_version)
 
 
 class DirectRestoreEngine:
@@ -5029,17 +5062,17 @@ class DirectRestoreEngine:
         )
 
         # ---- Pass 1: definitions -------------------------------
-        definitions = await self._plan_merge_definitions(
+        definitions, planner = await self._plan_merge_definitions(
             archive_entities, tgt, remapper, policy=policy, dry_run=dry_run,
         )
         alignment_report: dict[str, Any] | None = None
         left_out: set[str] = set()
         if definitions.alignment:
             doc_groups, alignment_report, left_out = await self._align_merge(
-                definitions, reader, src, tgt, archive_entities, doc_groups, remapper,
+                definitions, planner, reader, manifest, targets, src, tgt,
+                archive_entities, doc_groups, remapper,
                 dry_run=dry_run, on_clash=policy["on_clash"],
-                skip_documents=skip_documents,
-                rehash_probe=(manifest, [s for s, _t in targets]),
+                skip_documents=skip_documents, redirects=redirects,
             )
         dropped = await self._report_unresolved_references(
             reader, [src], remapper, referents, tgt,
@@ -5124,17 +5157,23 @@ class DirectRestoreEngine:
         *,
         policy: dict[str, Any],
         dry_run: bool,
-    ) -> Any:
+    ) -> tuple[DefinitionsPlan, DefinitionsPlanner]:
         """Pass 1: compare the definitions, refuse a mismatch, and give the
         remapper the mapping that lets pass 2 point the incoming data at the
-        definitions that survived."""
-        definitions = await DefinitionsPlanner(
+        definitions that survived.
+
+        Aligned templates are matched by value only: their versions are
+        settled by the returned planner once the documents that arrive are
+        known (_align_merge)."""
+        planner = DefinitionsPlanner(
             self._mongo, COLLECTION_MAP,
             add_missing=policy["add_missing"],
             extend_terminologies=policy["extend_terminologies"],
             align_templates=policy["align_templates"],
+            defer_alignment=True,
             carry_retirements=policy["carry_retirements"],
-        ).plan(archive_entities, tgt, external=remapper)
+        )
+        definitions = await planner.plan(archive_entities, tgt, external=remapper)
         self._emit_definitions_plan(tgt, definitions, dry_run=dry_run)
         self._enforce_definitions_gate(tgt, definitions)
 
@@ -5146,12 +5185,15 @@ class DirectRestoreEngine:
             remapper.add_term_mapping(old_id, new_id)
         for old_id, new_id in definitions.mapping["templates"].items():
             remapper.add_template_mapping(old_id, new_id)
-        return definitions
+        return definitions, planner
 
     async def _align_merge(
         self,
-        definitions: Any,
+        definitions: DefinitionsPlan,
+        planner: DefinitionsPlanner,
         reader: ArchiveReader,
+        manifest: Any,
+        targets: list[tuple[str, str]],
         src: str,
         tgt: str,
         archive_entities: dict[str, list[dict[str, Any]]],
@@ -5161,45 +5203,102 @@ class DirectRestoreEngine:
         dry_run: bool,
         on_clash: str = "overwrite",
         skip_documents: bool = False,
-        rehash_probe: tuple[Any, list[str]] | None = None,
+        redirects: dict[str, str],
     ) -> tuple[dict[str, list[dict[str, Any]]] | None, dict[str, Any], set[str]]:
-        """Settle the template alignment: re-pin documents onto the target
-        versions, and leave out the documents whose versions map nowhere.
-        Returns the held document groups, the alignment report and the ids
-        of the documents left out.
+        """Settle the template alignment: decide the versions the arriving
+        documents use, re-pin the documents onto the target versions, and
+        leave out the documents whose versions map nowhere. Returns the held
+        document groups, the alignment report and the ids of the documents
+        left out.
 
-        Under ``on_clash=skip`` a document the target already holds is never
-        written, so its rows neither decide whether a version can be placed
-        nor are left out: the target keeps its own copy. With
-        ``skip_documents`` no document arrives: the versions are settled
-        against none, and the archive's documents are not read.
-
-        ``rehash_probe`` (the manifest and every archived namespace of the
-        merge) lets the held documents be found by the identity the merge
-        writes them under, as the planner finds them."""
+        The versions decided are the ones arriving documents pin, and the
+        versions those name; every other archived version is history, never
+        judged. Under ``on_clash=skip`` a document the target already holds
+        is never written, so its rows pin nothing and it is never left out:
+        the target keeps its own copy. Which documents the target holds is
+        what pass 2 finds, files and documents matched to a fixed point
+        (_held_documents), so an identity fed by another archived document or
+        a file is compared by the id it has on the target. With
+        ``skip_documents`` no document arrives: every version is history."""
         if skip_documents:
             doc_groups = {}
         held: set[str] = set()
         if on_clash == "skip" and not skip_documents:
-            heads = await self._off_loop(
-                _aligned_heads, definitions.alignment, reader, src, doc_groups,
+            held = await self._held_documents(
+                reader, manifest, targets, src, tgt, archive_entities, doc_groups,
+                remapper, redirects,
             )
-            if rehash_probe is not None:
-                heads = await self._rehashed_heads(reader, *rehash_probe, remapper, heads)
-            held = await self._held_by_target(tgt, heads, definitions.alignment)
+        pinned = await self._off_loop(
+            _pinned_versions, definitions.alignment, reader, src, doc_groups, held,
+        )
+        kept_before = len(definitions.target_wins)
+        planner.settle_alignment(definitions, pinned)
+        phase = "phase_dry_run" if dry_run else "phase_definitions"
+        if definitions.aligned:
+            self._emit(
+                phase,
+                f"[{tgt}] templates: {definitions.aligned} version(s) aligned onto "
+                "a target version",
+            )
+        self._emit_kept(tgt, definitions.target_wins[kept_before:], phase)
         unplaceable, report = await self._off_loop(
             self._settle_alignment,
             definitions.alignment, reader, src, doc_groups, held,
         )
+        self._emit_alignment(tgt, report, dry_run=dry_run)
+        self._enforce_definitions_gate(tgt, definitions, alignment_report=report)
         remapper.version_map = {
             (archive_id, version): target_version
             for archive_id, alignment in definitions.alignment.items()
             for version, target_version in alignment.version_map().items()
         }
-        self._emit_alignment(tgt, report, dry_run=dry_run)
         if unplaceable:
             doc_groups = _drop_merge_rows(archive_entities, doc_groups, unplaceable)
         return doc_groups, report, unplaceable
+
+    async def _held_documents(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        targets: list[tuple[str, str]],
+        src: str,
+        tgt: str,
+        archive_entities: dict[str, list[dict[str, Any]]],
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+        remapper: _AligningRemapper,
+        redirects: dict[str, str],
+    ) -> set[str]:
+        """The archived documents the target already holds, as pass 2 finds
+        them: files, then documents planned against the target until no new
+        mapping appears, on copies, so nothing here reaches the real pass 2.
+
+        A document identity can hash another archived document's id or a
+        file's, which only pass 2's matching turns into the id the target
+        holds; matched before that, such a document is missed. A held
+        document is one the planner finds as a clash: the same document_id,
+        or the same identity on the aligned target template."""
+        probe_entities = {
+            entity_type: archive_entities[entity_type]
+            for entity_type in ("files", "documents")
+            if archive_entities.get(entity_type) is not None
+        }
+        if not probe_entities.get("documents"):
+            return set()
+        archived_ids = {
+            str(row.get("document_id")) for row in probe_entities["documents"]
+        }
+        built, *_rest = await self._plan_merge_entities(
+            reader, manifest, targets, src, tgt, probe_entities, doc_groups,
+            copy.deepcopy(remapper), redirects=redirects,
+        )
+        plan = built.get("documents")
+        if plan is None:
+            return set()
+        clashing = {str(clash.entity.get("document_id")) for clash in plan.clashes}
+        held = clashing | {
+            old_id for old_id, new_id in plan.mapping.items() if new_id in clashing
+        }
+        return held & archived_ids
 
     async def _plan_merge_entities(
         self,
@@ -5960,67 +6059,6 @@ class DirectRestoreEngine:
             for doc_id, rows in doc_groups.items()
         }
 
-    async def _rehashed_heads(
-        self,
-        reader: ArchiveReader,
-        manifest: Any,
-        sources: list[str],
-        remapper: _AligningRemapper,
-        heads: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """The heads with the identity hash the merge will write them under.
-
-        A term- or reference-typed identity field hashes the canonical id it
-        resolves to, so a head whose term pass 1 mapped onto the target's own
-        term carries an identity the target knows under another hash. The
-        planner rehashes before it matches; the held probe must too, or it
-        misses the target's copy. Each head keeps its archived template_id,
-        which the alignment is keyed by. The rehash is a throwaway: the
-        planner builds its own, so nothing here is counted as rehashed."""
-        rehash = _IdentityRehash(
-            reader, sources,
-            await self._external_template_definitions(
-                reader, manifest, remapper, _archived_template_ids(reader, sources),
-            ),
-        )
-        out = []
-        for head in heads:
-            row = rehash.rehash(head, remapper.remap_document(head))
-            out.append({**head, "identity_hash": row.get("identity_hash")})
-        return out
-
-    async def _held_by_target(
-        self, namespace: str, heads: list[dict[str, Any]], alignment: dict[str, Any],
-    ) -> set[str]:
-        """The archived documents the target already holds, by the merge
-        planner's rule: the same document_id, or the same identity on the
-        target template the archive's is aligned to. Read in batches."""
-        db_name, coll_name = COLLECTION_MAP["documents"]
-        docs = self._mongo[db_name][coll_name]
-        held: set[str] = set()
-        for start in range(0, len(heads), 1000):
-            batch = heads[start:start + 1000]
-            by_id = {str(h.get("document_id")): h for h in batch if h.get("document_id")}
-            by_identity = {
-                (alignment[str(h["template_id"])].target_template_id, str(h["identity_hash"])):
-                    str(h.get("document_id"))
-                for h in batch if h.get("identity_hash")
-            }
-            clauses: list[dict[str, Any]] = [{"document_id": {"$in": list(by_id)}}]
-            clauses += [
-                {"template_id": tid, "identity_hash": ih} for tid, ih in by_identity
-            ]
-            async for row in docs.find(
-                {"namespace": namespace, "$or": clauses},
-                {"document_id": 1, "template_id": 1, "identity_hash": 1},
-            ):
-                if str(row.get("document_id")) in by_id:
-                    held.add(str(row["document_id"]))
-                key = (str(row.get("template_id")), str(row.get("identity_hash")))
-                if key in by_identity:
-                    held.add(by_identity[key])
-        return held
-
     def _settle_alignment(
         self,
         alignment: dict[str, TemplateAlignment],
@@ -6043,7 +6081,8 @@ class DirectRestoreEngine:
             doc_groups.values() if doc_groups is not None else iter_chains(reader, src)
         )
         held = held or set()
-        rows_per_version, carrying = _alignment_rows(alignment, chains, held)
+        held_rows: dict[tuple[str, int], int] = {}
+        rows_per_version, carrying = _alignment_rows(alignment, chains, held, held_rows)
 
         for (template_id, number), counts in carrying.items():
             version = alignment[template_id].versions[number]
@@ -6069,7 +6108,7 @@ class DirectRestoreEngine:
                 })
                 entry["versions"][str(number)] = reason
 
-        report = _alignment_report(alignment, rows_per_version, unplaceable, held)
+        report = _alignment_report(alignment, rows_per_version, unplaceable, held, held_rows)
         return set(unplaceable), report
 
     def _emit_alignment(
@@ -6100,6 +6139,23 @@ class DirectRestoreEngine:
                 "them with wip-toolkit migrate, export again and merge again.",
             )
 
+    def _emit_kept(self, namespace: str, notes: list[Any], phase: str) -> None:
+        """Every definition whose target metadata a merge keeps. Never silent:
+        an operator who loses a label or an alias list to the target's copy
+        finds out later from a UI that changed under them."""
+        for note in notes[:20]:
+            self._emit(
+                phase,
+                f"[{namespace}] {note.entity_type} '{note.name}': target's "
+                f"{', '.join(note.fields)} kept ({note.detail})",
+            )
+        if len(notes) > 20:
+            self._emit(
+                phase,
+                f"[{namespace}] …and {len(notes) - 20} more "
+                "definition(s) where the target's metadata was kept",
+            )
+
     def _emit_definitions_plan(
         self, namespace: str, definitions: DefinitionsPlan, *, dry_run: bool
     ) -> None:
@@ -6124,20 +6180,7 @@ class DirectRestoreEngine:
                 f"identical, {counts['add']} to add, {counts['mapped']} mapped "
                 f"to the target's IDs{aligned}{retire}{names}",
             )
-        # Never silent: an operator who loses a label or an alias list to the
-        # target's copy finds out later from a UI that changed under them.
-        for note in definitions.target_wins[:20]:
-            self._emit(
-                phase,
-                f"[{namespace}] {note.entity_type} '{note.name}': target's "
-                f"{', '.join(note.fields)} kept ({note.detail})",
-            )
-        if len(definitions.target_wins) > 20:
-            self._emit(
-                phase,
-                f"[{namespace}] …and {len(definitions.target_wins) - 20} more "
-                "definition(s) where the target's metadata was kept",
-            )
+        self._emit_kept(namespace, definitions.target_wins, phase)
         if definitions.retirements_not_carried:
             self._emit(
                 phase,
@@ -6147,10 +6190,14 @@ class DirectRestoreEngine:
             )
 
     def _enforce_definitions_gate(
-        self, namespace: str, definitions: DefinitionsPlan
+        self, namespace: str, definitions: DefinitionsPlan,
+        *, alignment_report: dict[str, Any] | None = None,
     ) -> None:
         """Definitions are the precondition — an incompatibility stops the
-        merge before any document moves."""
+        merge before any document moves. A refusal that comes from settling
+        the template alignment carries the alignment's account too
+        (``template_alignment``), so what was mapped, used or left out is on
+        the refusal as on a merge that proceeds."""
         if definitions.compatible:
             return
         issues = definitions.incompatibilities
@@ -6195,6 +6242,7 @@ class DirectRestoreEngine:
                 "incompatibilities_truncated": max(
                     0, len(issues) - MERGE_REFUSAL_INCOMPATIBILITY_CAP
                 ),
+                **({"template_alignment": alignment_report} if alignment_report else {}),
             },
         )
 

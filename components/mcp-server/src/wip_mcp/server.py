@@ -5336,10 +5336,14 @@ async def start_restore(
             the target version whose schema can take its documents (same
             schema, or only added optional fields and removed fields the
             documents leave empty), and documents are re-pinned to it.
+            Only versions the arriving documents use are decided (with the
+            versions those name); the rest are history, never judged.
             Documents no target version can take are listed on the job
             (result template_alignment.unplaceable_documents) and not
-            merged. A template that is the same on both sides (one install
-            minted it) is matched by version number, as without the option.
+            merged. Each version's outcome (mapped, unplaced, held, history,
+            refused) is on template_alignment.templates[].versions[]. A
+            template that is the same on both sides (one install minted it)
+            is matched by version number, as without the option.
             Dry-run first.
         carry_retirements: Merge only — retire the target's active terms
             that the archive has retired, with the archive's reason and

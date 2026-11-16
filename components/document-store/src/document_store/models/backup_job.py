@@ -191,7 +191,9 @@ class BackupJob(BeanieDocument):
             "(how many inactive template versions it left out, per namespace), "
             "an import's row report (result_kind: import_report, and while it "
             "runs the counts so far), or a refused merge's every "
-            "incompatibility (result_kind: merge_refused)"
+            "incompatibility (result_kind: merge_refused, with the "
+            "template_alignment account when settling align_templates "
+            "refused it)"
         )
     )
 

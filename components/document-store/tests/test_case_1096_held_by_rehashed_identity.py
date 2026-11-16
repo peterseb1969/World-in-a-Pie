@@ -95,7 +95,10 @@ async def test_a_document_held_under_its_rehashed_identity_does_not_decide_the_v
     report = _result(events)
     assert report["held_by_target_count"] == 1
     assert report["unplaceable_count"] == 0
+    # The only document that pins the version is the target's already, so
+    # the version is decided for nothing that arrives: it is not mapped, and
+    # it leaves nothing out (CASE-1409: alignment decides pinned versions).
     [version] = report["templates"][0]["versions"]
-    assert version["target_version"] == 1
+    assert version["target_version"] is None and version["history"]
     [kept] = await _rows(mongo, "documents")
     assert (kept["document_id"], kept["data"]) == ("T-1", {"unit": "kg"})

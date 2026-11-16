@@ -179,6 +179,13 @@ class VersionAlignment:
     target_version: int | None
     reason: str
     removed_fields: list[str] = field(default_factory=list)
+    # No arriving document pins this version, nor any version that does
+    # through a version reference: it is the source's history, reported but
+    # never compared, mapped or refused.
+    history: bool = False
+    # Arriving documents use it, and it cannot be merged at all (an archived
+    # draft): the merge is refused.
+    refused: bool = False
 
 
 @dataclass
@@ -235,6 +242,12 @@ class DefinitionsPlan:
     # align_templates: archive template versions mapped onto a target version.
     # Not "unchanged": the two differ at least in their version number.
     aligned: int = 0
+    # align_templates: each aligned template's archive rows and the target's
+    # rows of the same value, keyed by the archive's template_id, kept for
+    # settling the versions once the arriving documents' pins are known.
+    alignment_rows: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = field(
+        default_factory=dict
+    )
 
     @property
     def compatible(self) -> bool:
@@ -455,6 +468,45 @@ def _judge_aligned_pair(
     return True
 
 
+def _pinned_draft(value: str, version: int) -> Incompatibility:
+    """The refusal of an archived draft version that arriving documents use."""
+    return Incompatibility(
+        entity_type="templates",
+        name=f"{value} v{version}",
+        reason=(
+            "is a draft in the archive, yet arriving documents use it: no "
+            "document can be written against a draft, so the archive does not "
+            "hold what it claims"
+        ),
+        detail={"status": {"archive": _DRAFT_STATUS}},
+    )
+
+
+def _judge_aligned_version(
+    plan: DefinitionsPlan,
+    value: str,
+    version: VersionAlignment,
+    row: dict[str, Any],
+    by_version: dict[int, dict[str, Any]],
+) -> bool:
+    """Judge one archived version alignment decided: True when it stays
+    mapped onto a target version. History is not judged; an archived draft
+    is refused (_pinned_draft); a mapped pair follows _judge_aligned_pair."""
+    if version.history:
+        return False
+    if (row.get("status") or "active") == _DRAFT_STATUS:
+        plan.incompatibilities.append(_pinned_draft(value, version.archive_version))
+        version.target_version = None
+        version.refused = True
+        version.reason = "a draft, yet arriving documents use it"
+        return False
+    if version.target_version is None:
+        return False
+    target = by_version.get(version.target_version)
+    name = f"{value} v{version.archive_version} (as v{version.target_version})"
+    return target is None or _judge_aligned_pair(plan, name, row, target)
+
+
 def _target_wins(
     entity_type: str,
     name: str,
@@ -664,8 +716,13 @@ class DefinitionsPlanner:
         extend_terminologies: bool = False,
         align_templates: bool = False,
         carry_retirements: bool = False,
+        defer_alignment: bool = False,
     ):
         self._mongo = mongo_client
+        # With defer_alignment, plan() matches aligned templates by value
+        # only; their versions are settled by settle_alignment() once the
+        # caller knows which versions the arriving documents pin.
+        self._defer_alignment = defer_alignment
         self._collection_map = collection_map
         self._add_missing = add_missing
         self._extend_terminologies = extend_terminologies
@@ -1231,15 +1288,57 @@ class DefinitionsPlanner:
             )
             aligned[archive_id] = (rows, targets)
 
-        self._map_aligned_versions(aligned, plan)
+        plan.alignment_rows = aligned
+        if not self._defer_alignment:
+            self.settle_alignment(plan, None)
+        return unmatched
+
+    def settle_alignment(
+        self, plan: DefinitionsPlan, pinned: set[tuple[str, int]] | None,
+    ) -> None:
+        """Map and judge the aligned templates' versions.
+
+        ``pinned`` holds the (archive template_id, version) pairs arriving
+        documents pin; None takes every archived version. Only those, and the
+        versions they reach through a version reference (an extends_version,
+        a template_ref_version), are mapped and judged: every other archived
+        version is history, reported and never compared, so a status or a
+        schema nothing uses cannot refuse a merge."""
+        aligned = plan.alignment_rows
+        if not aligned:
+            return
+        scope = self._alignment_scope(aligned, plan, pinned)
+        self._map_aligned_versions(aligned, plan, scope)
         for archive_id, (rows, targets) in aligned.items():
             self._count_aligned(plan, plan.alignment[archive_id], rows, targets)
-        return unmatched
+
+    def _alignment_scope(
+        self,
+        aligned: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]],
+        plan: DefinitionsPlan,
+        pinned: set[tuple[str, int]] | None,
+    ) -> set[_VersionKey]:
+        """The archived versions alignment decides: those pinned, and every
+        version of an aligned template they name, transitively."""
+        remapper = self._remapper(plan)
+        aligned_ids = {
+            plan.alignment[archive_id].target_template_id: archive_id
+            for archive_id in aligned
+        }
+        rows_by_key = {
+            (archive_id, int(row.get("version") or 1)): remapper.remap_template(row)
+            for archive_id, (rows, _targets) in aligned.items()
+            for row in rows
+        }
+        if pinned is None:
+            return set(rows_by_key)
+        return _reachable(pinned, rows_by_key, aligned_ids)
 
     def _map_aligned_versions(
         self,
         aligned: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]],
         plan: DefinitionsPlan,
+        scope: set[_VersionKey],
     ) -> None:
         """Map every aligned archive version onto a target version.
 
@@ -1258,6 +1357,9 @@ class DefinitionsPlanner:
         checked by the same rule as a single version (_confirm), which unmaps
         what no longer holds. A version left without a candidate is never
         mapped: it is reported with the reason it could not be placed.
+
+        Only the versions in ``scope`` take part; the others are recorded as
+        history.
         """
         remapper = self._remapper(plan)
         aligned_ids = {
@@ -1265,6 +1367,13 @@ class DefinitionsPlanner:
             for archive_id in aligned
         }
         rows_by_key, targets_of, candidates = _alignment_inputs(aligned, remapper, aligned_ids)
+        for key in [key for key in rows_by_key if key not in scope]:
+            del rows_by_key[key]
+            del candidates[key]
+            plan.alignment[key[0]].versions[key[1]] = VersionAlignment(
+                archive_version=key[1], target_version=None, history=True,
+                reason="no arriving document uses this version",
+            )
         pins = {key: _aligned_pins(row, aligned_ids) for key, row in rows_by_key.items()}
         context = _AlignmentContext(aligned_ids, targets_of, pins)
         # Whether the version's own schema matched a target version at all: one
@@ -1308,7 +1417,10 @@ class DefinitionsPlanner:
         mappings."""
         if matched_on_schema:
             return "its version references do not line up with the other templates"
-        preferred = _preferred_targets(list(targets.values()))[0]
+        usable = _preferred_targets(list(targets.values()))
+        if not usable:
+            return "the target holds only draft versions of this template"
+        preferred = usable[0]
         problem, _removed = _compatibility(self._with_aligned_version_refs(row, plan), preferred)
         return f"not compatible with target v{preferred.get('version')}: {problem}"
 
@@ -1324,8 +1436,9 @@ class DefinitionsPlanner:
         version referencing it, so the check repeats until nothing fails;
         it only ever unmaps, so it ends."""
         latest = {
-            archive_id: int(_preferred_targets(list(targets.values()))[0].get("version") or 1)
+            archive_id: int(usable[0].get("version") or 1) if usable else 0
             for archive_id, targets in targets_of.items()
+            for usable in [_preferred_targets(list(targets.values()))]
         }
         changed = True
         while changed:
@@ -1356,19 +1469,19 @@ class DefinitionsPlanner:
         report where the target version's label, description or other
         cosmetic field differs from the archive's (the target's is kept).
 
-        A pair's status follows the rule every other template pair follows
+        Only versions alignment decides are judged; history is not. A pair's
+        status follows the rule every other template pair follows
         (_status_split): active against inactive is reported as the target's
-        kept, and a draft on either side refuses the pair, since a draft was
-        never activated and absorbing it into an active version would hide
-        what the two sides hold."""
+        kept. A target draft is never mapped onto (_preferred_targets). An
+        archive draft that arriving documents use is refused, mapped or not:
+        no document can be written against a draft, so an archive whose
+        documents pin one does not hold what it claims."""
         by_version = {int(t.get("version") or 1): t for t in targets}
         for row in rows:
             version = alignment.versions.get(int(row.get("version") or 1))
-            if version is None or version.target_version is None:
-                continue
-            target = by_version.get(version.target_version)
-            name = f"{alignment.value} v{version.archive_version} (as v{version.target_version})"
-            if target is None or _judge_aligned_pair(plan, name, row, target):
+            if version is not None and _judge_aligned_version(
+                plan, alignment.value, version, row, by_version,
+            ):
                 plan.aligned += 1
 
     @staticmethod
@@ -1593,6 +1706,28 @@ def _alignment_inputs(
     return rows_by_key, targets_of, candidates
 
 
+def _reachable(
+    pinned: set[_VersionKey],
+    rows_by_key: dict[_VersionKey, dict[str, Any]],
+    aligned_ids: dict[str, str],
+) -> set[_VersionKey]:
+    """The pinned versions the archive carries, and every carried version of
+    an aligned template they name, transitively."""
+    frontier = [key for key in pinned if key in rows_by_key]
+    scope: set[_VersionKey] = set()
+    while frontier:
+        key = frontier.pop()
+        if key in scope:
+            continue
+        scope.add(key)
+        frontier.extend(
+            (referenced, version)
+            for referenced, version in _aligned_pins(rows_by_key[key], aligned_ids).values()
+            if version is not None and (referenced, version) in rows_by_key
+        )
+    return scope
+
+
 def _as_version(value: Any) -> int | None:
     return None if value is None else int(value)
 
@@ -1640,11 +1775,12 @@ def _without_aligned_version_refs(
 
 
 def _preferred_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Target versions in the order a mapping prefers them: active before
-    inactive, then the highest version first."""
+    """Target versions a mapping may use, in the order it prefers them: active
+    before inactive, then the highest version first. A draft is never one: it
+    was never activated, and documents cannot be written against it."""
     filled = (with_defaults("templates", t) for t in targets)
     return sorted(
-        filled,
+        (t for t in filled if t.get("status") != _DRAFT_STATUS),
         key=lambda t: (t.get("status") == "active", int(t.get("version") or 1)),
         reverse=True,
     )
@@ -1660,6 +1796,8 @@ def _version_candidates(
     blank = _without_aligned_version_refs(archive, aligned_ids)
     schema = _schema(blank)
     preferred = _preferred_targets(targets)
+    if not preferred:
+        return []
     candidates = [
         int(t.get("version") or 1) for t in preferred
         if _schema(_without_aligned_version_refs(t, aligned_ids)) == schema
@@ -1673,35 +1811,52 @@ def _version_candidates(
 
 def _consistent(
     key: _VersionKey,
-    target_version: int,
-    candidates: dict[_VersionKey, list[int]],
+    target_version: int | None,
+    candidates: dict[_VersionKey, list[int | None]],
     context: _AlignmentContext,
 ) -> bool:
     """Whether every aligned version the target version pins, where the
     archive version names one, is still a candidate of the archive version
     it stands for (or, for an archive version the archive does not carry,
-    the same number)."""
+    the same number). Leaving the version unplaced (None) is always
+    consistent: it pins nothing on the target."""
+    if target_version is None:
+        return True
     target = context.targets_of[key[0]][target_version]
     target_pins = _aligned_pins(target, context.aligned_ids)
-    for slot, (referenced, version) in context.pins[key].items():
-        if slot not in target_pins:
-            continue  # a field the target version lacks
-        target_referenced, pinned = target_pins[slot]
-        if target_referenced != referenced:
-            return False
-        ref_key = (referenced, version) if version is not None else None
-        if ref_key is not None and ref_key in candidates:
-            if pinned not in candidates[ref_key]:
-                return False
-        elif pinned != version:
-            return False
-    return True
+    return all(
+        _slot_agrees(target_pins[slot], referenced, version, candidates)
+        for slot, (referenced, version) in context.pins[key].items()
+        if slot in target_pins  # a field the target version lacks is skipped
+    )
 
 
-def _narrow(candidates: dict[_VersionKey, list[int]], context: _AlignmentContext) -> None:
+def _slot_agrees(
+    target_pin: tuple[str, int | None],
+    referenced: str,
+    version: int | None,
+    candidates: dict[_VersionKey, list[int | None]],
+) -> bool:
+    """Whether the target version names, in one slot, the template the
+    archive version names there, at a version the referenced archive version
+    can still take (or, for a version the archive does not carry, the same
+    number). A target version naming no version disagrees; "unplaced" in the
+    referenced version's options stands for no target version at all."""
+    target_referenced, pinned = target_pin
+    if target_referenced != referenced:
+        return False
+    ref_key = (referenced, version) if version is not None else None
+    if ref_key is not None and ref_key in candidates:
+        return pinned is not None and pinned in candidates[ref_key]
+    return pinned == version
+
+
+def _narrow(
+    candidates: dict[_VersionKey, list[int | None]], context: _AlignmentContext,
+) -> None:
     """Drop every candidate whose pinned versions are not candidates of the
     versions they stand for, until nothing is dropped. Candidates only
-    shrink, so this ends."""
+    shrink, so this ends; "unplaced" (None) is never dropped."""
     changed = True
     while changed:
         changed = False
@@ -1712,67 +1867,76 @@ def _narrow(candidates: dict[_VersionKey, list[int]], context: _AlignmentContext
                 changed = True
 
 
+# Search nodes visited before the best assignment found so far is taken.
+_SEARCH_NODE_LIMIT = 10_000
+
+
 def _choose(
     candidates: dict[_VersionKey, list[int]], context: _AlignmentContext
 ) -> dict[_VersionKey, int]:
-    """One target version per archive version that has a candidate: each takes
-    its preferred one, and a choice that leaves another version with none is
-    backed out of and the next candidate tried instead, so a mapping that
-    exists is not missed for want of trying. Versions are taken fewest
-    candidates first, then by name, so the search runs the same way every time.
-    A version with no candidate is left out: nothing can be mapped onto it.
+    """One target version per archive version, placing as many versions as
+    any consistent assignment can.
 
-    A version that has no candidate when the search starts is settled as
-    unmapped, so it does not stop the search for the others.
-
-    When no combination places every other version, each keeps its preferred
-    candidate and the caller's check (_confirm) unmaps the ones whose
-    references then disagree, so what stays mapped is consistent."""
-    unplaceable = frozenset(key for key, versions in candidates.items() if not versions)
-    found = _search(candidates, context, unplaceable)
-    if found is None:
-        found = {key: versions[0] for key, versions in candidates.items() if versions}
-    return found
-
-
-def _emptied(
-    domains: dict[_VersionKey, list[int]], unplaceable: frozenset[_VersionKey]
-) -> bool:
-    """Whether a version that started with candidates has none left."""
-    return any(not versions for key, versions in domains.items() if key not in unplaceable)
+    Every version may also stay unplaced, as its last option, so one version
+    that fits nowhere never stops the others from being placed. Among the
+    assignments that leave the fewest versions unplaced, the one found first
+    is taken: versions are branched over fewest options first, then by name,
+    and each takes its candidates preferred first, so the search runs the
+    same way every time. Past ``_SEARCH_NODE_LIMIT`` nodes the best
+    assignment found so far is taken. Versions left unplaced are absent from
+    the result; the caller reports them."""
+    domains: dict[_VersionKey, list[int | None]] = {
+        key: [*versions, None] for key, versions in candidates.items()
+    }
+    _narrow(domains, context)
+    search = _Search(context)
+    search.run(domains)
+    return {key: value for key, value in (search.best or {}).items() if value is not None}
 
 
-def _next_branch(domains: dict[_VersionKey, list[int]]) -> _VersionKey | None:
-    """The version to branch over next: fewest candidates, then by name; None
-    when every version is down to at most one."""
+def _next_branch(domains: dict[_VersionKey, list[int | None]]) -> _VersionKey | None:
+    """The version to branch over next: fewest options, then by name; None
+    when every version is down to one."""
     branching = [key for key, versions in domains.items() if len(versions) > 1]
     return min(branching, key=lambda key: (len(domains[key]), key), default=None)
 
 
-def _search(
-    domains: dict[_VersionKey, list[int]],
-    context: _AlignmentContext,
-    unplaceable: frozenset[_VersionKey],
-) -> dict[_VersionKey, int] | None:
-    """A target version for every version outside ``unplaceable`` (those had
-    no candidate to begin with), or None when the candidates admit none.
-    Versions with more than one candidate are branched over, preferred first,
-    with the rest narrowed to agree after each choice; a narrowing that
-    empties another version's domain backs the choice out. Every domain loses
-    a value or is settled at each level, so this ends."""
-    if _emptied(domains, unplaceable):
-        return None
-    key = _next_branch(domains)
-    if key is None:
-        return {k: versions[0] for k, versions in domains.items() if versions}
-    for value in domains[key]:
-        trial = {k: list(v) for k, v in domains.items()}
-        trial[key] = [value]
-        _narrow(trial, context)
-        found = _search(trial, context, unplaceable)
-        if found is not None:
-            return found
-    return None
+def _unplaced(domains: dict[_VersionKey, list[int | None]]) -> int:
+    """Versions with no option left but staying unplaced: a lower bound on
+    how many any assignment below this node leaves unplaced."""
+    return sum(1 for versions in domains.values() if versions == [None])
+
+
+class _Search:
+    """Branch and bound over the versions' options, keeping the assignment
+    that leaves the fewest versions unplaced."""
+
+    def __init__(self, context: _AlignmentContext) -> None:
+        self._context = context
+        self.best: dict[_VersionKey, int | None] | None = None
+        self._best_unplaced = 0
+        self._nodes = 0
+
+    def run(self, domains: dict[_VersionKey, list[int | None]]) -> None:
+        self._nodes += 1
+        # A version committed to a target version its references rule out
+        # has no option left, not even "unplaced": a dead branch.
+        if any(not versions for versions in domains.values()):
+            return
+        if self.best is not None and (
+            _unplaced(domains) >= self._best_unplaced or self._nodes > _SEARCH_NODE_LIMIT
+        ):
+            return
+        key = _next_branch(domains)
+        if key is None:
+            self.best = {k: versions[0] for k, versions in domains.items()}
+            self._best_unplaced = _unplaced(domains)
+            return
+        for value in domains[key]:
+            trial = {k: list(v) for k, v in domains.items()}
+            trial[key] = [value]
+            _narrow(trial, self._context)
+            self.run(trial)
 
 
 def _checked_alignment(
