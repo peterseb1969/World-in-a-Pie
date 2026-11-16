@@ -120,12 +120,11 @@ async def _template_in(template_id: str, namespace: str | None) -> str:
 
 
 async def _template_not_found(template_id: str, namespace: str | None) -> str:
-    """The 404 detail of a template this route cannot find: with
-    ``namespace``, the resolver's (the identifier is resolved there first),
-    else the route's own. A template in a namespace the caller cannot read
-    answers with it too, so the answer does not confirm the template exists —
-    and a caller whose key implies no single namespace gets the route's own
-    text, which is what an unknown id gets there as well."""
+    """The 404 detail of every template miss on these routes, an unknown id
+    and a template in a namespace the caller cannot read alike, so the answer
+    never confirms that a template exists. It is the resolver's text when the
+    request names a namespace or the caller's key implies one, else the
+    route's own."""
     return await miss_detail(
         template_id, "template", namespace, "Template not found", "template_id",
     )
@@ -419,7 +418,9 @@ async def get_table_view(
     )
 
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        # The same text a hidden template gets below: the answer never tells
+        # a template that exists elsewhere from one that does not exist.
+        raise HTTPException(status_code=404, detail=await _template_not_found(template_id, namespace))
 
     # Use canonical template_id from resolved template
     canonical_template_id = template.get("template_id", template_id)
@@ -569,7 +570,9 @@ async def export_table_csv(
     )
 
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        # The same text a hidden template gets below: the answer never tells
+        # a template that exists elsewhere from one that does not exist.
+        raise HTTPException(status_code=404, detail=await _template_not_found(template_id, namespace))
 
     canonical_template_id = template.get("template_id", template_id)
 

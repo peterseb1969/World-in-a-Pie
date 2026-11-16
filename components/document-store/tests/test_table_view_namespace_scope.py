@@ -160,3 +160,22 @@ async def test_a_canonical_template_id_crosses_namespaces(client, two_namespaces
                             params={"namespace": "xns-closed"})
     assert resp.status_code == 200, resp.text
     assert [r["_document_id"] for r in resp.json()["rows"]] == [two_namespaces["xns-closed"]]
+
+
+@pytest.mark.asyncio
+async def test_without_a_namespace_a_hidden_template_reads_as_an_unknown_one(client, two_namespaces):
+    """With no `namespace`, a key that reads only 'xns-closed' asked for wip's
+    PERSON by id got the resolver's text derived from its key, while an id
+    naming nothing got the route's literal "Template not found": the two
+    texts told a hidden template from a missing one. Both now read alike."""
+    from .conftest import SAMPLE_TEMPLATES
+
+    template_id = SAMPLE_TEMPLATES["PERSON"]["template_id"]
+    absent = "0190ffff-0000-7000-8000-000000001275"
+    for path in (f"table/{template_id}", f"table/{template_id}/csv"):
+        hidden = await client.get(f"{API}/{path}", headers=DOCS_ONLY_READER)
+        missing = await client.get(f"{API}/{path.replace(template_id, absent)}", headers=DOCS_ONLY_READER)
+        assert (hidden.status_code, missing.status_code) == (404, 404), (hidden.text, missing.text)
+        assert hidden.json()["detail"].replace(template_id, absent) == missing.json()["detail"], (
+            hidden.text, missing.text,
+        )
