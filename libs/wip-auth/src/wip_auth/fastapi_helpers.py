@@ -239,6 +239,23 @@ async def resolve_or_404(
         ) from None
 
 
+async def _resolution_namespace(
+    raw_id: str, namespace: str | None, strict: bool = False,
+) -> str | None:
+    """The namespace whose 404 resolve_or_404 raises for ``raw_id``: the one
+    passed, else the caller key's, else, when ``strict``, the one a qualified
+    identifier (``ns:VALUE``, ``ns:terminology:value``) names. Without
+    ``strict`` a qualified miss passes through unresolved, and the door's own
+    miss answers it. Else None."""
+    if namespace is None:
+        namespace = await _derive_namespace_from_identity()
+    if namespace is None and strict and ":" in raw_id and not _looks_like_uuid(raw_id):
+        from .resolve import split_qualified_value
+
+        namespace, _ = split_qualified_value(raw_id)
+    return namespace
+
+
 async def unresolved_detail(
     raw_id: str,
     entity_type: str,
@@ -250,12 +267,11 @@ async def unresolved_detail(
     A read that resolves an id and then finds the entity in a namespace the
     caller cannot read answers with this same text, so the answer cannot tell
     "exists, hidden" from "does not exist". ``namespace`` is the one the
-    caller passed (None derives it as resolve_or_404 does). With neither, the
+    caller passed (None derives it as resolve_or_404 does). With none, the
     text names no namespace: "namespace 'None'" would name one that does not
     exist.
     """
-    if namespace is None:
-        namespace = await _derive_namespace_from_identity()
+    namespace = await _resolution_namespace(raw_id, namespace)
     label = param_name or entity_type
     where = f" in namespace '{namespace}'" if namespace is not None else ""
     return f"Could not resolve {label} '{raw_id}'{where}"
@@ -323,6 +339,8 @@ async def resolution_miss(
     entity_type: str,
     namespace: str | None,
     param_name: str | None = None,
+    *,
+    strict: bool = False,
 ) -> HTTPException | None:
     """The 404 resolve_or_404 raises, in this request, for an id that names
     nothing — or None when it would pass such an id through unresolved (no
@@ -332,10 +350,11 @@ async def resolution_miss(
     A door that resolved an id and found the entity in a namespace the
     caller cannot read answers exactly what an unknown id gets: this 404
     when there is one, its own miss otherwise. ``namespace`` is what the
-    door passed to resolve_or_404.
+    door passed to resolve_or_404, and ``strict`` what it passed there: a
+    strict door raises a qualified identifier's miss in the namespace the
+    identifier names, so a hidden one gets that same 404.
     """
-    if namespace is None:
-        namespace = await _derive_namespace_from_identity()
+    namespace = await _resolution_namespace(raw_id, namespace, strict)
     if namespace is None:
         return None
     return HTTPException(

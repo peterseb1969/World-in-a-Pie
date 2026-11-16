@@ -90,3 +90,100 @@ async def test_an_unknown_identifier_is_not_found_in_the_response_shape(
                               json={"terminology_id": ident, "value": "x"})
         assert r.status_code == 200, r.text
         assert r.json()["valid"] is False and r.json()["error_code"] == "not_found", r.json()
+
+
+# A canonical id needs no namespace, whatever its shape. A prefixed or nanoid
+# id_config mints ids that are not UUID-shaped; document-store validates term
+# fields by canonical id with the platform key, which implies no namespace,
+# so refusing such an id for lack of one failed every term field on it.
+
+PREFIXED_NS = "pfx-1234"
+
+
+async def _prefixed_terminology(client, headers, value: str, *terms: str) -> str:
+    from registry.models.namespace import Namespace
+
+    if await Namespace.find_one({"prefix": PREFIXED_NS}) is None:
+        await Namespace(
+            prefix=PREFIXED_NS, description="prefixed ids",
+            id_config={"terminologies": {"algorithm": "prefixed", "prefix": "T1234-"}},
+        ).insert()
+    r = await client.post(f"{API}/terminologies", headers=headers, json=[{
+        "value": value, "label": value, "namespace": PREFIXED_NS,
+    }])
+    tid = r.json()["results"][0]["id"]
+    assert tid.startswith("T1234-"), r.text
+    if terms:
+        r = await client.post(f"{API}/terminologies/{tid}/terms", headers=headers,
+                              json=[{"value": t} for t in terms])
+        assert r.json()["failed"] == 0, r.text
+    return tid
+
+
+@pytest.mark.asyncio
+async def test_a_prefixed_canonical_id_validates_without_a_namespace(client: AsyncClient, auth_headers: dict):
+    tid = await _prefixed_terminology(client, auth_headers, "PFX_1234", "alpha")
+
+    single = await client.post(f"{API}/validate", headers=auth_headers,
+                               json={"terminology_id": tid, "value": "alpha"})
+    bulk = await client.post(f"{API}/validate/bulk", headers=auth_headers,
+                             json={"items": [{"terminology_id": tid, "value": "alpha"}]})
+
+    assert single.status_code == 200, single.text
+    assert single.json()["valid"] is True and single.json()["terminology_id"] == tid, single.json()
+    (item,) = bulk.json()["results"]
+    assert item["valid"] is True and item["terminology_id"] == tid, item
+
+
+@pytest.mark.asyncio
+async def test_a_value_without_a_namespace_is_still_refused(client: AsyncClient, auth_headers: dict):
+    await _prefixed_terminology(client, auth_headers, "PFX_1234_VALUE", "alpha")
+    r = await client.post(f"{API}/validate", headers=auth_headers,
+                          json={"terminology_id": "PFX_1234_VALUE", "value": "alpha"})
+    assert r.json()["error_code"] == "invalid_request", r.json()
+
+
+def _unreadable(namespace):
+    from unittest.mock import patch
+
+    async def can_read(_identity, ns):
+        return ns != namespace
+    return patch("def_store.api.terms.can_read", side_effect=can_read)
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_prefixed_id_answers_as_an_unknown_one(client: AsyncClient, auth_headers: dict):
+    tid = await _prefixed_terminology(client, auth_headers, "PFX_1234_HIDDEN")
+    with _unreadable(PREFIXED_NS):
+        hidden = await client.post(f"{API}/validate", headers=auth_headers,
+                                   json={"terminology_id": tid, "value": "x"})
+        unknown = await client.post(f"{API}/validate", headers=auth_headers,
+                                    json={"terminology_id": "T1234-999999", "value": "x"})
+    h, u = hidden.json(), unknown.json()
+    assert h["valid"] is False and h["error_code"] == u["error_code"], (h, u)
+    assert h["error"].replace(tid, "<id>") == u["error"].replace("T1234-999999", "<id>"), (h, u)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["/validate", "/validate/bulk"])
+async def test_a_hidden_qualified_value_answers_as_a_missing_one(
+    client: AsyncClient, auth_headers: dict, route: str,
+):
+    """ns:VALUE with no namespace resolves in the namespace it names. One the
+    caller cannot read answers with the same text as one that names nothing
+    there, so the answer does not say which values exist in it."""
+    await _terminology(client, auth_headers, "SECRET_1234")
+
+    def body(ident):
+        item = {"terminology_id": ident, "value": "x"}
+        return item if route == "/validate" else {"items": [item]}
+
+    def answer(r):
+        j = r.json()
+        return j if route == "/validate" else j["results"][0]
+
+    with _unreadable("wip"):
+        hidden = answer(await client.post(f"{API}{route}", headers=auth_headers, json=body("wip:SECRET_1234")))
+        missing = answer(await client.post(f"{API}{route}", headers=auth_headers, json=body("wip:NOPE_1234")))
+    assert hidden["error_code"] == missing["error_code"] == "not_found", (hidden, missing)
+    assert hidden["error"].replace("SECRET_1234", "<v>") == missing["error"].replace("NOPE_1234", "<v>")

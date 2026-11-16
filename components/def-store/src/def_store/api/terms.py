@@ -924,7 +924,14 @@ async def _bulk_item_terminology(
     terminologies, one with no namespace to resolve in, and a terminology
     the caller cannot read (answered as one that names nothing).
     ``terminologies`` caches lookups by canonical id.
+
+    A canonical id needs no namespace, whatever its shape: an id minted by a
+    prefixed or nanoid id_config is not UUID-shaped, and resolve_or_404
+    refuses any such identifier for lack of a namespace. That refusal is
+    taken only once the Registry has answered that the identifier is no
+    terminology's canonical id (an exact entry_id match; no value search).
     """
+    no_namespace: HTTPException | None = None
     try:
         terminology_id = await resolve_or_404(
             raw_id, "terminology", namespace, param_name="terminology_id", strict=True,
@@ -932,13 +939,19 @@ async def _bulk_item_terminology(
     except HTTPException as e:
         if e.status_code not in (404, 409, 422):
             raise
-        return None, _resolution_refusal(e)
+        if e.status_code != 422 or await terminology_coordinates_by_id(raw_id) is None:
+            return None, _resolution_refusal(e)
+        terminology_id, no_namespace = raw_id, e
     if terminology_id not in terminologies:
         terminologies[terminology_id] = await Terminology.find_one({"terminology_id": terminology_id})
     terminology = terminologies[terminology_id]
     if terminology is not None and await can_read(identity, terminology.namespace):
         return terminology, None
-    miss = await resolution_miss(raw_id, "terminology", namespace, "terminology_id")
+    if no_namespace is not None:
+        # Answered exactly as an id that is no terminology's: the canonical
+        # id of one the caller cannot read is not confirmed.
+        return None, _resolution_refusal(no_namespace)
+    miss = await resolution_miss(raw_id, "terminology", namespace, "terminology_id", strict=True)
     return None, (str(miss.detail) if miss is not None else "Terminology not found", "not_found")
 
 
