@@ -1603,7 +1603,11 @@ def system_restore_cmd(
     written orphaned: it counts as no grant until a namespace with that id is
     created (restoring the namespace backup does), a namespace admin
     activates it, or it is granted again, so this and the namespace restores
-    work in either order. An archive made under another API key hash salt is
+    work in either order. A grant archived with no namespace id, given while
+    no namespace of its name existed on the source, is written effective for
+    the namespace that takes the name later, and skipped where a namespace of
+    the name is here already (unrelated_namespace_here). An archive made under
+    another API key hash salt is
     adopted by a stack that holds no keys of its own (each key its key file
     manages given there by its plaintext), and refused by one that does; an
     archive carrying only the salt's fingerprint is adopted only when it is

@@ -816,8 +816,8 @@ export type SystemRestoreSkipReason =
   | 'scope_key_not_restored'
   /**
    * A grant archived with no namespace id (no namespace of its name existed
-   * on the source), where a namespace of the name exists here: not the one
-   * it was given for.
+   * on the source), where a namespace of the name exists here: the archive
+   * names no namespace for it, so it is not placed on this install's.
    */
   | 'unrelated_namespace_here'
   /**
