@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("yaml")  # the generator's own dependency (the `generate` extra)
+# The generator's own dependency (the `generate` extra). Imported, not
+# skipped on: without it this module, and with it the check that the
+# committed schema module is current, would pass silently.
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -14,8 +17,6 @@ from scripts import generate_schemas as gen  # noqa: E402
 
 
 def _committed_output() -> str:
-    import yaml
-
     specs, provenance = gen.load_specs()
     tools = yaml.safe_load(gen.TOOLS_YAML.read_text())["tools"]
     resolved = gen.resolve_tool_schemas(tools, specs)

@@ -317,7 +317,8 @@ jobs:
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+          # pyyaml: the generator dependency the schema-currency test imports.
+          pip install pytest pytest-asyncio "pyyaml>=6.0"
 
       - name: Run tests
         working-directory: components/mcp-server
