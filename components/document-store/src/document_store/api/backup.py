@@ -671,7 +671,9 @@ async def start_restore(
 
     options = {
         "mode": mode,
-        "target_namespace": effective_target,
+        "target_namespace": _engine_target_namespace(
+            mode, effective_target, parsed_namespace_map
+        ),
         "namespace_map": parsed_namespace_map,
         "on_clash": on_clash,
         "older_versions": older_versions,
@@ -913,7 +915,9 @@ async def _authorize_merge_targets(
     The returned name is the destination when there is exactly one (a
     single-namespace archive); '' when the archive's pairs each go to their own
     target, where no single namespace is the destination. Unredirected, that is
-    the archive's own naming, which is what it returns then.
+    the archive's own naming, which is what it returns then. Either way it is
+    the JOB's destination: a merge given a map tells the engine where it writes
+    through the map alone (``_engine_target_namespace``).
     """
     if target_namespace:
         await check_namespace_permission(identity, target_namespace, "admin")
@@ -991,6 +995,24 @@ def _check_restore_redirect(
                 "(mode=fresh)."
             ),
         )
+
+
+def _engine_target_namespace(
+    mode: str, effective_target: str, namespace_map: dict[str, str] | None
+) -> str:
+    """Where the ENGINE is told to write, as distinct from what the job records.
+
+    A merge given a ``namespace_map`` carries its destinations in the map, and
+    the engine reads the map as that mode's whole answer: forwarding the one
+    destination the door derived from it (a single-namespace archive's) as
+    ``target_namespace`` beside the map would reach the engine as the competing
+    pair of parameters it refuses, so a request that names every pair fails
+    with a message about a parameter its caller never sent. The destination
+    still belongs on the job record — that is what sync and validation read.
+    """
+    if mode == "merge" and namespace_map:
+        return ""
+    return effective_target
 
 
 def _restore_write_targets(
@@ -1517,7 +1539,9 @@ async def _insert_restore_from_job(
         )
         options = {
             "mode": request.mode,
-            "target_namespace": effective_target,
+            "target_namespace": _engine_target_namespace(
+                request.mode, effective_target, request.namespace_map
+            ),
             "namespace_map": request.namespace_map,
             "on_clash": request.on_clash,
             "older_versions": request.older_versions,

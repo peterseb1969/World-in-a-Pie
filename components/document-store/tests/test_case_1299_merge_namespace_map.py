@@ -36,7 +36,7 @@ from document_store.services.backup_engine import (
     DirectRestoreEngine,
     RestoreEngineError,
 )
-from tests.test_case_748 import _make_v3_archive, _post_merge
+from tests.test_case_748 import RESTORE_URL, _make_v3_archive, _post_merge
 
 SRC_A, SRC_B = "c1299-kb", "c1299-library"
 TGT_A, TGT_B = "c1299-kb2", "c1299-library2"
@@ -401,6 +401,8 @@ async def test_a_map_on_a_single_namespace_archive_redirects_like_a_target(
     assert body["namespaces"] == [TGT_A]
     assert body["namespace"] == TGT_A
     assert body["source_namespaces"] == [SRC_A]
+    # The destination is the job's; the map is the engine's.
+    assert body["options"]["target_namespace"] == ""
 
 
 @pytest.mark.asyncio
@@ -414,6 +416,100 @@ async def test_an_unmapped_merge_still_writes_the_archives_own_namespaces(
     assert resp.status_code == 202, resp.text
     assert resp.json()["namespaces"] == [SRC_A, SRC_B]
     assert resp.json()["source_namespaces"] == [SRC_A, SRC_B]
+
+
+# --- the seam: the options the door stores are what the engine is asked -----
+
+
+async def _queued_runner(client, auth_headers: dict, archive, data: dict):
+    """The runner the upload route handed the queue, with its response body.
+
+    The other route tests replace the runner factory, which stops the check at
+    the job record. Keeping the real one is what crosses the seam: the door
+    stores options, the dispatch turns them into the engine's arguments, and a
+    destination the door invents can arrive as a contradiction the engine reads
+    as two parameters both claiming to say where the archive goes.
+    """
+    captured: dict[str, Any] = {}
+    finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    finished.set_result(None)
+
+    async def queue(job_id: str, runner, *, on_event=None):
+        captured["runner"] = runner
+        return finished
+
+    with patch("document_store.api.backup.backup_service.start_async_job", new=queue):
+        resp = await client.post(
+            RESTORE_URL,
+            headers=auth_headers,
+            files={"archive": ("backup.zip", archive.read_bytes(), "application/zip")},
+            data={"mode": "merge", **data},
+        )
+    assert resp.status_code == 202, resp.text
+    return resp.json(), captured["runner"]
+
+
+async def _run_merge_kwargs(runner) -> dict[str, Any]:
+    """The arguments the queued runner hands the engine's merge entry point."""
+    engine = MagicMock()
+    engine.run_merge = AsyncMock()
+    with patch(
+        "document_store.services.backup_engine.DirectRestoreEngine", return_value=engine
+    ), patch(
+        "document_store.services.file_storage_client.is_file_storage_enabled",
+        return_value=False,
+    ):
+        await runner(lambda _event: None)
+    return engine.run_merge.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_one_pair_map_reaches_the_engine_as_a_map_and_nothing_else(
+    client, auth_headers: dict, tmp_path,
+):
+    """The door derives the one destination of a one-pair map, and the job
+    record names it. The engine must not be handed it as well: a
+    ``target_namespace`` beside a map is the pair the engine refuses as
+    competing answers (test_a_map_and_a_target_namespace_compete), so a request
+    that maps every archived namespace would fail after its 202, over a
+    parameter its caller never sent."""
+    archive = _make_v3_archive(tmp_path, [SRC_A])
+
+    body, runner = await _queued_runner(
+        client, auth_headers, archive, {"namespace_map": json.dumps({SRC_A: TGT_A})}
+    )
+
+    kwargs = await _run_merge_kwargs(runner)
+    assert kwargs["namespace_map"] == {SRC_A: TGT_A}
+    assert kwargs["target_namespace"] == ""
+
+    # And the job record keeps the destination the engine was not told.
+    assert body["options"]["target_namespace"] == ""
+    assert body["namespace"] == TGT_A and body["namespaces"] == [TGT_A]
+
+
+@pytest.mark.parametrize(
+    ("prefixes", "data", "want_target", "want_map"),
+    [
+        ([SRC_A, SRC_B], {"namespace_map": json.dumps(MAP)}, "", MAP),
+        ([SRC_A], {"target_namespace": TGT_A}, TGT_A, None),
+    ],
+    ids=["a_map_over_two_namespaces", "target_namespace_alone"],
+)
+@pytest.mark.asyncio
+async def test_a_redirect_reaches_the_engine_exactly_as_it_was_sent(
+    client, auth_headers: dict, tmp_path, prefixes, data, want_target, want_map,
+):
+    """The map's own destinations, and the single target a caller names:
+    neither loses anything on the way down, and only the second one arrives as
+    target_namespace."""
+    archive = _make_v3_archive(tmp_path, prefixes)
+
+    _, runner = await _queued_runner(client, auth_headers, archive, data)
+
+    kwargs = await _run_merge_kwargs(runner)
+    assert kwargs["target_namespace"] == want_target
+    assert kwargs["namespace_map"] == want_map
 
 
 # --- restore-from-job: the same redirect, without re-uploading ---------------
@@ -468,6 +564,7 @@ async def test_a_mapped_merge_from_a_retained_archive_records_its_targets(
     assert body["namespaces"] == [TGT_A, TGT_B]
     assert body["source_namespaces"] == [SRC_A, SRC_B]
     assert body["options"]["namespace_map"] == MAP
+    assert body["options"]["target_namespace"] == ""
     assert body["options"]["restored_from_job"] == src_job_id
 
 
