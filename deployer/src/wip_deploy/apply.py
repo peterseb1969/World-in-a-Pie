@@ -251,11 +251,13 @@ def apply_compose(
         # with no container touched, and post-install hooks and garage
         # provisioning write state. Only a failure raised *by* the up is
         # something the snapshot can speak to; everything past it keeps the
-        # blanket stamp.
-        up_step_done = True
+        # blanket stamp. A service the up left without a container is the
+        # up's own failure (podman-compose can exit 0 over a refused create),
+        # so that check runs before the step counts as done.
         _check_containers_created(
             deployment.metadata.name, compose_file, services=services_scope
         )
+        up_step_done = True
 
         # The up never recreates a proxy for a routing change (its service
         # definition is unchanged — only the mounted file moved), so reload
