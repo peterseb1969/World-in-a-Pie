@@ -16,7 +16,10 @@ happens: afterwards, on demand, over a whole namespace.
 Checks, by what owns the data:
 
 - **template and term references** go through the service clients, cached per
-  ID — they belong to template-store and def-store.
+  ID — they belong to template-store and def-store. A store that fails to
+  answer is not asked again in the same run: its remaining references are
+  recorded as not run, so an outage costs one timeout and not one per
+  reference.
 - **document and file references** are read directly, batched: those are
   document-store's own collections, so there is no service boundary to cross
   and a per-reference HTTP call would be pure overhead.
@@ -233,6 +236,19 @@ _checks_not_run: ContextVar[dict[str, int] | None] = ContextVar(
     "integrity_checks_not_run", default=None,
 )
 
+# Services the current run stopped asking, because one of their calls failed to
+# answer. A scan asks def-store per term reference and the template store per
+# pinned version, so without this a dependency outage is paid once per
+# reference: every remaining call waits out its own timeout, and a health
+# check turns into minutes of dead waiting. One failure is enough to know the
+# service cannot answer this scan — the references after it are recorded as
+# not run, exactly as the failing one was, so the counts and the incomplete
+# verdict are unchanged. Per run, like the record above: a run that reaches
+# its own dependencies keeps checking.
+_unanswered_services: ContextVar[set[str] | None] = ContextVar(
+    "integrity_unanswered_services", default=None,
+)
+
 
 def _not_run(check: str, service: str) -> None:
     record = _checks_not_run.get()
@@ -240,6 +256,19 @@ def _not_run(check: str, service: str) -> None:
         return
     key = f"{check}:{service}"
     record[key] = record.get(key, 0) + 1
+
+
+def _stopped_asking(service: str) -> bool:
+    """Whether `service` already failed to answer during the current run."""
+    unanswered = _unanswered_services.get()
+    return unanswered is not None and service in unanswered
+
+
+def _stop_asking(service: str) -> None:
+    """Remember that `service` could not answer, for the rest of the run."""
+    unanswered = _unanswered_services.get()
+    if unanswered is not None:  # outside a run nothing is remembered
+        unanswered.add(service)
 
 
 def clear_integrity_cache():
@@ -276,6 +305,9 @@ async def check_template_reference(
     key = (template_id, document.template_version)
     if key in _template_check_cache:
         exists, status = _template_check_cache[key]
+    elif _stopped_asking("template-store"):
+        _not_run("template_reference", "template-store")
+        return
     else:
         template_store = get_template_store_client()
         try:
@@ -289,10 +321,12 @@ async def check_template_reference(
             else:
                 exists, status = True, "version_missing"
             _template_check_cache[key] = (exists, status)
-        except TemplateStoreError:
+        except TemplateStoreError as e:
             # The template store could not answer: the check did not run,
             # which makes the result incomplete — never healthy.
             _not_run("template_reference", "template-store")
+            if e.unavailable:
+                _stop_asking("template-store")
             return
 
     if not exists:
@@ -343,6 +377,9 @@ async def check_term_reference(
     # Check cache first
     if term_id in _term_check_cache:
         exists = _term_check_cache[term_id]
+    elif _stopped_asking("def-store"):
+        _not_run("term_reference", "def-store")
+        return
     else:
         # Fetch from Def-Store
         def_store = get_def_store_client()
@@ -350,10 +387,12 @@ async def check_term_reference(
             term = await def_store.get_term(term_id)
             exists = term is not None
             _term_check_cache[term_id] = exists
-        except DefStoreError:
+        except DefStoreError as e:
             # def-store could not answer: the check did not run, which makes
             # the result incomplete — never healthy.
             _not_run("term_reference", "def-store")
+            if e.unavailable:
+                _stop_asking("def-store")
             return
 
     if not exists:
@@ -562,13 +601,17 @@ async def _identity_shape_for(
     key = (template_id, version)
     if key in _identity_fields_cache:
         return _identity_fields_cache[key]
+    if _stopped_asking("template-store"):
+        return None
 
     template_store = get_template_store_client()
     try:
         template = await template_store.get_template(
             template_id=template_id, version=version
         )
-    except TemplateStoreError:
+    except TemplateStoreError as e:
+        if e.unavailable:
+            _stop_asking("template-store")
         return None  # not cached: a transient failure should not stick
     shape: Any = (
         _MISSING
@@ -866,7 +909,8 @@ async def check_all_documents(
         template_id_filter: Only documents of this template.
         limit: Stop after this many documents (0 = all).
         check_term_refs: Check term references (one cached service call per
-            distinct term).
+            distinct term, and none once def-store has failed to answer — the
+            rest are counted in checks_not_run).
         recent_first: Check the most recently created documents first.
         namespace: Restrict to one namespace — the usual way to run this, and
             what makes it a post-restore verification rather than a
@@ -883,6 +927,7 @@ async def check_all_documents(
     clear_integrity_cache()
     not_run: dict[str, int] = {}
     _checks_not_run.set(not_run)
+    _unanswered_services.set(set())
 
     query = _document_query(namespace, status_filter, template_id_filter)
     total_count = await Document.find(query).count()

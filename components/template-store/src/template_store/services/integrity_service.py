@@ -6,6 +6,11 @@ Checks for orphaned references:
   a reference field's target_terminologies)
 - Template references (extends, template_ref, array_template_ref, a
   reference field's target_templates), with pinned versions
+
+Terminology references are asked of Def-Store, one call per reference. Once
+Def-Store fails to answer, the scan stops asking it: the remaining references
+are recorded as skipped, so an outage costs one timeout instead of one per
+reference, and the verdict says what went unchecked.
 """
 
 from datetime import UTC, datetime
@@ -96,6 +101,26 @@ class _Scan:
     def __init__(self) -> None:
         self.issues: list[IntegrityIssue] = []
         self.skipped: list[SkippedCheck] = []
+        # Services that failed to answer this scan. The scan asks Def-Store per
+        # terminology reference, so without this an outage is paid once per
+        # reference — every ask waiting out its own timeout, turning a health
+        # check into minutes of dead waiting. One failure says the service
+        # cannot answer this scan; the references after it are recorded as
+        # skipped exactly as the failing one was.
+        self.unanswered: set[str] = set()
+
+    def stopped_asking(self, service: str) -> bool:
+        return service in self.unanswered
+
+    def stop_asking(self, service: str) -> None:
+        self.unanswered.add(service)
+
+    def skip(self, template: Template, field_path: str | None, ref: str,
+             reason: str) -> None:
+        self.skipped.append(SkippedCheck(
+            template_id=template.template_id, template_version=template.version,
+            field_path=field_path, reference=ref, reason=reason,
+        ))
 
     def issue(self, template: Template, kind: str, severity: str,
               field_path: str | None, ref: str, message: str) -> None:
@@ -111,6 +136,9 @@ async def check_terminology_reference(
 ) -> None:
     """Check a terminology reference (an id or a value). A Def-Store that
     cannot answer is a skipped check, never a pass."""
+    if scan.stopped_asking("def-store"):
+        scan.skip(template, field_path, ref, "Def-Store did not answer earlier in this scan")
+        return
     def_store = get_def_store_client()
     try:
         terminology = await def_store.get_terminology(terminology_id=ref)
@@ -119,16 +147,11 @@ async def check_terminology_reference(
     except DefStoreAmbiguousError as e:
         # Def-Store answered: the reference names several terminologies, so
         # which one it means cannot be checked. Not an outage.
-        scan.skipped.append(SkippedCheck(
-            template_id=template.template_id, template_version=template.version,
-            field_path=field_path, reference=ref, reason=f"Ambiguous reference: {e}",
-        ))
+        scan.skip(template, field_path, ref, f"Ambiguous reference: {e}")
         return
     except DefStoreError as e:
-        scan.skipped.append(SkippedCheck(
-            template_id=template.template_id, template_version=template.version,
-            field_path=field_path, reference=ref, reason=f"Def-Store did not answer: {e}",
-        ))
+        scan.stop_asking("def-store")
+        scan.skip(template, field_path, ref, f"Def-Store did not answer: {e}")
         return
     if terminology is None:
         scan.issue(template, "orphaned_terminology_ref", "error", field_path, ref,

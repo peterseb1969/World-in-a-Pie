@@ -15,7 +15,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 import asyncpg
@@ -1820,6 +1820,101 @@ class AggregatedIntegrityResult(BaseModel):
 # (document-store: incomplete; template-store: unknown).
 _UPSTREAM_INCOMPLETE = ("incomplete", "unknown")
 
+# Budget for template-store's scan. Document-store's scales with its limit:
+# ~2min for 10k, ~10min for 50k, 30min for "all" (0).
+_TEMPLATE_STORE_TIMEOUT = 30.0
+
+
+def _document_store_timeout(document_limit: int) -> float:
+    return 1800.0 if document_limit == 0 else max(120.0, document_limit * 0.012)
+
+
+async def _ask_store_integrity(
+    name: str, base_url: str, params: dict[str, Any], timeout: float
+) -> dict[str, Any] | None:
+    """One store's integrity body, or None when it gave no verdict.
+
+    Unreachable, or any status but 200: the store could not check, so the
+    aggregator names it as unavailable. It never raises — one dead store does
+    not cost the other store's verdict.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                f"{base_url}/health/integrity",
+                params=params,
+                headers={"X-API-Key": settings.api_key},
+            )
+    except Exception as e:
+        logger.error(f"Failed to reach {name} for integrity check: {e}")
+        return None
+    if response.status_code != 200:
+        logger.warning(f"{name} integrity check failed: {response.status_code}")
+        return None
+    return cast(dict[str, Any], response.json())
+
+
+def _fold_template_store(
+    body: dict[str, Any], summary: IntegritySummary
+) -> tuple[bool, bool, list[IntegrityIssue]]:
+    """Fold template-store's answer into the shared summary.
+
+    Returns (incomplete, truncated, issues): whether its scan could not run
+    every check, or was cut at its limit.
+    """
+    ts_summary = body.get("summary", {})
+    summary.total_templates = ts_summary.get("total_templates", 0)
+    summary.templates_with_issues = ts_summary.get("templates_with_issues", 0)
+    summary.orphaned_terminology_refs = ts_summary.get("orphaned_terminology_refs", 0)
+    summary.inactive_refs += ts_summary.get("inactive_terminology_refs", 0)
+    summary.inactive_refs += ts_summary.get("inactive_template_refs", 0)
+    incomplete = body.get("status") in _UPSTREAM_INCOMPLETE
+    truncated = not incomplete and bool(ts_summary.get("truncated"))
+    issues = [
+        IntegrityIssue(
+            type=issue.get("type"),
+            severity=issue.get("severity", "warning"),
+            source="template-store",
+            entity_id=issue.get("template_id"),
+            entity_value=issue.get("template_value"),
+            field_path=issue.get("field_path"),
+            reference=issue.get("reference"),
+            message=issue.get("message"),
+        )
+        for issue in body.get("issues", [])
+    ]
+    return incomplete, truncated, issues
+
+
+def _fold_document_store(
+    body: dict[str, Any], summary: IntegritySummary
+) -> tuple[bool, bool, list[IntegrityIssue]]:
+    """Fold document-store's answer into the shared summary; see
+    :func:`_fold_template_store` for the two flags."""
+    ds_summary = body.get("summary", {})
+    summary.total_documents = ds_summary.get("total_documents", 0)
+    summary.documents_checked = ds_summary.get("documents_checked", 0)
+    summary.documents_with_issues = ds_summary.get("documents_with_issues", 0)
+    summary.orphaned_template_refs = ds_summary.get("orphaned_template_refs", 0)
+    summary.orphaned_term_refs = ds_summary.get("orphaned_term_refs", 0)
+    summary.inactive_refs += ds_summary.get("inactive_template_refs", 0)
+    incomplete = body.get("status") in _UPSTREAM_INCOMPLETE
+    truncated = not incomplete and summary.documents_checked < summary.total_documents
+    issues = [
+        IntegrityIssue(
+            type=issue.get("type"),
+            severity=issue.get("severity", "warning"),
+            source="document-store",
+            entity_id=issue.get("document_id"),
+            entity_value=None,
+            field_path=issue.get("field_path"),
+            reference=issue.get("reference"),
+            message=issue.get("message"),
+        )
+        for issue in body.get("issues", [])
+    ]
+    return incomplete, truncated, issues
+
 
 @router.get("/health/integrity", dependencies=[_PRIVILEGED], response_model=AggregatedIntegrityResult)
 async def aggregated_integrity_check(
@@ -1833,7 +1928,8 @@ async def aggregated_integrity_check(
     """
     Aggregated referential integrity check across all services.
 
-    Calls Template Store and Document Store integrity endpoints and combines results.
+    Calls Template Store and Document Store integrity endpoints at once and
+    combines results.
 
     This endpoint provides a unified view of data quality issues:
     - Orphaned terminology references (templates referencing missing terminologies)
@@ -1852,113 +1948,52 @@ async def aggregated_integrity_check(
     Returns:
         Aggregated integrity check results from all services
     """
-    services_checked = []
-    services_unavailable = []
+    doc_params: dict[str, Any] = {
+        "limit": document_limit,
+        "check_term_refs": check_term_refs,
+        "recent_first": recent_first,
+    }
+    if document_status:
+        doc_params["status"] = document_status
+    tpl_params: dict[str, Any] = {"limit": template_limit}
+    if template_status:
+        tpl_params["status"] = template_status
+
+    # Both stores are asked at once: one after the other makes the worst case
+    # the sum of their budgets instead of the larger of the two.
+    template_body, document_body = await asyncio.gather(
+        _ask_store_integrity(
+            "template-store", settings.template_store_url, tpl_params, _TEMPLATE_STORE_TIMEOUT,
+        ),
+        _ask_store_integrity(
+            "document-store", settings.document_store_url, doc_params,
+            _document_store_timeout(document_limit),
+        ),
+    )
+
+    services_checked: list[str] = []
+    services_unavailable: list[str] = []
     services_incomplete: list[str] = []
     services_truncated: list[str] = []
     all_issues: list[IntegrityIssue] = []
     summary = IntegritySummary()
 
-    # Check Template Store
-    template_store_url = settings.template_store_url
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            params: dict[str, Any] = {"limit": template_limit}
-            if template_status:
-                params["status"] = template_status
-
-            response = await client.get(
-                f"{template_store_url}/health/integrity",
-                params=params,
-                headers={"X-API-Key": settings.api_key},
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                services_checked.append("template-store")
-
-                # Extract summary
-                ts_summary = data.get("summary", {})
-                if data.get("status") in _UPSTREAM_INCOMPLETE:
-                    services_incomplete.append("template-store")
-                elif ts_summary.get("truncated"):
-                    services_truncated.append("template-store")
-                summary.total_templates = ts_summary.get("total_templates", 0)
-                summary.templates_with_issues = ts_summary.get("templates_with_issues", 0)
-                summary.orphaned_terminology_refs = ts_summary.get("orphaned_terminology_refs", 0)
-                summary.inactive_refs += ts_summary.get("inactive_terminology_refs", 0)
-                summary.inactive_refs += ts_summary.get("inactive_template_refs", 0)
-
-                # Convert issues
-                for issue in data.get("issues", []):
-                    all_issues.append(IntegrityIssue(
-                        type=issue.get("type"),
-                        severity=issue.get("severity", "warning"),
-                        source="template-store",
-                        entity_id=issue.get("template_id"),
-                        entity_value=issue.get("template_value"),
-                        field_path=issue.get("field_path"),
-                        reference=issue.get("reference"),
-                        message=issue.get("message"),
-                    ))
-            else:
-                logger.warning(f"Template Store integrity check failed: {response.status_code}")
-                services_unavailable.append("template-store")
-    except Exception as e:
-        logger.error(f"Failed to reach Template Store for integrity check: {e}")
-        services_unavailable.append("template-store")
-
-    # Check Document Store
-    # Timeout scales with limit: ~2min for 10k, ~10min for 50k, 30min for "all" (0)
-    doc_timeout = 1800.0 if document_limit == 0 else max(120.0, document_limit * 0.012)
-    document_store_url = settings.document_store_url
-    try:
-        async with httpx.AsyncClient(timeout=doc_timeout) as client:
-            params = {"limit": document_limit, "check_term_refs": check_term_refs, "recent_first": recent_first}
-            if document_status:
-                params["status"] = document_status
-
-            response = await client.get(
-                f"{document_store_url}/health/integrity",
-                params=params,
-                headers={"X-API-Key": settings.api_key},
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                services_checked.append("document-store")
-
-                # Extract summary
-                ds_summary = data.get("summary", {})
-                summary.total_documents = ds_summary.get("total_documents", 0)
-                summary.documents_checked = ds_summary.get("documents_checked", 0)
-                if data.get("status") in _UPSTREAM_INCOMPLETE:
-                    services_incomplete.append("document-store")
-                elif summary.documents_checked < summary.total_documents:
-                    services_truncated.append("document-store")
-                summary.documents_with_issues = ds_summary.get("documents_with_issues", 0)
-                summary.orphaned_template_refs = ds_summary.get("orphaned_template_refs", 0)
-                summary.orphaned_term_refs = ds_summary.get("orphaned_term_refs", 0)
-                summary.inactive_refs += ds_summary.get("inactive_template_refs", 0)
-
-                # Convert issues
-                for issue in data.get("issues", []):
-                    all_issues.append(IntegrityIssue(
-                        type=issue.get("type"),
-                        severity=issue.get("severity", "warning"),
-                        source="document-store",
-                        entity_id=issue.get("document_id"),
-                        entity_value=None,
-                        field_path=issue.get("field_path"),
-                        reference=issue.get("reference"),
-                        message=issue.get("message"),
-                    ))
-            else:
-                logger.warning(f"Document Store integrity check failed: {response.status_code}")
-                services_unavailable.append("document-store")
-    except Exception as e:
-        logger.error(f"Failed to reach Document Store for integrity check: {e}")
-        services_unavailable.append("document-store")
+    # Folded in a fixed order (not completion order), so the lists and the
+    # issue order read the same every run.
+    for name, body, fold in (
+        ("template-store", template_body, _fold_template_store),
+        ("document-store", document_body, _fold_document_store),
+    ):
+        if body is None:
+            services_unavailable.append(name)
+            continue
+        services_checked.append(name)
+        incomplete, truncated, issues = fold(body, summary)
+        if incomplete:
+            services_incomplete.append(name)
+        elif truncated:
+            services_truncated.append(name)
+        all_issues += issues
 
     # Determine overall status
     has_errors = any(i.severity == "error" for i in all_issues)
