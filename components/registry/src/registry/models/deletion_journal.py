@@ -130,6 +130,14 @@ class DeletionJournal(Document):
     broken_references_counts: list[InboundReferenceCount] = Field(default_factory=list)
     broken_references_truncated: bool = False
     steps: list[DeletionStep] = Field(default_factory=list)
+    # True from the journal's creation, before the namespace is locked, until
+    # its steps are stored: every lock a deletion takes has a journal behind
+    # it, so a run that dies between the two leaves a journal the recovery
+    # loop finds. A run that takes over a journal still building stores its
+    # steps if the namespace is locked, and discards the journal if it is not
+    # (the deletion never started). Journals stored before the field read as
+    # built.
+    building: bool = False
     summary: dict[str, int] | None = None
     # Who runs the journal now. A run claims the journal with one
     # conditional update (no token, or a heartbeat older than the lease) and

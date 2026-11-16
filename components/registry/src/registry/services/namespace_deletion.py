@@ -151,6 +151,11 @@ _BROKEN_REFS_KEPT = 1000
 _ORPHAN_BATCH_AGE = timedelta(hours=1)
 
 
+class _NeverStarted(ValueError):
+    """A journal taken over while building, whose namespace was never locked
+    by it: the deletion never started, and the journal was discarded."""
+
+
 class _ClaimLost(DeletionAlreadyRunning):
     """This run no longer holds the journal: another run took it over after
     this one stopped writing for longer than the lease. This run stops
@@ -433,20 +438,42 @@ async def _drop_batches(batch_ids: list[str]) -> None:
 
 async def _undo_start(
     prefix: str, batches: list[str], ns: Namespace, prior_status: str,
-) -> None:
+    journal: DeletionJournal,
+) -> bool:
     """Give a namespace whose deletion did not start back as it was: its key
-    batches dropped, its lock released, every service told. Runs on the
-    failure path, so a failure here is logged, never raised over the error
-    that brought the caller here."""
+    batches dropped, its lock released, every service told, its journal
+    discarded. Runs on the failure path, so a failure here is logged, never
+    raised over the error that brought the caller here. Returns whether the
+    namespace was given back. The journal is discarded only once the lock is
+    released: a namespace that stays locked keeps the journal that finishes
+    its deletion."""
     try:
         await _drop_batches(batches)
         await _unlock(ns, prior_status)
-        await access_changed(keys=False)
     except Exception:
         logger.exception(
-            "Namespace '%s': undoing a deletion that did not start failed; it may "
-            "stay locked until resume-delete is run", prefix,
+            "Namespace '%s': undoing a deletion that did not start failed; it stays "
+            "locked, and its journal finishes the deletion", prefix,
         )
+        return False
+    for undo in (lambda: access_changed(keys=False), lambda: _discard_unstarted(journal)):
+        try:
+            await undo()
+        except Exception:
+            logger.exception(
+                "Namespace '%s': a step undoing a deletion that did not start failed",
+                prefix,
+            )
+    return True
+
+
+async def _discard_unstarted(journal: DeletionJournal) -> None:
+    """Remove the journal of a deletion that never started (its namespace was
+    not locked, or was given back), while this run holds it and it is still
+    building. Nothing was deleted under it, so there is nothing to keep."""
+    await DeletionJournal.get_motor_collection().delete_one(
+        {"_id": journal.id, "run_token": journal.run_token, "building": True},
+    )
 
 
 async def _unlock(ns: Namespace, status: str) -> None:
@@ -977,12 +1004,21 @@ class NamespaceDeletionService:
                 "from other namespaces. Use force=true to proceed."
             )
 
+        # Store the journal before the lock, claimed by this run and marked
+        # building: every lock has a journal behind it, so a process that dies
+        # anywhere from here on leaves one the recovery loop takes over once
+        # the claim's lease ages out (_run_steps). The store keeps one open
+        # journal per prefix, so a deletion of this prefix that is open
+        # already refuses this one before anything is locked.
+        journal = await self._open_journal(ns, force, requested_by, requested_note)
+
         # Lock the namespace, in one conditional update: two deletions that
         # both read it unlocked cannot both take the lock. Nothing written
         # means another deletion locked it (409) or has already removed it
         # (404): a namespace that is gone is not answered as in progress.
         prior_status = ns.status
         if not await set_unless_locked(ns, {"status": "locked", "updated_at": datetime.now(UTC)}):
+            await _discard_unstarted(journal)
             status, detail = await unwritten_answer(ns, prefix)
             raise DeletionRefused(detail, status)
         logger.info("Namespace '%s' locked for deletion", prefix)
@@ -991,29 +1027,26 @@ class NamespaceDeletionService:
         # rest of its lifetime (30 s) while its data is being deleted.
         await access_changed(keys=False)
 
-        # Build and store the journal. Nothing is deleted until it is stored,
-        # so a failure here (a database error writing the key batches or the
-        # journal) gives the namespace back as it was: its batches are
-        # dropped and its lock released.
+        # Build the steps and store them in the journal. Nothing is deleted
+        # until they are stored, so a failure here (a database error writing
+        # the key batches or the steps) gives the namespace back as it was:
+        # its batches dropped, its lock released, the journal discarded.
         batches: list[str] = []
         try:
-            journal = await self._build_journal(prefix, force, requested_by, inbound_refs, batches)
-            journal.namespace_id = ns.namespace_id
-            journal.requested_note = requested_note
-            _claimed_at_creation(journal)
-            await journal.create()
-        except DuplicateKeyError:
-            # Another journal of this prefix is open (the store allows one):
-            # this run deletes nothing.
-            await _drop_batches(batches)
-            raise await self._lost_to_open_journal(prefix, ns, prior_status) from None
+            await self._store_steps(journal, inbound_refs, batches)
         except Exception as e:
-            await _undo_start(prefix, batches, ns, prior_status)
+            undone = await _undo_start(prefix, batches, ns, prior_status, journal)
             logger.exception("Deletion of namespace '%s' could not be started", prefix)
+            outcome = (
+                f"Nothing was deleted; the namespace is {prior_status} again."
+                if undone else
+                "Nothing was deleted yet, but the namespace could not be given back: "
+                "it stays locked, and its deletion is finished by the recovery loop or "
+                "by resume-delete."
+            )
             raise DeletionNotStarted(
                 f"The deletion of namespace '{prefix}' could not be started "
-                f"({type(e).__name__}: {e}). Nothing was deleted; the namespace is "
-                f"{prior_status} again."
+                f"({type(e).__name__}: {e}). {outcome}"
             ) from e
         logger.info("Deletion journal created for '%s' with %d steps", prefix, len(journal.steps))
 
@@ -1030,10 +1063,13 @@ class NamespaceDeletionService:
         in progress, one that stopped on a failed step, and one whose
         best-effort steps (stored files, reporting rows) were degraded. Every
         step deletes by namespace, so running one again is safe; completed
-        steps are skipped. A namespace locked with no journal (the deletion
-        stopped before its journal was written) gets one built now, recorded
-        as requested by ``requested_by``; inbound references of high severity
-        need ``force`` as they do for a deletion. There is
+        steps are skipped. A journal still building (its run died before
+        storing the steps) is finished, or discarded when its namespace was
+        never locked (_finish_building). A namespace locked with no journal
+        at all (left by a deletion started before journals were stored ahead
+        of the lock) gets one built now, recorded as requested by
+        ``requested_by``; inbound references of high severity need ``force``
+        as they do for a deletion. There is
         no other way out of a deletion: a namespace partly deleted cannot be
         made whole, so the deletion is finished, never abandoned.
 
@@ -1052,7 +1088,11 @@ class NamespaceDeletionService:
                 prefix, len(journal.steps),
             )
         else:
-            await _refuse_resume_onto_live_namespace(journal)
+            # A journal still building whose namespace is not locked is a
+            # deletion that never started, not one onto a live namespace: the
+            # run below discards it (_finish_building).
+            if not journal.building:
+                await _refuse_resume_onto_live_namespace(journal)
             if journal.status != "in_progress":
                 logger.warning(
                     "Resuming the %s deletion of namespace '%s'", journal.status, prefix,
@@ -1073,26 +1113,39 @@ class NamespaceDeletionService:
         await self._execute_journal(journal)
         return journal
 
-    async def _lost_to_open_journal(
-        self, prefix: str, ns: Namespace, prior_status: str,
-    ) -> Exception:
-        """The refusal of a deletion whose journal the store would not take
-        because another journal of the prefix is open.
+    async def _open_journal(
+        self, ns: Namespace, force: bool, requested_by: str | None,
+        requested_note: str | None,
+    ) -> DeletionJournal:
+        """Store the journal of a deletion about to lock ``ns``: building, and
+        claimed by this run. Raises the refusal when another journal of the
+        prefix is open, DeletionNotStarted when the store cannot take it."""
+        journal = DeletionJournal(
+            namespace=ns.prefix, namespace_id=ns.namespace_id, force=force,
+            requested_by=requested_by, requested_note=requested_note, building=True,
+        )
+        _claimed_at_creation(journal)
+        try:
+            await journal.create()
+        except DuplicateKeyError:
+            raise await self._lost_to_open_journal(ns.prefix, ns) from None
+        except Exception as e:
+            logger.exception("Deletion of namespace '%s' could not be started", ns.prefix)
+            raise DeletionNotStarted(
+                f"The deletion of namespace '{ns.prefix}' could not be started "
+                f"({type(e).__name__}: {e}). Nothing was deleted; the namespace was not "
+                "locked."
+            ) from e
+        return journal
 
-        The lock this deletion took is given back only when the other journal
-        cannot be the deletion of the namespace in hand: none is open any more
-        (the one that refused it finished), or its recorded namespace id is
-        another one (an earlier namespace that held the name). A journal a run
-        holds, or that deletes this same namespace, owns the lock: giving the
-        name back would open a namespace another run is deleting, or has
-        already taken data from. That deletion is the one to finish, with
-        resume-delete. A journal from before ids were recorded cannot be placed
-        by id, and is left as it was read."""
+    async def _lost_to_open_journal(self, prefix: str, ns: Namespace) -> Exception:
+        """The refusal of a deletion whose journal the store would not take
+        because another journal of the prefix is open. The journal is stored
+        before the lock, so this deletion has locked and deleted nothing."""
         other = await DeletionJournal.find_one(
             {"namespace": prefix, "status": {"$in": list(OPEN_STATUSES)}}
         )
         if other is None:
-            await _undo_start(prefix, [], ns, prior_status)
             return DeletionRefused(
                 f"The deletion of namespace '{prefix}' that holds the name finished "
                 "while this one was being stored; nothing was deleted here. See "
@@ -1111,10 +1164,9 @@ class NamespaceDeletionService:
                 f"The deletion of namespace '{prefix}' stopped on a failed step and is "
                 "not finished; finish it first (POST "
                 f"/api/registry/namespaces/{prefix}/resume-delete). This request deleted "
-                "nothing, and the namespace stays locked for that deletion.",
+                "nothing.",
                 409,
             )
-        await _undo_start(prefix, [], ns, prior_status)
         return DeletionRefused(
             f"An earlier deletion of namespace '{prefix}' stopped on a failed step "
             f"and is not finished; finish it first (POST "
@@ -1163,6 +1215,82 @@ class NamespaceDeletionService:
             ) from e
         return journal
 
+    async def _store_steps(
+        self, journal: DeletionJournal, inbound_refs: list[InboundReference],
+        batches: list[str],
+    ) -> None:
+        """Build the steps of a journal still building and store them, while
+        this run holds it. The build streams every storage key into batches,
+        which takes minutes on a large namespace: the claim's heartbeat is kept
+        meanwhile, so the journal is not taken for a dead run's."""
+        heartbeat = asyncio.create_task(_keep_claim(journal))
+        try:
+            built = await self._build_journal(
+                journal.namespace, journal.force, journal.requested_by, inbound_refs, batches,
+            )
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+        fields = {
+            "steps": [step.model_dump() for step in built.steps],
+            "broken_references": [r.model_dump() for r in built.broken_references],
+            "broken_references_counts": [c.model_dump() for c in built.broken_references_counts],
+            "broken_references_truncated": built.broken_references_truncated,
+            "building": False,
+        }
+        await _write_journal(journal, fields)
+        journal.steps = built.steps
+        journal.broken_references = built.broken_references
+        journal.broken_references_counts = built.broken_references_counts
+        journal.broken_references_truncated = built.broken_references_truncated
+        journal.building = False
+        logger.info(
+            "Deletion journal of '%s' stored with %d steps", journal.namespace, len(journal.steps),
+        )
+
+    async def _finish_building(self, journal: DeletionJournal) -> bool:
+        """Take over a journal whose run died before storing its steps.
+
+        The namespace locked (by this deletion: same id) means the deletion
+        started: its steps are built and stored as its request asked
+        (journal.force, journal.requested_by), and the run goes on. Not
+        locked means the run died before the lock, or gave the namespace back:
+        nothing was deleted, the journal is discarded, and False is returned.
+        A failure building the steps drops their batches and raises; the
+        journal stays building, for the next run."""
+        ns = await Namespace.find_one({"prefix": journal.namespace})
+        locked = (
+            ns is not None and ns.status == "locked"
+            and (not journal.namespace_id or ns.namespace_id == journal.namespace_id)
+        )
+        if not locked:
+            await _discard_unstarted(journal)
+            logger.warning(
+                "Namespace '%s': discarded a deletion journal whose run stopped before "
+                "the namespace was locked; nothing was deleted", journal.namespace,
+            )
+            return False
+        logger.warning(
+            "Namespace '%s': the run that locked it stopped before storing the deletion "
+            "steps; building them now", journal.namespace,
+        )
+        batches: list[str] = []
+        try:
+            inbound_refs = await self._check_inbound_references(journal.namespace)
+            await self._store_steps(journal, inbound_refs, batches)
+        except _ClaimLost:
+            await _drop_batches(batches)
+            raise
+        except Exception as e:
+            await _drop_batches(batches)
+            raise DeletionNotStarted(
+                f"The deletion steps of namespace '{journal.namespace}' could not be built "
+                f"({type(e).__name__}: {e}). Nothing was deleted; the namespace stays "
+                "locked, and its deletion is tried again."
+            ) from e
+        return True
+
     async def get_deletion_status(self, prefix: str) -> DeletionJournal | None:
         """Get the most recent deletion journal for a namespace."""
         return await DeletionJournal.find_one(
@@ -1202,6 +1330,8 @@ class NamespaceDeletionService:
             )
             try:
                 await self._execute_journal(journal)
+            except _NeverStarted:
+                continue
             except Exception:
                 logger.exception(
                     "Failed to recover deletion of namespace '%s'", journal.namespace
@@ -1598,6 +1728,11 @@ class NamespaceDeletionService:
                 )
 
     async def _run_steps(self, journal: DeletionJournal):
+        if journal.building and not await self._finish_building(journal):
+            raise _NeverStarted(
+                f"No unfinished deletion found for namespace '{journal.namespace}': the "
+                "deletion stopped before the namespace was locked, and deleted nothing"
+            )
         summary: dict[str, int] = {}
         deferred = 0
 

@@ -330,13 +330,14 @@ async def test_a_claim_that_cannot_be_released_still_flushes_the_caches(
 
 
 @pytest.mark.asyncio
-async def test_a_deletion_that_loses_to_this_namespace_s_stopped_deletion_keeps_it_locked(
+async def test_a_deletion_that_loses_to_this_namespace_s_stopped_deletion_changes_nothing(
     client, auth_headers, monkeypatch,
 ):
     """The other journal the store held against this deletion is the deletion of
     the namespace in hand, and it took a step's worth of data before it failed.
-    Unlocking would open a half-deleted namespace, so the lock stays with that
-    deletion and the answer names resume-delete."""
+    The journal is stored before the lock, so the refused deletion locked
+    nothing and stored nothing: the namespace is left as it was, and the answer
+    names resume-delete, the way to finish that deletion."""
     prefix = _prefix()
     await _namespace(client, auth_headers, prefix)
     ns = await Namespace.find_one({"prefix": prefix})
@@ -350,17 +351,17 @@ async def test_a_deletion_that_loses_to_this_namespace_s_stopped_deletion_keeps_
 
     assert r.status_code == 409, r.text
     assert "resume-delete" in r.json()["detail"]
-    assert (await Namespace.find_one({"prefix": prefix})).status == "locked"
+    assert (await Namespace.find_one({"prefix": prefix})).status == "active"
     assert await DeletionJournal.find({"namespace": prefix}).count() == 1
 
 
 @pytest.mark.asyncio
-async def test_a_deletion_that_loses_to_a_live_run_on_this_namespace_keeps_it_locked(
+async def test_a_deletion_that_loses_to_a_live_run_on_this_namespace_changes_nothing(
     client, auth_headers, monkeypatch,
 ):
     """A resume that stored its journal first is deleting the namespace now; the
-    losing deletion leaves the lock to it, whatever the journal's status reads
-    by the time the loser looks again."""
+    losing deletion is refused before it locks anything, whatever the journal's
+    status reads by the time the loser looks again."""
     prefix = _prefix()
     await _namespace(client, auth_headers, prefix)
     ns = await Namespace.find_one({"prefix": prefix})
@@ -374,7 +375,9 @@ async def test_a_deletion_that_loses_to_a_live_run_on_this_namespace_keeps_it_lo
     r = await client.delete(f"{BASE}/{prefix}", headers=auth_headers)
 
     assert r.status_code == 409, r.text
-    assert (await Namespace.find_one({"prefix": prefix})).status == "locked"
+    assert "running already" in r.json()["detail"]
+    assert (await Namespace.find_one({"prefix": prefix})).status == "active"
+    assert await DeletionJournal.find({"namespace": prefix}).count() == 1
 
 
 @pytest.mark.asyncio
