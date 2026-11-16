@@ -581,9 +581,11 @@ class ComponentSpec(WIPModel):
     observability: ObservabilitySpec | None = None
     activation: ActivationSpec | None = None
     # Explicit entrypoint command, overriding the image's CMD. Without it
-    # the container runs its image's CMD. Every uvicorn service pins its
-    # command (equal to the image's CMD): the dev render runs a uvicorn
-    # command under its reloading launcher, and only a pinned one.
+    # the container runs its image's CMD, except Dex, for which the
+    # renderers supply `dex serve /etc/dex/config.yaml`. Every uvicorn
+    # service pins its command (equal to the image's CMD): the dev render
+    # runs a uvicorn command under its reloading launcher, and only a
+    # pinned one.
     command: list[str] | None = None
     # Apps only (see App): the namespaces the app owns on the install, the
     # other namespaces its key may use, and whether it is the rare app that
