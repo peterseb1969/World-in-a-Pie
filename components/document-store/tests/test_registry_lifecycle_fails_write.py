@@ -335,3 +335,43 @@ async def test_after_one_outage_a_bulk_delete_asks_the_registry_no_more(
     assert registry.calls["deactivate"] == [[ids[0]]]
     for d in ids:
         assert await _active(d)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_revival_gives_back_a_concurrent_head_its_retry_retired(
+    client: AsyncClient, auth_headers: dict, registry,
+):
+    """A revival takes no active row out of service, so nothing it retired
+    up front is in ``prior``. When a concurrent writer stores an active
+    version in the slot first, the duplicate-key retry retires that row; if
+    the retried insert then fails, the repair must give that row back, with
+    its own stamps, rather than leave the document with no active version."""
+    from unittest.mock import patch
+
+    from bson import ObjectId
+    from pymongo.errors import AutoReconnect
+
+
+    document_id = await _deleted(client, auth_headers, registry, "720000041")
+    coll = Document.get_motor_collection()
+    real_insert = Document.insert
+    calls = 0
+
+    async def insert(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            row = self.model_dump(by_alias=True, mode="python")
+            row["_id"] = ObjectId()
+            row["status"] = DocumentStatus.ACTIVE.value
+            row["updated_by"] = "concurrent-writer"
+            await coll.insert_one(row)
+            return await real_insert(self, *args, **kwargs)
+        raise AutoReconnect("connection lost")
+
+    with patch.object(Document, "insert", insert), pytest.raises(AutoReconnect):
+        await _post(client, auth_headers, "720000041")
+    rows = await coll.find({"document_id": document_id}).sort("version", 1).to_list(None)
+    active = [r for r in rows if r["status"] == DocumentStatus.ACTIVE.value]
+    assert len(active) == 1, [(r["version"], r["status"]) for r in rows]
+    assert active[0]["updated_by"] == "concurrent-writer"
