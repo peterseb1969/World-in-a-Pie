@@ -96,7 +96,7 @@ wip-deploy install \
   --storage-class <your-storageclass> \
   --ingress-class <your-ingressclass> \
   --ingress-controller nginx \
-  --app react-console --image-tag react-console=20260629a \
+  --app react-console --image-tag react-console=20260629a --privileged-app react-console \
   --app wip-kb --image-tag wip-kb=20260629a
 ```
 
@@ -174,7 +174,7 @@ wip-deploy install --target k8s --namespace wip --hostname wip.example.internal 
   --storage-class <sc> --ingress-class <ic>
 
 # + React Console and WIP-KB (append to the same command):
-  --app react-console --image-tag react-console=20260629a \
+  --app react-console --image-tag react-console=20260629a --privileged-app react-console \
   --app wip-kb        --image-tag wip-kb=20260629a
 ```
 

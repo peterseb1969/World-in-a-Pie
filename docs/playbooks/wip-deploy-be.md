@@ -110,6 +110,7 @@ Full 7-app hot-wired reference invocation (2026-06-12, wip-local):
 ```bash
 wip-deploy install --name wip-local --target dev --preset full \
   --app-source react-console=$HOME/Development/WIP-ReactConsole \
+  --privileged-app react-console \
   --app-source wip-kb=$HOME/Development/WIP-KB \
   --app-source wip-val=$HOME/Development/WIP-VAL \
   --app-source wip-aa=$HOME/Development/WIP-AA \

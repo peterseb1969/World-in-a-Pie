@@ -102,11 +102,12 @@ wip-deploy install \
   --hostname wip.localhost \
   --registry ghcr.io/peterseb1969 \
   --tag 20260628a \
-  --app react-console --image-tag react-console=20260629a
+  --app react-console --image-tag react-console=20260629a \
+  --privileged-app react-console
 ```
 
 - `--preset standard` — core services + Dex (OIDC) + reporting + Garage + MCP. Lighter: `core`, `analytics`; heavier: `full` (adds the async ingest-gateway).
-- `--app react-console` — enables the admin UI; `--image-tag react-console=20260629a` pins the current multi-arch RC build. **An `--image-tag` only takes effect for an app you also `--app`-enable — otherwise it's silently ignored** (so keep the `--app` and its `--image-tag` together).
+- `--app react-console` — enables the admin UI; `--image-tag react-console=20260629a` pins the current multi-arch RC build; `--privileged-app react-console` lets it hold the install's master key (admin on every namespace), which its manifest asks for (`privileged_key: true`). The install refuses the console without that grant. **An `--image-tag` only takes effect for an app you also `--app`-enable — otherwise it's silently ignored** (so keep the `--app` and its `--image-tag` together).
 - `--name wip` — names the install; its files live in `~/.wip-deploy/wip/` (rendered compose, config, **secrets**, saved spec).
 - `--hostname wip.localhost` — simplest and always works *on the host itself* (every `*.localhost` resolves to it, and apps get their origins under it; a dotless `localhost` is refused once apps are installed). See the note below for reaching it by a real hostname.
 - TLS is **self-signed by default** — no flag needed.
@@ -172,7 +173,7 @@ Apps are opt-in with `--app <name>`. Each is its own container image (its own ta
 wip-deploy install \
   --preset standard --target compose --name wip \
   --hostname wip.localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
-  --app react-console --image-tag react-console=20260629a \
+  --app react-console --image-tag react-console=20260629a --privileged-app react-console \
   --app wip-kb --image-tag wip-kb=20260629a
 ```
 
@@ -183,7 +184,7 @@ wip-deploy install \
 wip-deploy install \
   --preset standard --target compose --name wip \
   --hostname wip.localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
-  --app react-console --image-tag react-console=20260629a \
+  --app react-console --image-tag react-console=20260629a --privileged-app react-console \
   --app wip-kb --image-tag wip-kb=20260629a
 ```
 
@@ -233,7 +234,7 @@ If you are an AI agent setting WIP up for a user on a single host with podman, f
    - Also install **WIP-KB** (knowledge-base app)?
 3. **Pick the tag by arch.** Run `uname -m`. Default to the recommended multi-arch tag in [step 2](#2-choose-an-image-tag) (`20260628a`). Only pick a newer amd64-only tag if the host is amd64 and the user asks for the latest.
 4. **Get the CLI** ([step 1](#1-get-the-deployer-cli)) — clone, `git checkout develop`, venv, `pip install -e deployer`. Run `install` from inside the repo (or pass `--repo-root`).
-5. **Install** with the apps the user chose ([step 3](#3-install-backend--react-console) / [Installing apps](#installing-apps-react-console-wip-kb)). Keep each `--app` together with its `--image-tag`, using the same name for both (RC: `react-console=20260629a`; KB: `wip-kb=20260629a` — note the `wip-` prefix, `kb` won't match) — a mismatched or un-`--app`-ed image-tag is silently ignored.
+5. **Install** with the apps the user chose ([step 3](#3-install-backend--react-console) / [Installing apps](#installing-apps-react-console-wip-kb)). Keep each `--app` together with its `--image-tag`, using the same name for both (RC: `react-console=20260629a`; KB: `wip-kb=20260629a` — note the `wip-` prefix, `kb` won't match) — a mismatched or un-`--app`-ed image-tag is silently ignored. The React Console also needs `--privileged-app react-console`: the install refuses it without that grant.
 6. **Verify and report** ([step 4](#4-verify)): curl the health endpoint and **validate the JSON body** (never trust a bare `200`); optionally confirm each app's deployed image with `podman inspect <container> --format '{{.ImageName}}'`. Then tell the user:
    - the Console URL(s) — `https://rc.wip.localhost:8443/`, `https://kb.wip.localhost:8443/` (or under their real hostname if it resolves),
    - their API key: `cat ~/.wip-deploy/wip/secrets/api-key`,

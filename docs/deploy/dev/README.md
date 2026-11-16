@@ -82,7 +82,7 @@ wip-deploy install \
   --target dev \
   --name wip \
   --hostname wip.localhost \
-  --app-source react-console=../WIP-RC \
+  --app-source react-console=../WIP-RC --privileged-app react-console \
   --app-source wip-kb=../WIP-KB
 ```
 
@@ -90,6 +90,7 @@ On success you'll see something like `Services: 13 active, 2 apps` … `✓ Inst
 
 - `--target dev` — bind-mounts backend `src/` + `libs/wip-auth/src` (read-only) and runs `uvicorn --reload`; builds + force-recreates on install and clears stale `wip-*` containers first.
 - `--app-source NAME=PATH` — `NAME` is the app name (`react-console`, `wip-kb`); `PATH` is its app directory. The app is built from that checkout's `Dockerfile.dev`, its source bind-mounted **rw**, deps in a named volume. **Dev-target only.** (To pull an app from a registry image instead of building it, use `--app-from-registry NAME`.)
+- `--privileged-app react-console` — the React Console's manifest asks for the install's master key (`privileged_key: true`); the install refuses it unless the operator grants that by name.
 - **No `--registry`/`--tag`** — nothing is pulled by tag; the backend runs from this repo's source and the apps from your checkouts. The exception is an app run from its published image (`--app-from-registry`): it is pulled from `--registry`, so an install with such an app needs one.
 - `--hostname wip.localhost` — the dev default (no `/etc/hosts` magic: every `*.localhost` resolves to this machine, and apps get their origins under it). A resolvable name (DNS/mDNS) works too; `-k` regardless (self-signed).
 
