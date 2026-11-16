@@ -308,8 +308,9 @@ async def get_template_by_value(
     To get a specific version, use /by-value/{value}/versions/{version}.
     """
     # CASE-579 — always gate. Explicit namespace → permission-checked scope;
-    # omitted → search restricted to the caller's accessible namespaces
-    # (superadmin unrestricted), same contract as list_templates. These are
+    # omitted → search restricted to the caller's accessible namespaces (for
+    # an administrator, every namespace but one locked for deletion), same
+    # contract as list_templates. These are
     # value-search routes that can match multiple namespaces, so filter the
     # query rather than re-gating on a single resolved entity (CASE-386
     # pattern doesn't fit here).

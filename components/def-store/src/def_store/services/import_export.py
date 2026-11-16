@@ -414,9 +414,10 @@ class ImportExportService:
         """Export all terminologies.
 
         Args:
-            namespaces: When set, restrict the export to terminologies in
-                these namespaces. None means no namespace filter
-                (caller is superadmin or has equivalent access).
+            namespaces: Restrict the export to terminologies in these
+                namespaces (the API passes the caller's readable list, an
+                administrator's included). None, from an internal caller
+                only, means no namespace filter.
                 Added by CASE-384 so the API layer can pass the caller's
                 accessible-namespaces list without leaking entities the
                 caller has no permission on.

@@ -39,13 +39,17 @@ async def _vocabulary_ids(namespace: str, *, retired: bool) -> AsyncIterator[str
         yield t["term_id"]
 
 
-async def _active_vocabulary(ids: list[str]) -> list[str]:
-    """Which of these terminology and term IDs are active now."""
+async def _active_vocabulary(namespace: str, ids: list[str]) -> list[str]:
+    """Which of these terminology and term IDs are active now. The pass is
+    per namespace, so the namespace leads both filters: it is what the
+    collections' indexes start with (a terminology has no index on its id
+    alone)."""
     terminologies = await Terminology.get_motor_collection().distinct(
-        "terminology_id", {"terminology_id": {"$in": ids}, "status": "active"},
+        "terminology_id",
+        {"namespace": namespace, "terminology_id": {"$in": ids}, "status": "active"},
     )
     terms = await Term.get_motor_collection().distinct(
-        "term_id", {"term_id": {"$in": ids}, "status": "active"},
+        "term_id", {"namespace": namespace, "term_id": {"$in": ids}, "status": "active"},
     )
     return [*terminologies, *terms]
 
@@ -60,6 +64,6 @@ async def reconcile_synonym_lifecycle(
         get_registry_client(), namespace,
         lambda: batched(_vocabulary_ids(namespace, retired=True)),
         lambda: batched(_vocabulary_ids(namespace, retired=False)),
-        _active_vocabulary,
+        lambda ids: _active_vocabulary(namespace, ids),
         dry_run=dry_run, revive=revive,
     )

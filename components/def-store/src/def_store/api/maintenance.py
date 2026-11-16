@@ -33,8 +33,9 @@ async def reconcile_synonym_lifecycle_endpoint(
     addressable by value. Deprecations, deletions and restores do this as
     they happen; this pass covers entities retired before that, and any
     whose Registry call failed. With revive=true it also reclaims the
-    synonyms of active ones (applied only, never on a dry run). Dry-run (the
-    default) only reports. Idempotent.
+    synonyms of active ones (applied only, never on a dry run). Without it,
+    one revived while the pass ran still gets its synonyms back in the same
+    pass. Dry-run (the default) only reports. Idempotent.
 
     Requires admin permission on the namespace.
     """

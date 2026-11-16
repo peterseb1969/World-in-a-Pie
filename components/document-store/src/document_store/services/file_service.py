@@ -1078,9 +1078,11 @@ class FileService:
 
         Args:
             checksum: SHA-256 checksum
-            namespaces: When set, restrict the search to files in these
-                namespaces. None = no filter (superadmin). Added by
-                CASE-384 to prevent cross-namespace checksum leakage.
+            namespaces: Restrict the search to files in these namespaces
+                (the API passes the caller's readable list, an
+                administrator's included). None, from an internal caller
+                only, means no filter. It keeps one namespace's checksums
+                from leaking into another's duplicate check.
 
         Returns:
             List of files with matching checksum

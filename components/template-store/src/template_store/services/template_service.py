@@ -1366,8 +1366,10 @@ class TemplateService:
 
         Args:
             value: Template value
-            ns_filter: Namespace filter dict from resolve_namespace_filter()
-                (CASE-579 — empty/None means unrestricted, superadmin only)
+            ns_filter: Namespace filter dict from resolve_namespace_filter(),
+                which always lists namespaces (an administrator's: every one
+                but a namespace locked for deletion). None, from an internal
+                caller only, means no namespace filter.
 
         Returns:
             List of all versions, sorted by version descending (newest first)
@@ -3578,10 +3580,10 @@ class TemplateService:
             try:
                 if not await _terminology_exists(ref, gate):
                     _error(field, "invalid_reference", f"Terminology '{ref}' not found or inactive")
-            except DefStoreError as e:
-                # Def-Store did not answer: the reference is unchecked, so the
             except DefStoreAmbiguousError as e:
                 _error(field, "ambiguous_reference", str(e))
+            except DefStoreError as e:
+                # Def-Store did not answer: the reference is unchecked, so the
                 # template is not valid and does not activate (a warning let
                 # activation through on an answer nobody gave).
                 _error(field, "unverifiable", f"Could not check terminology '{ref}': {e!s}")

@@ -929,7 +929,9 @@ async def _effective_namespace(
     - an explicit namespace must be readable (404 when invisible);
     - an administrator without one lists every namespace it can read: all
       but one locked for deletion, which is closed to everyone, so a
-      reporting table is read only in the namespaces of the second value;
+      listing answers only from the namespaces of the second value (some,
+      like /tables, read the whole catalog and drop the rest before
+      answering);
     - a key that can read exactly one namespace gets it implicitly;
     - a key that can read several must say which (400), and one that
       can read none is refused (403).

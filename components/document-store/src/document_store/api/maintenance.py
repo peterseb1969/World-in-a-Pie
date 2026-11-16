@@ -202,8 +202,9 @@ async def reconcile_synonym_lifecycle_endpoint(
     still revives it. Deletes and revivals do this as they happen; this pass
     covers documents retired before that, and any delete whose Registry call
     failed. With revive=true it also reclaims the synonyms of active
-    documents (a revival whose Registry call failed). Dry-run (the default)
-    only reports. Idempotent.
+    documents (a revival whose Registry call failed). Without it, one
+    revived while the pass ran still gets its synonyms back in the same
+    pass. Dry-run (the default) only reports. Idempotent.
 
     Requires admin permission on the namespace.
     """

@@ -70,8 +70,9 @@ async def reconcile_synonym_lifecycle_endpoint(
     value. Deactivations and reactivations do this as they happen; this pass
     covers templates retired before that, and any whose Registry call failed.
     With revive=true it also reclaims the synonyms of templates with an
-    active version (applied only, never on a dry run). Dry-run (the default)
-    only reports. Idempotent.
+    active version (applied only, never on a dry run). Without it, one
+    revived while the pass ran still gets its synonyms back in the same
+    pass. Dry-run (the default) only reports. Idempotent.
 
     Requires admin permission on the namespace.
     """

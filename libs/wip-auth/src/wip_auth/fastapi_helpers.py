@@ -374,11 +374,14 @@ async def resolve_bulk_ids(
     namespace (none given, none derivable, none on the item) is not
     resolved: it is left as submitted, unverified, for the store to report.
 
-    Resolution failures are logged but do not raise — the downstream
-    service will handle the unresolved ID (typically returning per-item errors
-    in the BulkResponse). The exception is the ambiguous 2-part term
-    shorthand, which is a request-shape error and raises 422 for the whole
-    request (like a body-validation failure), before any item resolves.
+    A miss is logged and does not raise — the downstream service handles
+    the unresolved ID (typically a per-item error in the BulkResponse). Three
+    things do raise, for the whole request: the ambiguous 2-part term
+    shorthand, a request-shape error answered 422 (like a body-validation
+    failure) before any item resolves; a Registry that does not answer
+    (RegistryUnavailableError, a 503), since items are never passed on
+    unverified because of an outage; and a Registry that refuses the request
+    itself (RegistryError).
 
     An identifier that names several entities is left unresolved too, never
     picked, and is returned: the items it was found on, by their position in

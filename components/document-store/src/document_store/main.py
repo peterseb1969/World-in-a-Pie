@@ -503,7 +503,8 @@ async def health_check(fresh: bool = False):
     """
     Health check endpoint.
 
-    Verifies MongoDB, Registry, Template Store, and Def-Store connectivity.
+    Verifies MongoDB, Registry, Template Store, Def-Store and file storage
+    connectivity, and reports the event bus's connection state.
     `status`, though, reports this service's own storage (MongoDB) and nothing
     else: a peer that cannot be reached is named in its own key (`registry`,
     `template_store`, `def_store`, `file_storage`, and the event bus in
@@ -530,7 +531,8 @@ async def health_check(fresh: bool = False):
         "status": status,
         **deps,
         # Live, not cached: the event bus's state is in-process and free to
-        # read. One of connected / connecting / reconnecting / not_configured.
+        # read. One of connected / connecting / reconnecting / not_configured /
+        # stopped (wip_auth.events.ConnectionState).
         "nats": nats_stats()["state"],
     }
     if status != "healthy":

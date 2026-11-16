@@ -2714,7 +2714,8 @@ class DocumentService:
         An edge lives in its source's namespace, so the edges incident to a
         document may sit in several namespaces. ``namespace`` lists one of
         them; without it the listing spans ``allowed_namespaces`` (the
-        namespaces the caller can read; None = unrestricted).
+        namespaces the caller can read, an administrator's included; None,
+        no list filter, is for internal callers).
         """
         if direction not in ("incoming", "outgoing", "both"):
             raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
@@ -2870,7 +2871,8 @@ class DocumentService:
         Edges live in their source's namespace, so a walk may cross
         namespaces. ``namespace`` pins every hop to one namespace; without it
         each hop searches ``allowed_namespaces`` (the caller's readable
-        namespaces; None = unrestricted). A node in a namespace the caller
+        namespaces, an administrator's included; the API passes None only
+        with ``namespace`` set, which pins every hop). A node in a namespace the caller
         cannot read is neither returned nor expanded: the walk stops there.
         """
         ns = await _traverse_seed_namespace(document_id, direction, depth, namespace)

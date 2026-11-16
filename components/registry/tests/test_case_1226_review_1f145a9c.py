@@ -56,3 +56,19 @@ async def test_a_namespace_locked_after_the_list_was_read_is_not_counted(
     assert by_value["total"] == 1
     assert [c["entry_id"] for c in by_value["candidates"]] == [open_id]
     assert by_id["status"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_an_administrators_namespaces_are_the_live_ones(client, auth_headers):
+    """Active and archived count; locked (deletion in progress) and the legacy
+    ``status: "deleted"`` record do not, as in every other enumeration."""
+    from registry.models.namespace import Namespace
+
+    active, archived, locked, deleted = [await _namespace(client, auth_headers) for _ in range(4)]
+    coll = Namespace.get_motor_collection()
+    await coll.update_one({"prefix": archived}, {"$set": {"status": "archived"}})
+    await _lock(locked)
+    await coll.update_one({"prefix": deleted}, {"$set": {"status": "deleted"}})
+    listed = set(await grants._unlocked_namespaces())
+    assert {active, archived} <= listed
+    assert not {locked, deleted} & listed

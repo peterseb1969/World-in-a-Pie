@@ -20,6 +20,7 @@ from httpx import AsyncClient
 
 from def_store.models.terminology import Terminology
 from def_store.services.term_names import (
+    _MIGRATIONS_COLLECTION,
     NameTypeService,
     drop_retired_terminology_fields,
     migrate_legacy_term_names,
@@ -156,7 +157,7 @@ async def test_typed_name_without_name_types_is_a_missing_vocabulary(client: Asy
 @pytest.mark.asyncio
 async def test_startup_passes_run_once(client: AsyncClient, auth_headers: dict):
     coll = Terminology.get_motor_collection()
-    await coll.database["def_store_migrations"].delete_many({})
+    await coll.database[_MIGRATIONS_COLLECTION].delete_many({})
     tid = await _terminology(client, auth_headers, "LEGACY_EXT_1182")
     await coll.update_one({"terminology_id": tid}, {"$set": {"extensible": True}})
 
@@ -167,5 +168,5 @@ async def test_startup_passes_run_once(client: AsyncClient, auth_headers: dict):
     # Second boot: both passes are skipped by their markers
     await coll.update_one({"terminology_id": tid}, {"$set": {"extensible": True}})
     assert await drop_retired_terminology_fields() == 0
-    markers = {m["_id"] async for m in coll.database["def_store_migrations"].find()}
+    markers = {m["_id"] async for m in coll.database[_MIGRATIONS_COLLECTION].find()}
     assert markers == {"term_names_v1", "terminology_extensible_removed_v1"}

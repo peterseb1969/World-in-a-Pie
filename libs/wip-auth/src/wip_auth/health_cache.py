@@ -15,6 +15,16 @@ counting the chains its peers run in turn). This caches that work for the
 root path only; the diagnostic path asks for a fresh value and gets one, so
 an operator never reads a stale dependency status.
 
+An accepted cost of that: the diagnostic path needs no key (an external
+monitor, or a client whose key went stale, can still probe it), it is never
+rate-limited (no probe path is), and every call forces the full fan-out.
+So anyone who can reach a service can make it run that fan-out as often as
+they like. Forced runs queue on the cache's lock, and a root ``/health``
+poll that finds the entry expired waits behind them. That was weighed against a key requirement on the probe
+path, serving it cached, or a per-address floor, and kept: a monitor reaches
+it without a key and always reads live state. Keep it in mind before adding
+an expensive check to a service's dependency probe.
+
 The TTL bounds how stale a polling client's view can be: an entry is fresh
 for strictly less than ``ttl`` seconds after it was produced, so a client
 polling at exactly the TTL period misses every time and one polling faster

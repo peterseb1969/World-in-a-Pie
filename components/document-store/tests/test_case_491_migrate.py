@@ -374,3 +374,37 @@ async def test_a_key_reading_two_namespaces_must_name_the_one_it_migrates(client
         assert named.status_code == 200, named.text
     finally:
         permissions.clear_permission_cache()
+
+
+@pytest.mark.asyncio
+async def test_an_administrator_omitting_the_namespace_is_refused_without_a_registry_fan_out(
+    client, auth_headers, monkeypatch,
+):
+    """An administrator always names the cohort's namespace. Without it the
+    answer is 422, and the Registry is not asked about each namespace an
+    administrator can reach on the way to it."""
+    import wip_auth.permissions as permissions
+
+    asked: list[str] = []
+
+    async def accessible(identity):
+        return [f"ns{i}" for i in range(20)]
+
+    async def check(identity, namespace):
+        asked.append(namespace)
+        return "admin"
+
+    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
+    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", check)
+    permissions.clear_permission_cache()
+    try:
+        resp = await client.post(
+            MIGRATE_URL,
+            json={"template_id": "PERSON", "from_version": 1, "to_version": 2, "dry_run": True},
+            headers=auth_headers,
+        )
+    finally:
+        permissions.clear_permission_cache()
+    assert resp.status_code == 422, resp.text
+    assert "namespace is required" in resp.text
+    assert asked == []

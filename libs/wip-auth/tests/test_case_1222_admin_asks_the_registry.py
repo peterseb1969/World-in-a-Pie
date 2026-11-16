@@ -79,3 +79,47 @@ async def test_the_service_presents_a_non_empty_key(httpx_mock, monkeypatch, leg
     httpx_mock.add_response(json={"permission": "admin"})
     assert await resolve_permission(ADMIN, "open") == "admin"
     assert httpx_mock.get_requests()[0].headers["X-API-Key"] == sent
+
+
+@pytest.mark.parametrize("unset_legacy", [True, False], ids=["legacy-unset", "legacy-blank"])
+@pytest.mark.asyncio
+async def test_with_both_key_sources_empty_nothing_is_sent(httpx_mock, monkeypatch, unset_legacy):
+    # No key to present is a configuration error raised before any request,
+    # never an empty key the Registry would answer 401 (read as no access).
+    from wip_auth.service_keys import MissingServiceKeyError
+
+    if unset_legacy:
+        monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "")
+    monkeypatch.setenv("API_KEY", "")
+    with pytest.raises(MissingServiceKeyError):
+        await resolve_permission(ADMIN, "open")
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.parametrize("answer", ["superuser", "", 3, None])
+@pytest.mark.asyncio
+async def test_a_permission_outside_the_four_levels_is_no_answer_and_not_cached(httpx_mock, answer):
+    # Only none/read/write/admin is an answer. Anything else was cached for
+    # the TTL as a denial; it is now "unavailable" (a 503), asked again next time.
+    from wip_auth.permissions import PERMISSION_UNAVAILABLE
+
+    httpx_mock.add_response(json={"permission": answer})
+    httpx_mock.add_response(json={"permission": "read"})
+    assert await resolve_permission(ADMIN, "ns") == PERMISSION_UNAVAILABLE
+    assert await resolve_permission(ADMIN, "ns") == "read"
+
+
+@pytest.mark.asyncio
+async def test_a_blank_registry_url_falls_back_to_the_next_source(httpx_mock, monkeypatch):
+    # Blank counts as unset, as it does for the key: the lookup goes to
+    # REGISTRY_URL instead of to an empty base URL that fails every call.
+    from wip_auth import resolve
+
+    monkeypatch.setenv("WIP_AUTH_REGISTRY_URL", "")
+    monkeypatch.setenv("REGISTRY_URL", "http://registry.fallback")
+    httpx_mock.add_response(json={"permission": "admin"})
+    assert await resolve_permission(ADMIN, "open") == "admin"
+    assert str(httpx_mock.get_requests()[0].url).startswith("http://registry.fallback/")
+    assert resolve._get_registry_url() == "http://registry.fallback"

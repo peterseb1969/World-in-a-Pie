@@ -57,14 +57,20 @@ PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
 # the cache lifetime.
 PERMISSION_UNAVAILABLE = "unavailable"
 
-_UNAVAILABLE_DETAIL = "Authorization service unavailable — the Registry could not be reached; retry shortly"
+# Unreachable, timed out, or answered without a permission level: the text
+# must not say "could not be reached" for a Registry that answered.
+_UNAVAILABLE_DETAIL = (
+    "Authorization service unavailable — the Registry gave no permission answer; retry shortly"
+)
 
 
 def _get_registry_url() -> str:
-    """Get the Registry service URL for permission checks."""
-    return os.getenv(
-        "WIP_AUTH_REGISTRY_URL",
-        os.getenv("REGISTRY_URL", "http://localhost:8001"),
+    """Get the Registry service URL for permission checks. An empty value
+    counts as unset, as it does for the service key."""
+    return (
+        os.getenv("WIP_AUTH_REGISTRY_URL")
+        or os.getenv("REGISTRY_URL")
+        or "http://localhost:8001"
     )
 
 
@@ -256,7 +262,13 @@ async def _fetch_permission_from_registry(
                 )
                 return PERMISSION_UNAVAILABLE
             permission = resp.json().get("permission")
-            if not isinstance(permission, str):
+            # Only one of the four levels is an answer. Anything else would
+            # be cached for the TTL and read as a denial.
+            if permission not in PERMISSION_LEVELS:
+                logger.warning(
+                    "Registry check-permission answered %r for %s on %s, not a permission level",
+                    permission, identity.user_id, namespace,
+                )
                 return PERMISSION_UNAVAILABLE
             return permission
     except Exception:

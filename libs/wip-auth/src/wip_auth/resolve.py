@@ -178,10 +178,11 @@ async def close_resolve_client() -> None:
 
 
 def _get_registry_url() -> str:
-    """Get Registry URL from environment."""
-    return os.getenv(
-        "WIP_AUTH_REGISTRY_URL",
-        os.getenv("REGISTRY_URL", "http://localhost:8001"),
+    """Get Registry URL from environment. An empty value counts as unset."""
+    return (
+        os.getenv("WIP_AUTH_REGISTRY_URL")
+        or os.getenv("REGISTRY_URL")
+        or "http://localhost:8001"
     )
 
 
@@ -777,8 +778,16 @@ async def resolve_term_by_fields(
 
     Raises:
         TermNamespaceRequiredError: the terminology is a bare value and
-            there is no namespace to read it in.
+            there is no namespace to read it in (a subclass of
+            EntityNotFoundError).
         EntityNotFoundError: no term matches.
+        AmbiguousEntityError: a reading of the terminology names several
+            terms (a subclass of EntityNotFoundError); the next reading is
+            never tried in its place.
+        RegistryUnavailableError: the Registry did not answer, answered an
+            error status, or answered the item with an error — never a miss.
+        RegistryError: the Registry refused the request itself: a refusal a
+            retry will not change, not an outage.
     """
     cache_key: CacheKey = ("term-fields", namespace, terminology, value)
     if _cache_readable(bypass_cache):

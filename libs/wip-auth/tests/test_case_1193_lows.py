@@ -66,6 +66,42 @@ def test_a_key_removed_during_its_check_is_not_cached(monkeypatch):
     assert record is None  # and nothing cached it
 
 
+def _verify_while_the_keys_change(monkeypatch, provider, record, changes: int) -> list[int]:
+    """bcrypt that replaces the key list (same key, a new list) on its first
+    ``changes`` calls, as a sync landing mid-check does; returns the calls."""
+    real_verify = api_key_module.verify_api_key
+    calls: list[int] = []
+
+    def verify(plaintext, key_hash, salt):
+        calls.append(1)
+        if len(calls) <= changes:
+            provider.reload_config_keys([record])
+        return real_verify(plaintext, key_hash, salt)
+
+    monkeypatch.setattr(api_key_module, "verify_api_key", verify)
+    return calls
+
+
+def test_a_check_the_keys_keep_changing_under_stops_after_three_sweeps(monkeypatch):
+    # Each change makes the check sweep again; a list that keeps changing
+    # must not keep one request sweeping (and recursing) without end.
+    record = APIKeyRecord(name="svc", key_hash=hash_api_key("svc-key"))
+    provider = APIKeyProvider([record])
+    calls = _verify_while_the_keys_change(monkeypatch, provider, record, changes=10)
+    with pytest.raises(api_key_module.KeysUnverifiable, match="changed during each of 3 checks"):
+        provider._validate_key("svc-key")
+    assert len(calls) == 3
+
+
+def test_a_check_the_keys_changed_under_once_answers_on_its_next_sweep(monkeypatch):
+    record = APIKeyRecord(name="svc", key_hash=hash_api_key("svc-key"))
+    provider = APIKeyProvider([record])
+    calls = _verify_while_the_keys_change(monkeypatch, provider, record, changes=1)
+    found, message = provider._validate_key("svc-key")
+    assert found is not None and found.name == "svc", message
+    assert len(calls) == 2
+
+
 # --- 1-providers R3: a change made while the state was built is applied -----
 
 
@@ -88,7 +124,7 @@ def test_a_change_between_the_read_and_the_watcher_start_is_applied(tmp_path):
 def test_a_synced_legacy_hash_is_warned_about_once(caplog):
     provider = APIKeyProvider([])
     legacy = APIKeyRecord(name="legacy", key_hash="a" * 64)
-    with caplog.at_level(logging.WARNING, logger="wip_auth.providers.api_key"):
+    with caplog.at_level(logging.WARNING, logger="wip_auth.api_key"):
         provider.replace_runtime_keys([legacy])
         provider.replace_runtime_keys([legacy])  # the next sync poll
     warnings = [r for r in caplog.records if "legacy SHA-256" in r.getMessage()]
@@ -167,6 +203,9 @@ async def test_an_unknown_terminology_uuid_is_not_found_not_namespace_required(m
 
 @pytest.mark.asyncio
 async def test_strict_batch_resolution_finds_what_single_resolution_finds(monkeypatch):
+    # Its own key: run alone, nothing else in the suite has set one.
+    monkeypatch.setenv("REGISTRY_API_KEY", "test-key")
+
     async def chunk(registry_url, api_key, ids, entity_type, namespace, include_statuses):
         return [{"status": "not_found"} for _ in ids]
 

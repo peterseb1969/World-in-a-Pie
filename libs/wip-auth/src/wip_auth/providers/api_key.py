@@ -485,7 +485,14 @@ class APIKeyProvider:
         """Extract API key from request header."""
         return request.headers.get(self.header_name)
 
-    def _validate_key(self, api_key: str) -> tuple[APIKeyRecord | None, str | None]:
+    # How many times one check re-runs its sweep because the keys changed
+    # while bcrypt ran. Each run is a full sweep, so a list that keeps
+    # changing must not keep one request sweeping without end.
+    _KEY_CHECK_ATTEMPTS = 3
+
+    def _validate_key(
+        self, api_key: str, _attempt: int = 1,
+    ) -> tuple[APIKeyRecord | None, str | None]:
         """Validate an API key against all registered keys.
 
         Uses a fast SHA-256 fingerprint cache so bcrypt only runs once
@@ -525,7 +532,14 @@ class APIKeyProvider:
                     if current:
                         self._verified_cache[fingerprint] = record
                 if not current:
-                    return self._validate_key(api_key)
+                    if _attempt >= self._KEY_CHECK_ATTEMPTS:
+                        # The keys kept changing under the check: no
+                        # answer it could stand by, so retry, not 401.
+                        raise KeysUnverifiable(
+                            "API keys cannot be verified: they changed during each "
+                            f"of {_attempt} checks; retry shortly"
+                        )
+                    return self._validate_key(api_key, _attempt + 1)
                 return record, None
 
         # Matching no config key is true whatever the Registry says, so the

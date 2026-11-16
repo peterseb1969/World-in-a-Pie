@@ -81,6 +81,7 @@ from def_store.models.term import Term  # noqa: E402
 from def_store.models.term_relation import TermRelation  # noqa: E402
 from def_store.models.terminology import Terminology  # noqa: E402
 from def_store.services.registry_client import RegistryClient  # noqa: E402
+from def_store.services.term_names import _MIGRATIONS_COLLECTION  # noqa: E402
 
 # Registry models and app (mounted in-process via transport injection)
 from registry.main import app as registry_app  # noqa: E402
@@ -161,7 +162,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     # database no migration has run on, which is what the migration tests set
     # up; whether two of them shared a database depended on xdist placement,
     # so the suite failed run serially (CI) and passed in parallel (wip-test.sh).
-    await test_db["def_store_migrations"].delete_many({})
+    await test_db[_MIGRATIONS_COLLECTION].delete_many({})
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])

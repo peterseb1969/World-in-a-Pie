@@ -172,7 +172,9 @@ jobs:
           pip install -r ../registry/requirements.txt
           # pytest-httpx: document-store's dependency-outage tests mock the
           # template-store and def-store clients' HTTP calls (httpx_mock).
-          pip install pytest pytest-asyncio httpx pytest-httpx
+          # httpx keeps the range the components declare: unbounded, the
+          # newest pytest-httpx would lift it to a release they exclude.
+          pip install pytest pytest-asyncio "httpx>=0.26.0,<0.28.0" pytest-httpx
 
       - name: Run tests
         working-directory: components/${{ matrix.component }}

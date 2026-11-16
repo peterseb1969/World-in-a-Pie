@@ -287,9 +287,13 @@ async def _best_grant(namespace: str, subjects: list[tuple[str, str]]) -> str:
 
 
 async def _unlocked_namespaces() -> list[str]:
-    """Every namespace an administrator reads: all but those locked for
-    deletion, which are closed to everyone."""
-    return [ns.prefix for ns in await Namespace.find({"status": {"$ne": "locked"}}).to_list()]
+    """Every live namespace an administrator reads: active and archived.
+    One locked for deletion is closed to everyone, and a legacy
+    ``status: "deleted"`` record names no namespace at all."""
+    return [
+        ns.prefix
+        for ns in await Namespace.find({"status": {"$in": ["active", "archived"]}}).to_list()
+    ]
 
 
 async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str]:

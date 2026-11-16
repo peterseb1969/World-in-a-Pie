@@ -205,9 +205,13 @@ def _clear_shared_caches() -> None:
     """Restore mode recreates the SAME entity IDs, so any warm cache would
     answer lookups the services should be answering and mask a regression."""
     from def_store.services.ontology_service import OntologyService
+    from wip_auth import clear_permission_cache
     from wip_auth.resolve import clear_resolution_cache
 
     clear_resolution_cache()
+    # Grants too: a namespace re-created under the same name after the wipe
+    # must not inherit the permission answers cached for the one before.
+    clear_permission_cache()
     OntologyService.invalidate_relation_type_cache()
 
 
@@ -353,12 +357,23 @@ def stack():
             cache_events.forget_entries(list(entry_ids))
             return True
 
+        async def _deliver_namespace_deleted(_bus, prefix: str) -> bool:
+            cache_events.flush_namespace(prefix)
+            return True
+
+        # The third announcement, a deleted namespace, is imported by name
+        # into namespace_deletion, so that module's binding is the one to
+        # replace; replacing it on event_bus would deliver nothing.
+        from registry.services import namespace_deletion
+
         original_announcers = (
             registry_event_bus.announce_access_changed,
             registry_event_bus.announce_entries_changed,
+            namespace_deletion.announce_namespace_deleted,
         )
         registry_event_bus.announce_access_changed = _deliver_access_changed
         registry_event_bus.announce_entries_changed = _deliver_entries_changed
+        namespace_deletion.announce_namespace_deleted = _deliver_namespace_deleted
         try:
             yield IntegrationStack(portal, router, models)
         finally:
@@ -366,6 +381,7 @@ def stack():
             (
                 registry_event_bus.announce_access_changed,
                 registry_event_bus.announce_entries_changed,
+                namespace_deletion.announce_namespace_deleted,
             ) = original_announcers
 
 
