@@ -126,10 +126,16 @@ async def test_re_creation_is_judged_by_namespace_id(client, monkeypatch):
     prefix = f"del-{uuid.uuid4().hex[:8]}"
     svc = _svc(monkeypatch)
     journal = DeletionJournal(namespace=prefix, namespace_id="same-id")
-    await Namespace(prefix=prefix, namespace_id="same-id", status="archived").insert()
+    # The deletion's own record: locked before any step runs.
+    await Namespace(prefix=prefix, namespace_id="same-id", status="locked").insert()
     assert await svc._namespace_recreated(journal) is False
     await Namespace.get_motor_collection().update_one(
         {"prefix": prefix}, {"$set": {"namespace_id": "another-id", "status": "active"}})
+    assert await svc._namespace_recreated(journal) is True
+    # Same id but not the lock: an ID-preserving restore created it again
+    # (CASE-1363), so its data is kept too.
+    await Namespace.get_motor_collection().update_one(
+        {"prefix": prefix}, {"$set": {"namespace_id": "same-id", "status": "archived"}})
     assert await svc._namespace_recreated(journal) is True
 
 

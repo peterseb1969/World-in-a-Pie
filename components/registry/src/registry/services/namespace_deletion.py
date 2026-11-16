@@ -1733,16 +1733,24 @@ class NamespaceDeletionService:
         """Whether a namespace holding the prefix now is another one than the
         namespace this journal deletes: one created again under the name.
 
-        Compared by namespace_id. A journal written before it recorded the id
-        falls back to the status: anything but the deletion's lock is a new
-        namespace.
+        While the steps run, the only record that may hold the prefix is this
+        deletion's own lock: the namespace is locked before its journal is
+        written. Any other record is a namespace created again, whatever its
+        id. An ID-preserving restore gives the new namespace the deleted one's
+        namespace_id, and one that lands between a resume's up-front check
+        (_refuse_resume_onto_live_namespace) and its claim must still be kept.
+        A locked record with another namespace_id is another namespace's own
+        deletion.
         """
         live = await Namespace.find_one({"prefix": journal.namespace})
         if live is None:
             return False
-        if journal.namespace_id and live.namespace_id:
-            return live.namespace_id != journal.namespace_id
-        return live.status != "locked"
+        if live.status != "locked":
+            return True
+        return bool(
+            journal.namespace_id and live.namespace_id
+            and live.namespace_id != journal.namespace_id
+        )
 
     async def _execute_step(self, step: DeletionStep, namespace: str, journal_id: str) -> int:
         """Execute a single journal step. Returns count of deleted items."""
