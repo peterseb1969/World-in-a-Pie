@@ -34,8 +34,13 @@ A platform administrator or service key passed the inbound reference gate
 without asking the Registry, so it could write a reference (a template's
 `extends` or `terminology_ref`, a document's term or file) into a namespace
 being deleted; the reference then outlived the namespace. Every writer now
-gets the Registry's answer, which is read everywhere for these keys except a
-namespace locked for deletion.
+gets the Registry's answer. A platform administrator (`wip-admins`) reads
+everywhere except a namespace locked for deletion. A service key
+(`wip-services`) reads only what its grants give it, like any other key, so a
+service key that references into a closed namespace needs a read grant there.
+A namespace locked for deletion now refuses new references even when its
+`inbound_references` is `open`: it is open to no one while it is being
+deleted.
 
 ### Template version events say when they cannot judge a migration, and a prefill change is not a modification
 

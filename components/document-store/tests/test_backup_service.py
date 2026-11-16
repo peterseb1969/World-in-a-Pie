@@ -1261,6 +1261,12 @@ class TestReconcileOrphanedJobs:
 
         def error(job):
             return BackupJob.find_one(BackupJob.job_id == job.job_id)
+        # The restore's follow-ups run in the background after it is marked
+        # failed; its error names what started once they have.
+        for _ in range(50):
+            if "validation started" in ((await error(restore)).error or ""):
+                break
+            await asyncio.sleep(0.02)
         settled = {j.job_id: await error(j) for j in (restore, dry, pending, backup)}
         assert all(j.status == BackupJobStatus.FAILED for j in settled.values())
         assert "validation started (val-9)" in settled[restore.job_id].error
@@ -1268,3 +1274,73 @@ class TestReconcileOrphanedJobs:
             assert settled[other.job_id].error == "Process terminated during execution (pod restart)"
         assert [c.args[0] for c in sync.call_args_list] == ["ns-a"]
         validate.assert_awaited_once()
+
+
+class TestCase1263RestoreFollowUpsReopen:
+    """A restore whose 'start' write was lost still reads RUNNING once any
+    later event lands, and the startup reconciler marks every orphaned job
+    failed without waiting on a restore's follow-ups."""
+
+    async def test_a_later_event_moves_a_pending_job_to_running(self, fresh_job, monkeypatch):
+        real = backup_service._persist_event
+
+        async def lose_start(job_id, event):
+            if event.phase == "start":
+                raise RuntimeError("mongo blip")
+            await real(job_id, event)
+        monkeypatch.setattr(backup_service, "_persist_event", lose_start)
+
+        assert await backup_service._persist_with_retry(
+            fresh_job.job_id, ProgressEvent(phase="start", message="go", percent=0.0),
+        ) is False
+        await backup_service._persist_with_retry(
+            fresh_job.job_id, ProgressEvent(phase="phase_documents", message="writing", percent=40.0),
+        )
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.status == BackupJobStatus.RUNNING
+        assert updated.started_at is not None
+
+    async def test_a_lost_start_write_is_retried(self, fresh_job, monkeypatch):
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+        real = backup_service._persist_event
+        calls = {"n": 0}
+
+        async def blip_once(job_id, event):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("mongo blip")
+            await real(job_id, event)
+        monkeypatch.setattr(backup_service, "_persist_event", blip_once)
+
+        assert await backup_service._persist_with_retry(
+            fresh_job.job_id, ProgressEvent(phase="start", message="go", percent=0.0),
+        ) is True
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.status == BackupJobStatus.RUNNING
+
+    async def test_the_reconciler_does_not_wait_on_follow_ups(self, monkeypatch):
+        hang = asyncio.Event()
+
+        async def hanging_sync(namespace):
+            await hang.wait()
+            return True
+        validate = AsyncMock(return_value=["val-7"])
+        monkeypatch.setattr(backup_service, "_trigger_reporting_batch_sync", hanging_sync)
+        monkeypatch.setattr(backup_service, "trigger_validation_for", validate)
+        restore = BackupJob(job_id=f"job-{uuid.uuid4().hex[:8]}", kind=BackupJobKind.RESTORE,
+                            status=BackupJobStatus.RUNNING, namespace="ns-a", namespaces=["ns-a"],
+                            created_by="test", options={"dry_run": False})
+        await restore.insert()
+
+        await asyncio.wait_for(backup_service.reconcile_orphaned_jobs(), timeout=2.0)
+
+        marked = await BackupJob.find_one(BackupJob.job_id == restore.job_id)
+        assert marked.status == BackupJobStatus.FAILED
+        hang.set()
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            marked = await BackupJob.find_one(BackupJob.job_id == restore.job_id)
+            if "validation started (val-7)" in (marked.error or ""):
+                break
+        assert "validation started (val-7)" in marked.error

@@ -392,20 +392,20 @@ def _warn_unscoped(keys: list[APIKeyRecord], logger: logging.Logger) -> None:
 
 def _warn_declared_grants(keys: list[APIKeyRecord], logger: logging.Logger) -> None:
     """Warn, at load time, about each key that declares grants: this
-    loader does not apply them. Every permission is the Registry's answer,
-    and the Registry takes a key's grants only from the key file it imports
-    (in the Registry that can be the very file loaded here, on an install
-    rendered before the key file moved, so the warning does not claim the
-    grants go unread). A key the Registry has not imported has none there,
-    whatever this config says."""
+    loader does not apply them. Every permission is the Registry's answer.
+    The Registry answers from the grants it holds (those it imported from
+    the install's key file, or that were set through its API), and, for a
+    key it loads as a config key itself, from that key's declared grants
+    (_config_key_permission in the Registry). So whether these declarations
+    count depends on what the Registry loads, not on this service."""
     for key in keys:
         if key.grants:
             logger.warning(
                 "API key '%s' declares grants (%s) in this service's key "
                 "config, which does not apply them. Permissions come from the "
-                "Registry, which takes a key's grants only from the key file "
-                "it imports — a key the Registry has not imported has no "
-                "grants, whatever this config says.",
+                "Registry: they count only where the Registry holds them, as "
+                "grants imported from the key file or set through its API, or "
+                "as the declared grants of a key it loads in its own config.",
                 key.name,
                 ", ".join(f"{ns}={perm}" for ns, perm in sorted(key.grants.items())),
             )

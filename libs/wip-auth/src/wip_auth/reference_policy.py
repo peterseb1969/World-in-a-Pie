@@ -55,10 +55,15 @@ def inbound_open(target_ns: str, target_config: dict[str, Any]) -> bool:
     """Does the target namespace accept references from any writer?
 
     A namespace whose settings predate the field reads as closed, the
-    default every namespace has.
+    default every namespace has. A namespace locked for deletion is open to
+    no one, whatever its setting: a reference into it would outlive the
+    namespace the deletion is removing, and the caller's read (which the
+    Registry refuses everyone on a locked namespace) decides instead.
     """
     if target_ns == WIP_NAMESPACE:
         return True
+    if target_config.get("status") == "locked":
+        return False
     return bool(target_config.get("inbound_references", "closed") == "open")
 
 
@@ -66,9 +71,11 @@ async def caller_can_read(target_ns: str, identity: UserIdentity | None = None) 
     """Can the writing caller read ``target_ns``?
 
     With no identity in the request context nothing vouches for the write,
-    so the answer is no. A platform administrator is asked too: the Registry
-    gives it read everywhere except a namespace locked for deletion, and a
-    reference into one would outlive the namespace the deletion is removing.
+    so the answer is no. Every writer gets the Registry's answer. A platform
+    administrator (wip-admins) has read everywhere except a namespace locked
+    for deletion, where a reference would outlive the namespace the deletion
+    is removing. A service key (wip-services) has no such standing: it reads
+    what its grants give it, like any other key.
     """
     identity = identity if identity is not None else get_current_identity()
     if identity is None:

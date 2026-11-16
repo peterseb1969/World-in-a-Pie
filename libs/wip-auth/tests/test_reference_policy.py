@@ -145,3 +145,12 @@ async def test_unreadable_permission_refuses_rather_than_passes():
         pytest.raises(PermissionUnavailableError),
     ):
         await caller_can_read("lib", jwt_user)
+
+
+def test_a_namespace_locked_for_deletion_is_not_open_to_references():
+    """An open namespace being deleted accepts no new reference from anyone:
+    its inbound setting is not read while it is locked."""
+    from wip_auth.reference_policy import inbound_open
+
+    assert inbound_open("ns-x", {"inbound_references": "open", "status": "active"}) is True
+    assert inbound_open("ns-x", {"inbound_references": "open", "status": "locked"}) is False

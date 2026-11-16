@@ -146,10 +146,13 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         BackupJob.message: event.message,
     }
 
-    # Transition from PENDING to RUNNING on the first 'start' event. The
-    # read-then-set is safe single-writer: the per-job queue serializes
-    # this pipeline's events in-process.
-    if event.phase == "start" and job.status == BackupJobStatus.PENDING:
+    # Transition from PENDING to RUNNING on the first event of the run that
+    # lands: the 'start' event, or any later one when that write was lost,
+    # so a run that is writing never reads PENDING (the reconciler owes a
+    # restore follow-ups only when it reads RUNNING). Terminal events set
+    # their own status. The read-then-set is safe single-writer: the per-job
+    # queue serializes this pipeline's events in-process.
+    if job.status == BackupJobStatus.PENDING and event.phase not in ("complete", "error"):
         fields[BackupJob.status] = BackupJobStatus.RUNNING
         fields[BackupJob.started_at] = datetime.now(UTC)
 
@@ -261,14 +264,14 @@ def _error_fields(event: ProgressEvent) -> dict[Any, Any]:
 
 # Attempts, and the pause before each retry, for writing an event to the
 # job record. A terminal event is retried: losing it turns a finished run
-# into a failed one.
+# into a failed one. So is 'start', the write that marks the run RUNNING.
 _TERMINAL_PERSIST_DELAYS = (0.5, 1.0, 2.0)
 
 
 async def _persist_with_retry(job_id: str, event: ProgressEvent) -> bool:
     """Write the event to the job record; True once it is written. A
-    progress event gets one attempt; a terminal one is retried."""
-    delays = _TERMINAL_PERSIST_DELAYS if event.phase in ("complete", "error") else ()
+    progress event gets one attempt; 'start' and a terminal one are retried."""
+    delays = _TERMINAL_PERSIST_DELAYS if event.phase in ("start", "complete", "error") else ()
     for delay in (*delays, None):
         try:
             await _persist_event(job_id, event)
@@ -438,8 +441,19 @@ async def reconcile_orphaned_jobs() -> int:
     A restore that was RUNNING may have committed data before the process
     ended, and that data is in MongoDB unsynced and unverified; this is the
     last point anything knows it. Its reporting sync and validation are
-    started here, and its error says what started. A PENDING job never
-    began writing and owes nothing.
+    started here, in the background, so startup never waits on
+    reporting-sync; the job is marked FAILED first, and its error then names
+    what started. A PENDING job's record took no event of its run (the first
+    one that lands marks it RUNNING, and 'start' is retried), so it owes
+    nothing.
+
+    A completed restore whose terminal write and settle write both failed
+    (a sustained MongoDB outage) also reads RUNNING here, though its
+    follow-ups were started inline: they are started again. Nothing durable
+    could be written in that outage to say otherwise. The cost is a second
+    reporting sync of each namespace, the ones a plain or merge restore had
+    already synced included, and a second validation: both are idempotent,
+    so only time is lost.
 
     Failing it also frees the instance for the next restore: a restore the
     process left running no longer counts as one (running_restore).
@@ -462,9 +476,9 @@ async def reconcile_orphaned_jobs() -> int:
     ).to_list()
     for job in jobs:
         error = _TERMINATED
-        if job.status == BackupJobStatus.RUNNING and _restore_wrote(job):
-            follow_ups = await _start_follow_ups_now(job, ProgressEvent(phase="complete", message=""))
-            error = f"{_TERMINATED}; {follow_ups}"
+        owes_follow_ups = job.status == BackupJobStatus.RUNNING and _restore_wrote(job)
+        if owes_follow_ups:
+            error = f"{_TERMINATED}; its reporting sync and validation are being started"
         elif job.kind == BackupJobKind.IMPORT:
             error = _terminated_import_error(job)
         await job.set({
@@ -473,7 +487,19 @@ async def reconcile_orphaned_jobs() -> int:
             BackupJob.completed_at: datetime.now(UTC),
             BackupJob.running_restore: None,
         })
+        if owes_follow_ups:
+            _track(asyncio.ensure_future(_reconciled_follow_ups(job)))
     return len(jobs)
+
+
+async def _reconciled_follow_ups(job: BackupJob) -> None:
+    """An interrupted restore's follow-ups, started after startup marked it
+    FAILED; its error then says what started and what to run by hand."""
+    try:
+        follow_ups = await _start_follow_ups_now(job, ProgressEvent(phase="complete", message=""))
+        await job.set({BackupJob.error: f"{_TERMINATED}; {follow_ups}"})
+    except Exception:
+        logger.exception("Follow-ups of interrupted restore %s could not be started", job.job_id)
 
 
 class RestoreAlreadyRunningError(Exception):
