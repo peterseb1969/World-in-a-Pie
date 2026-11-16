@@ -24,8 +24,8 @@ Endpoints
     ``namespace_map`` needs admin on the map's targets alone. The destination
     is the archive's own namespace(s), which only a ``merge``
     (``target_namespace`` for one namespace, ``namespace_map`` for several) or
-    a ``fresh`` restore may change. A
-    target the mode cannot honour is refused, never silently replaced.
+    a ``fresh`` restore may change. A target the mode cannot honour is refused,
+    never silently replaced.
 * ``POST /backup/namespaces/{namespace}/validate``
     Verify a namespace's referential and identity integrity as a job. Started
     automatically after every restore, and available on demand.
