@@ -219,10 +219,12 @@ the services `cmd:` key (Open question 4).
   which was deleted in the v1 retirement (2026-04-30) because wip-deploy now
   renders production compose, so the step had been failing since then.
 - **Quality audit** (`quality-audit.yaml`, `v*` tags) runs in a job
-  container like the tests and works there. It currently fails against its
-  baseline (pinned 2026-07-27, at v2.1.0): mypy 66 vs 0, radon-cc-c-plus 215
-  vs 142, vulture 2 vs 1. That is drift since the baseline, not the runner
-  move.
+  container like the tests and works there. At v2.1.0 (2026-07-27) it failed
+  against its baseline: mypy 66 vs 0, radon-cc-c-plus 215 vs 142, vulture
+  2 vs 1. That was drift since the baseline, not the runner move. The radon
+  pin was re-measured at 212 on 2026-11-15. The pins in force live in
+  `reports/quality-audit/baseline.json`; whether a run passes is what that
+  run's `--ci` step reports, not this note.
 
 - **NATS arguments: the services `cmd:` key (2026-10-24, tested).** Gitea's
   runner adds a Gitea-specific `cmd` list to service containers (GitHub's
