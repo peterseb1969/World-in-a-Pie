@@ -49,9 +49,11 @@ Each phase command records the phase itself (`.claude/scripts/set-phase.py`); ne
   through the served client (`kbc case-fetch.py …`, `kbc kb-write.py …`), never a raw curl.
 - **Claim a case before you work on it.** `kbc kb-write.py CLAIM acquire <n> <kind>` (`respond`,
   `implement`, `fix`, `review`) before you start; a refusal that names a holder means the case is
-  theirs — ask or wait, never work around it — while any other failure is reported as that, not as
-  a claim. Renew on long work, park while you wait on a decision, release when you are done or stop.
-  This holds however the work starts — through `/wip-case` or from a plain request to fix a case.
+  theirs — ask or wait, never work around it, while any other failure (a transport error, a key
+  the KB refused) is reported as that, not as a claim. Renew on long work, park while you wait on
+  a decision, release when you are done or stop. `kbc case-fetch.py case <n>` shows a case's
+  claims first: check them before you pick a case. This holds however the work starts — through
+  `/wip-case` or from a plain request to fix a case.
 <!--/TIER3-->
 
 ## Stop rule — 300k tokens

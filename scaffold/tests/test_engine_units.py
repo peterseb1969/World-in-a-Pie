@@ -341,6 +341,20 @@ def test_case_claim_rule_reaches_only_kb_clones(tmp_path):
         assert "whether the claim was taken is unknown" in command, role
         assert "names a holder" in command, role
         assert "names a holder" in tier3[f"{role}:CLAUDE.md"], role
+        # Whitespace is folded so the templates stay free to re-wrap at their
+        # own width; the wording itself must match across profiles.
+        claude_md = " ".join(tier3[f"{role}:CLAUDE.md"].split())
+        # The rule is three parts in every profile, and the abbreviated profile
+        # must not be where they quietly go missing: checking the claims before
+        # picking a case, and naming what a non-holder failure looks like.
+        assert "check them before you pick a case" in claude_md, role
+        assert "any other failure (a transport error, a key the KB refused)" in claude_md, role
+        # The stub header names every playbook rule it reproduces, so someone
+        # fixing one copy knows the others carry it too.
+        folded_command = " ".join(command.split())
+        assert ("the claim step (write verbs, step 0) and the attribution line (step 1) "
+                "both apply at the moment of acting") in folded_command, role
+        assert "Change either one in every copy" in folded_command, role
 
 
 def test_app_playbooks_never_wipe(tmp_path):
