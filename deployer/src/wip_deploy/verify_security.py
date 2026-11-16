@@ -1209,13 +1209,16 @@ class RotationNotChecked(Exception):  # noqa: N818 - an outcome, not a fault of 
 
 
 def _tls_failure(exc: BaseException) -> bool:
-    """Whether an httpx error comes from TLS verification: an ssl.SSLError
-    somewhere in its cause chain."""
+    """Whether an httpx error comes from TLS verification: an
+    ssl.SSLCertVerificationError somewhere in its cause chain. Any other ssl
+    error (a connection torn down mid-handshake while services restart) is a
+    failure to connect, answered like one, not a certificate the anchor
+    refused."""
     import ssl
 
     seen: BaseException | None = exc
     while seen is not None:
-        if isinstance(seen, ssl.SSLError):
+        if isinstance(seen, ssl.SSLCertVerificationError):
             return True
         seen = seen.__cause__ or seen.__context__
     return False
@@ -1275,7 +1278,15 @@ def check_key_rotation(
                 f"(last answer: {new_status if new_status is not None else 'no response'})"
             )
         if old_key:
-            old_status = status(old_key)
+            try:
+                old_status = status(old_key)
+            except RotationNotChecked as e:
+                # An answer already found stays the answer: a refused new key
+                # is a failed rotation whatever the old key's probe met.
+                if not problems:
+                    raise
+                problems.append(f"the old key's refusal was not checked: {e}")
+                return problems
             if old_status not in (401, 403):
                 problems.append(
                     f"the old key is still answered {old_status} at {url} — "

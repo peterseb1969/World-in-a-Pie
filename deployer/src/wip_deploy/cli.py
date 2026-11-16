@@ -1742,11 +1742,15 @@ def verify(
         )
         # A self-signed k8s install's trust anchor is the certificate in its
         # TLS Secret, read with kubectl from the cluster the install records.
-        _select_cluster_or_exit(previous, mutating=False)
-        with _install_trust(previous) as verify:
-            if isinstance(verify, Untrusted):
-                from wip_deploy.check_app import CheckResult
+        # A cluster that cannot be selected leaves the live checks not run,
+        # reported with every other check, as a missing anchor does.
+        from wip_deploy.check_app import CheckResult
 
+        refused = _select_cluster(previous, mutating=False)
+        with _install_trust(previous) if refused is None else contextlib.nullcontext(
+            Untrusted(f"the install's cluster could not be selected: {refused}")
+        ) as verify:
+            if isinstance(verify, Untrusted):
                 report.results.append(CheckResult(
                     "live checks", False,
                     f"not run: {verify.why}; they send the admin key, which is never "
@@ -7083,18 +7087,27 @@ def _select_cluster_or_exit(deployment: Deployment, *, mutating: bool) -> None:
     in this process (kube.select). A refusal (another cluster behind the
     context, or no record on a verb that changes the cluster) exits 2 before
     anything is applied. Compose and dev: nothing to select."""
+    refused = _select_cluster(deployment, mutating=mutating)
+    if refused is not None:
+        typer.echo(f"error: {refused}", err=True)
+        raise typer.Exit(2)
+
+
+def _select_cluster(deployment: Deployment, *, mutating: bool) -> str | None:
+    """Select the install's recorded cluster (see _select_cluster_or_exit);
+    the refusal's reason, or None when selected or nothing needs selecting."""
     k8s = deployment.spec.platform.k8s
     if deployment.spec.target != "k8s" or k8s is None:
-        return
+        return None
     from wip_deploy.kube import KubeError, select
 
     try:
         warning = select(k8s.kube, namespace=k8s.namespace, mutating=mutating)
     except KubeError as e:
-        typer.echo(f"error: {e}", err=True)
-        raise typer.Exit(2) from e
+        return str(e)
     if warning:
         typer.secho(f"warning: {warning}", fg=typer.colors.YELLOW, err=True)
+    return None
 
 
 def _select_cluster_for_namespace_verb(
