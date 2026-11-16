@@ -10,7 +10,7 @@ which talks only to the KB **gateway** (never the document-store backend).
 
 ## Subcommands
 
-- `/wip-case file [Peter comment]` — file a new case (bug, question, request, gap)
+- `/wip-case file [Peter comment]` — file a new case (type: bug, gap, docs, design, process, chore or question)
 - `/wip-case list` — list open/responded cases
 - `/wip-case read <n>` — read a case in full (body + all responses)
 - `/wip-case respond <n>` — append a response (drives open→responded)
@@ -224,7 +224,7 @@ and do not start the same work. `case <n>` shows the case's claims first
 (`> **claimed:** …`), and `list` has a **Claimed** column: **check before starting**.
 
 ```bash
-kbc kb-write.py CLAIM acquire <n> <kind>   # before starting; refused (exit 1) if someone holds it
+kbc kb-write.py CLAIM acquire <n> <kind>   # before starting; see "Reading the outcome" below
 kbc kb-write.py CLAIM renew   <n> <kind>   # extend the lease on long work
 kbc kb-write.py CLAIM park    <n> <kind> --note "waiting on the decision in CASE-<m>"
 kbc kb-write.py CLAIM release <n> <kind>   # when done, failed or abandoned
@@ -235,13 +235,34 @@ kbc kb-write.py CLAIM release <n> <kind>   # when done, failed or abandoned
   none of its predecessor's claims: to finish or release a claim the predecessor parked,
   pass `--holder <prior-session-id>` (the `continues_from` in your `session.md`).
   Use this only for your own lineage. A claim held by any other session is that session's to release.
-- A refused acquire names who holds the case. Do not work around it: ask them, or wait.
-- An **active** claim has a lease (60 minutes unless the kind's `CLAIM_RULE` says
-  otherwise). Renew on long work; an unrenewed lease runs out and the case is free.
+- **Reading the outcome.** Exit 0 prints the claim (`CASE-<n> <kind>: active by …,
+  lease until …`). Otherwise:
+  - **Someone holds it:** exit 1 with `cannot be claimed for <kind>: <kind> is held by
+    <holder> …`. That message, and only that one, means the case is taken. Do not work
+    around it: ask the holder, or wait.
+  - **Any other exit 1 is a different refusal**, not "someone holds it": the case does
+    not exist, you hold no such claim (renew, park, release), the lease ran out (renew),
+    the key is refused, the kind is unknown. Read the message and fix that.
+  - **Exit 2 with `ERROR: transport failure`:** the claim's state is unknown, since the
+    write may have landed. Read `kbc case-fetch.py case <n>` (claims come first) before
+    retrying. If you hold it, carry on. Running `acquire` again is safe either way: an
+    acquire on your own claim keeps its place and renews the lease.
+  - **Exit 2 before any request** (`ERROR: usage …`, `ERROR: no holder …`): nothing was
+    sent; fix the command.
+- An **active** claim has a lease, set by its kind's `CLAIM_RULE`. Renew on long work;
+  an unrenewed lease runs out and the case is free. The rules in force on the canonical
+  KB (read them with `kbc case-fetch.py read CLAIM_RULE`, which is authoritative):
+
+  | kind | lease | holders at once | excludes |
+  |---|---|---|---|
+  | implement | 120 min | 1 | fix |
+  | fix | 120 min | 1 | implement |
+  | review | 90 min | 1 | — |
+  | respond | 45 min | 1 | — |
+
+  A kind with no rule gets 60 minutes, one holder and no exclusions.
 - A **parked** claim has no lease: use it when you stop to wait for a decision, so
   the case stays yours. `acquire` again to resume it.
-- Each kind's `CLAIM_RULE` (a config document) sets how many may hold it at once and
-  which kinds exclude each other. Without one: one holder, no exclusions.
 - Release when you are done. A posted response does not release a claim by itself.
 
 **What is in progress across the KB:** `kbc case-fetch.py claims` lists every claim
@@ -276,7 +297,8 @@ the same as an "In progress" panel.
    the evidence, the options and their cost.
 
 **Claim it first** (see Claims above): `kbc kb-write.py CLAIM acquire <n> respond`. A
-refused acquire means someone else is responding: stop. Release when the response is
+refusal that says the case is held by another session means someone else is responding:
+stop. Any other refusal is read as Claims above describes. Release when the response is
 posted, or when you give up.
 
 **The response body** — every respond, attended or unattended, has this shape:
@@ -643,6 +665,18 @@ FLAG_RECORD's identity is `[flag_type, flagged_document]`.) Re-flagging the
 same doc in the UI upserts that identity back to `published`, which re-arms
 the trigger after a failed run. `--doc-status dispatched` / `all` list
 consumed / every flag.
+
+**Withdrawing a flag** sets `doc_status: archived`. The poller never picks it up,
+and the KB stops counting it as asked for: the flag button is live again, and an
+implement flag leaves "ready to implement". The owner withdraws a flag from the
+case page's Flags line ("withdraw", then "yes"). From a terminal:
+
+```bash
+kbc kb-write.py FLAG_RECORD --patch doc_status=archived --match document_id=<flag_id>
+```
+
+Only `dispatched` means picked up. Re-flagging the doc re-arms a withdrawn flag to
+`published`, like any other.
 
 **What a flag says: kind, owner, worker.**
 - **The kind of work** is `flag_type`: respond, implement, fix or review, the same kinds claims use (`CLAIM_KIND`). On flags written since the field exists, `kind` holds the same value as a vocabulary term, so a kind outside the list is refused.

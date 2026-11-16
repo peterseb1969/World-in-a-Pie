@@ -305,7 +305,8 @@ _APP_TOKENS = {"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET":
 
 
 def _claim_bearing_outputs(tmp_path: Path, *, tier3: bool) -> dict[str, str]:
-    # The CLAUDE.md render and the slash commands of both roles, keyed by role.
+    # The CLAUDE.md render and the slash commands of both roles — the app role
+    # in its full and slim profiles — keyed "backend", "app" or "slim".
     ctx = _ctx(tmp_path, tier3=tier3, tokens=dict(_APP_TOKENS))
     out: dict[str, str] = {}
     for role, surfaces in (
@@ -335,10 +336,12 @@ def test_case_claim_rule_reaches_only_kb_clones(tmp_path):
         # CLAUDE.md rule says the same.
         command = tier3[f"{role}:.claude/commands/wip-case.md"]
         assert "exit 2 is a transport failure" in command, role
-        # A transport failure says nothing about the claim: stop, then read
-        # the case's claims before retrying.
-        assert "report it verbatim and stop" in command, role
+        # A transport failure says nothing about the claim: read the case's
+        # claims first, and tell your own claim from another session's.
+        assert "report it verbatim" in command, role
         assert "whether the claim was taken is unknown" in command, role
+        assert "held by your own session id" in command, role
+        assert "One held by any other session is theirs" in command, role
         assert "names a holder" in command, role
         assert "names a holder" in tier3[f"{role}:CLAUDE.md"], role
         # Whitespace is folded so the templates stay free to re-wrap at their

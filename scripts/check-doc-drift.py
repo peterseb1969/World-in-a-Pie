@@ -242,10 +242,15 @@ def main() -> int:
         )
 
     # ── Check 4: served-playbook sync freshness (only where the cache exists) ──
+    # The comparison depends on this machine's client cache, so a copy that
+    # could not be compared is recorded as such: "none stale" must not be
+    # read from a machine that compared nothing.
     findings["stale_synced_copies"] = []
+    findings["unchecked_synced_copies"] = []
     for rel, served in SYNCED_FROM_SERVED:
         local = root / rel
         if not (local.is_file() and served.is_file()):
+            findings["unchecked_synced_copies"].append(rel)
             continue  # no cache on this machine (e.g. CI) — nothing to compare
         if local.read_text() != served.read_text():
             findings["stale_synced_copies"].append(rel)

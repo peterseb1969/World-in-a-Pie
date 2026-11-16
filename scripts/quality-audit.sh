@@ -507,9 +507,24 @@ data = json.load(open('$RAW_DIR/doc-drift.json'))
 undoc = sum(len(v) for v in data.get('undocumented', {}).values())
 stale = len(data.get('count_mismatches', []))
 synced = len(data.get('stale_synced_copies', []))
-print(f'{undoc} undocumented exports, {stale} stale counts, {synced} stale synced copies')
+unchecked = len(data.get('unchecked_synced_copies', []))
+if unchecked and not synced:
+    copies = 'synced copies not checked (no client cache on this machine)'
+else:
+    copies = f'{synced} stale synced copies'
+print(f'{undoc} undocumented exports, {stale} stale counts, {copies}')
 " 2>/dev/null || echo "?")
-ok "Doc drift: $DOC_DRIFT ($(step_time $STEP_START))"
+# A stale synced copy is the one finding here that names a file to re-sync
+# now (the counts beside it are reported as before): warn on it.
+SYNCED_STALE=$(python3 -c "
+import json
+print(len(json.load(open('$RAW_DIR/doc-drift.json')).get('stale_synced_copies', [])))
+" 2>/dev/null || echo 0)
+if [ "$SYNCED_STALE" != "0" ]; then
+    warn "Doc drift: $DOC_DRIFT — re-sync from the served bundle ($(step_time $STEP_START))"
+else
+    ok "Doc drift: $DOC_DRIFT ($(step_time $STEP_START))"
+fi
 
 # ─── Step 14: Tier-2 purity (CASE-463) ───────────────────────────────
 info "Step 14: Tier-2 purity..."
