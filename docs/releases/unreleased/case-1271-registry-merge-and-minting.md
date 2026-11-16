@@ -11,10 +11,10 @@ cases: [1271]
   and the deprecated entry keeps its keys; the merge reported `merged` and left
   the deprecated identity on an entry nothing resolves to.
 - **A key the survivor released resolves to it after a merge.** When the
-  survivor held a key the deprecated entry holds only as a released (inactive)
-  copy, the merge moved the key's claim to the survivor but kept its copy
-  inactive: the key was claimed and resolved to nothing. The survivor's copy
-  is now replaced by the active one.
+  survivor held only a released (inactive) copy of a key the deprecated entry
+  held actively, the merge moved the key's claim to the survivor but left the
+  survivor's copy inactive: the key was claimed and resolved to nothing. The
+  survivor's copy is now replaced by the active one.
 - **A namespace whose id algorithm only validates answers per item.** The
   `pattern` and `any` algorithms check IDs a caller supplies and mint none. A
   register item without an `entry_id` in such a namespace answered the whole
