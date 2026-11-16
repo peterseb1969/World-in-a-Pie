@@ -2248,8 +2248,11 @@ _MERGE_DEFINITION_TYPES = frozenset({"terminologies", "terms", "term_relations",
 
 
 def _merge_written_templates(plan: EntityPlan, on_clash: str) -> set[str]:
-    """The ids of the templates a merge's documents are written under: the
-    inserted ones', and the clashing ones' when the policy overwrites."""
+    """The ids of the templates a merge's documents may be written under: the
+    inserted ones', and every clashing one's when the policy overwrites.
+    Whether a clash is identical, or older under ``newer``, is decided only
+    as documents are written, against the target's head then, so a clash the
+    merge will in the end leave alone still counts here."""
     overwrites = on_clash in ("overwrite", "newer")
     return {
         str(row.get("template_id"))
@@ -6786,15 +6789,44 @@ class DirectRestoreEngine:
         except Exception as exc:
             # Any failure, the driver's own included (a lost connection, a
             # timeout): some rows may have landed either way.
-            landed = await self._landed_rows(collection, namespace, rows)
-            await _retire_superseded(collection, namespace, landed, older_versions)
-            raise RestoreEngineError(
-                f"{exc} — in '{namespace}', {len(landed)} of {len(rows)} "
-                "overwriting version(s) in that batch were written (their "
-                "older versions retired as the policy says); the merge "
-                "stopped there."
+            raise await self._partial_overwrite_error(
+                exc, collection, namespace, rows, older_versions,
             ) from exc
         return await _retire_superseded(collection, namespace, rows, older_versions)
+
+    async def _partial_overwrite_error(
+        self, exc: Exception, collection: Any, namespace: str,
+        rows: list[dict[str, Any]], older_versions: str,
+    ) -> RestoreEngineError:
+        """The error for a batch of appended heads that failed partway, after
+        retiring what the rows that landed supersede. The recovery reads and
+        writes the same collection, so it can fail too (the connection that
+        broke the insert may still be down): it is then reported in the
+        error, never raised in place of the insert's."""
+        try:
+            landed = await self._landed_rows(collection, namespace, rows)
+        except Exception as check:
+            return RestoreEngineError(
+                f"{exc} — in '{namespace}', which of the {len(rows)} overwriting "
+                f"version(s) in that batch were written could not be checked "
+                f"({check}): a document in it may hold two active versions. The "
+                "merge stopped there."
+            )
+        try:
+            await _retire_superseded(collection, namespace, landed, older_versions)
+        except Exception as retire:
+            return RestoreEngineError(
+                f"{exc} — in '{namespace}', {len(landed)} of {len(rows)} "
+                "overwriting version(s) in that batch were written, but their "
+                f"older versions could not be retired ({retire}): those "
+                "documents may hold two active versions. The merge stopped there."
+            )
+        return RestoreEngineError(
+            f"{exc} — in '{namespace}', {len(landed)} of {len(rows)} "
+            "overwriting version(s) in that batch were written (their "
+            "older versions retired as the policy says); the merge "
+            "stopped there."
+        )
 
     def _report_overwrites(
         self, namespace: str, tally: _OverwriteTally, *, on_clash: str, older_versions: str,
@@ -7542,7 +7574,8 @@ class DirectRestoreEngine:
         definitions it added) says the namespace held data before this run,
         which the halt's advice must not tell the operator to delete.
         ``templates``: for a merge, the ids of the templates whose documents
-        it writes. Only their tables (and unusable bookkeeping) halt it; a
+        it may write (every clashing template under overwrite / newer). Only
+        their tables (and unusable bookkeeping) halt it; a
         live namespace's issue with another template's table was there
         before the merge and is reported, not a reason to refuse it.
         """
@@ -7577,7 +7610,7 @@ class DirectRestoreEngine:
         self, namespace: str, parity: dict[str, Any] | None, templates: set[str] | None,
     ) -> list[str]:
         """The failing tables to name in the halt (for a merge, only those of
-        templates it writes), each with reporting-sync's reason for it. The
+        templates it may write), each with reporting-sync's reason for it. The
         jobs are matched by template id, since another namespace can hold a
         template of the same value; a missing table says only that the sync
         did not get there."""
@@ -7612,7 +7645,7 @@ class DirectRestoreEngine:
     ) -> bool:
         """Whether a merge may go on although the structure check is not
         green: the bookkeeping is usable and no failing table is one of a
-        template whose documents it writes. The others are reported."""
+        template whose documents it may write. The others are reported."""
         if not parity.get("bookkeeping_tables_ok", True):
             return False
         failing = _structure_failures(parity)

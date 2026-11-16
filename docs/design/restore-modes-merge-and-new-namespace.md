@@ -125,8 +125,9 @@ archive version onto the target version whose schema can take its documents
 target's version of a clashing identity. `overwrite` appends the archive's
 latest version on top of the target's head, preserving both histories (on a
 `versioned:false` template it replaces the single version in place). A
-clash whose archive copy equals the target's (data, the resolved references
-and `metadata.custom`, as document writes compare them) is left alone under
+clash whose archive copy equals the target's (data, the resolved references,
+`metadata.custom` and the status, as document writes compare them; a deletion
+or a revival is a difference) is left alone under
 either policy: a new version that changes nothing is noise. That comparison
 runs only where documents are written, so the plan (and the dry run) counts a
 clashing document as `not_compared`, never as unchanged or clash. After the

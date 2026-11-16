@@ -325,6 +325,69 @@ async def test_a_partial_insert_never_leaves_two_active_versions(mongo):
         assert len(await _active(mongo, doc_id)) == 1, doc_id
 
 
+async def _merge_with_a_failing_insert_and(mongo, broken: str):
+    """Run an overwriting merge whose batch insert fails partway with a driver
+    error, while the named recovery step fails too."""
+    from pymongo.errors import AutoReconnect
+
+    from document_store.services import backup_engine
+
+    await _seed_namespace(mongo)
+    await _seed(mongo, "templates", [_template()])
+    await _seed(mongo, "documents", [
+        _doc(1, doc_id="D1", ident="h1"),
+        _doc(1, doc_id="D2", ident="h2"),
+    ])
+    real = DirectRestoreEngine._insert_batch
+
+    async def first_row_then_drop(self, collection, batch, entity_type):
+        if entity_type == "documents" and len(batch) > 1:
+            await real(self, collection, batch[:1], entity_type)
+            raise AutoReconnect("connection closed mid-batch")
+        await real(self, collection, batch, entity_type)
+
+    async def still_down(*args, **kwargs):
+        raise AutoReconnect("still down")
+
+    target = (
+        patch.object(DirectRestoreEngine, "_landed_rows", still_down) if broken == "check"
+        else patch.object(backup_engine, "_retire_superseded", still_down)
+    )
+    with (
+        patch.object(DirectRestoreEngine, "_insert_batch", first_row_then_drop),
+        target,
+        pytest.raises(RestoreEngineError) as raised,
+    ):
+        await _run_merge(mongo, _archive({"documents": [
+            _doc(1, doc_id="D1", ident="h1", data={"n": "a1"}),
+            _doc(1, doc_id="D2", ident="h2", data={"n": "a2"}),
+        ]}), on_clash="overwrite", older_versions="retire")
+    return raised.value
+
+
+@pytest.mark.asyncio
+async def test_a_landed_check_that_fails_too_still_raises_the_insert_error(mongo):
+    error = await _merge_with_a_failing_insert_and(mongo, "check")
+    message = str(error)
+    assert message.startswith("connection closed mid-batch"), message
+    assert "could not be checked (still down)" in message
+    assert "may hold two active versions" in message
+    causes, cause = [], error.__cause__
+    while cause is not None:
+        causes.append(type(cause).__name__)
+        cause = cause.__cause__
+    assert "AutoReconnect" in causes, causes
+
+
+@pytest.mark.asyncio
+async def test_a_retire_that_fails_too_still_raises_the_insert_error(mongo):
+    error = await _merge_with_a_failing_insert_and(mongo, "retire")
+    message = str(error)
+    assert message.startswith("connection closed mid-batch"), message
+    assert "1 of 2 overwriting version(s) in that batch were written" in message
+    assert "could not be retired (still down)" in message
+
+
 # ── 4. identical overwrites ───────────────────────────────────────────
 
 
