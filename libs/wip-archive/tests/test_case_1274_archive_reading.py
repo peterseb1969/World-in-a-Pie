@@ -57,9 +57,9 @@ def test_an_entity_line_that_is_not_utf8_is_a_parse_error(tmp_path):
         "namespaces/ns1/terms.jsonl": b'{"term_id": "t\xff"}\n',
     })
     with ArchiveReader(path) as reader:
-        with pytest.raises(EntityParseError, match="terms.jsonl"):
+        with pytest.raises(EntityParseError, match=r"terms\.jsonl"):
             list(reader.read_entities("terms", namespace="ns1"))
-        with pytest.raises(EntityParseError, match="terms.jsonl"):
+        with pytest.raises(EntityParseError, match=r"terms\.jsonl"):
             reader.entity_count("terms", namespace="ns1")
 
 

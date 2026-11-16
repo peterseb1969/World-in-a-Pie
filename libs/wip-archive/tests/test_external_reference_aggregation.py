@@ -125,7 +125,7 @@ def test_json_lists_each_outside_target_once_with_its_count(tmp_path):
     model = _archive(tmp_path / "d.zip", docs)
 
     payload = model.to_dict()
-    assert payload["schema"] == SCHEMA_VERSION == "1.3"
+    assert payload["schema"] == SCHEMA_VERSION == "2.0"
     report = next(t for t in payload["templates"] if t["template_id"] == TPL)
     history = report["data_closure"]["external"]
     latest = report["data_closure_latest_only"]["external"]

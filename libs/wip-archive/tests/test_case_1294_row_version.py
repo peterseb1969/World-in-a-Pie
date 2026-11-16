@@ -49,3 +49,22 @@ def test_loading_an_archive_with_a_non_numeric_document_version_is_refused(tmp_p
     path = _write(tmp_path / "in.zip", [_doc(A, "one", status="active")])
     with ArchiveReader(path) as reader, pytest.raises(RowVersionError, match=f"document {A}"):
         ArchiveModel.load(reader)
+
+
+def test_an_infinite_version_is_refused_like_any_non_number():
+    """int(float("inf")) raises OverflowError, which used to escape past the
+    CLI's guard as a bare traceback."""
+    with pytest.raises(RowVersionError, match="document D1 has version inf"):
+        row_version({"document_id": "D1", "version": float("inf")})
+
+
+def test_a_pinning_row_without_a_version_is_named_as_version_1(tmp_path):
+    """The pinning row is named by the version the model counted it under,
+    not by its raw (absent) value."""
+    documents = [_doc(A, 1), _doc(A, 2, status="active"),
+                 _doc(B, None, status="active", refs=[_ref(A, "latest", "pinned")])]
+    path = _write(tmp_path / "in.zip", documents)
+    with ArchiveReader(path) as reader:
+        model = ArchiveModel.load(reader)
+        with pytest.raises(RowVersionError, match=f"document {B} v1's pinned reference"):
+            plan_latest_only(reader, model)

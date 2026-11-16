@@ -62,6 +62,29 @@ async def test_a_write_during_the_referents_read_is_detected(
 
 
 @pytest.mark.asyncio
+async def test_a_write_during_the_manifest_reads_is_detected(
+    session_mongo_client, seeded, tmp_path, monkeypatch,
+):
+    """The manifest reads each namespace's config and provenance; those are
+    the backup's last reads of MongoDB, so the recount comes after them."""
+    events: list = []
+    engine = DirectBackupEngine(session_mongo_client, None, events.append)
+    original = engine._read_provenance
+
+    async def read_provenance_while_a_term_is_created(ns):
+        db_name, coll_name = COLLECTION_MAP["terms"]
+        await session_mongo_client[db_name][coll_name].insert_one(
+            {"term_id": "late", "namespace": seeded, "value": "late"},
+        )
+        return await original(ns)
+
+    monkeypatch.setattr(engine, "_read_provenance", read_provenance_while_a_term_is_created)
+    await engine.run_backup([seeded], tmp_path / "a.zip")
+
+    assert any(f"{seeded} terms: 0 before, 0 read, 1 after" in w for w in _warnings(events))
+
+
+@pytest.mark.asyncio
 async def test_a_failed_recount_keeps_the_finished_archive(
     session_mongo_client, seeded, tmp_path, monkeypatch,
 ):

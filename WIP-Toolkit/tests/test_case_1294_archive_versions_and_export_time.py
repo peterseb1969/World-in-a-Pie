@@ -1,7 +1,8 @@
 """Two archive-reading fixes, through the toolkit.
 
-A row whose version is not a number makes every archive command stop with
-a message naming the row and exit 1, not a traceback. A v2 archive whose
+A row whose version is not a number makes every command that reads the
+archive model stop with a message naming the row and exit 1, not a
+traceback (diff compares stored rows and does not read versions as numbers). A v2 archive whose
 manifest records no export time converts to a v3 archive that records none
 either: the converter used to write the moment it read the manifest, and a
 later restore reported that as the export time. inspect shows a missing

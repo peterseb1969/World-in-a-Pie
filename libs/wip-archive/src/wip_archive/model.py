@@ -56,8 +56,9 @@ from .models import Manifest
 # removing or re-typing a field is a major bump. 1.3: an `external` list holds
 # each outside target once per referring template, with `count` and
 # `origin_template`, and the latest-only closure lists only what latest
-# versions reference.
-SCHEMA_VERSION = "1.3"
+# versions reference. 2.0: `archive.exported_at` is a string or null (null
+# when the archive records no export time).
+SCHEMA_VERSION = "2.0"
 
 # A template- or terminology-typed reference: the resolved id key, the
 # model's map of carried ones, and the ReferenceGraph counter it feeds.

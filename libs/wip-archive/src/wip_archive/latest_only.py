@@ -64,7 +64,7 @@ def _pinned(row: dict[str, Any]) -> set[tuple[str, int]]:
         resolved = ref.get("resolved") or {}
         doc_id = resolved.get("document_id")
         if isinstance(doc_id, str) and resolved.get("version") is not None:
-            name = (f"document {row.get('document_id')} v{row.get('version')}'s "
+            name = (f"document {row.get('document_id')} v{row_version(row)}'s "
                     f"pinned reference to document {doc_id}")
             out.add((doc_id, row_version(resolved, name=name)))
     return out

@@ -125,7 +125,8 @@ class Manifest(BaseModel):
     tool_version: str = ""
     # When the archive was written. None when the archive does not say: a
     # "now" default here once made every reader report the moment it read
-    # the archive as its export time. Every writer sets it.
+    # the archive as its export time. An archive-making writer sets it;
+    # convert-archive copies it only when the source archive has one.
     exported_at: datetime | None = None
     source_host: str = ""
     # v3: the authoritative list of namespaces in this archive.

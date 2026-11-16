@@ -946,11 +946,9 @@ class DirectBackupEngine:
             referent_rows = await self._read_referents(referents.external_ids())
             writer.write_referents_file(referent_rows)
 
-            # After the last read of MongoDB, so the recount covers every read.
-            await self._warn_if_changed_while_read(
-                namespaces, per_ns_counts, writer, skip_documents, left_out,
-            )
-
+            # The manifest's reads (each namespace's config and provenance)
+            # are part of the archive: if they fail, there is no archive to
+            # keep, and the job fails.
             manifest = await self._backup_manifest(
                 writer, namespaces,
                 include_files=bool(include_files and self._storage),
@@ -958,6 +956,12 @@ class DirectBackupEngine:
                 without_bytes=without_bytes,
                 include_documents=not skip_documents,
                 left_out=left_out,
+            )
+
+            # After the last read of MongoDB, so the recount covers every
+            # read; it only warns, and a recount that fails keeps the archive.
+            await self._warn_if_changed_while_read(
+                namespaces, per_ns_counts, writer, skip_documents, left_out,
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)

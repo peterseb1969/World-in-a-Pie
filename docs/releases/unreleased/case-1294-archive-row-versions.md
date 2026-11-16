@@ -10,9 +10,13 @@ packages: [wip-archive, wip-toolkit]
   null or zero.** Its latest-only filter compared the row's raw version with
   the version the archive model had counted, so `"3"` never matched `3`, and
   a single-row document vanished from the CSV with nothing said.
-- **A version that is not a number** (`"latest"`, `"1.0"`) in a document or
-  template row, or in a pinned reference's `resolved.version`, stops every
-  archive command with a message naming the row and exit 1. It used to end
+- **A version that is not a number** (`"latest"`, `"1.0"`, infinity) in a
+  document or template row, or in a pinned reference's `resolved.version`,
+  stops every command that reads the archive model (`inspect`, `verify`,
+  `filter`, `prune`, `latest-only`, `split`, `export-csv`, `migrate`,
+  `redact`) with a message naming the row and exit 1. `diff` compares rows as
+  they are stored and keys them by the version as written, so it does not
+  stop. It used to end
   in a bare `ValueError` traceback, and `latest-only` hit it on a pinned
   reference it used to skip. `wip_archive` raises
   `wip_archive.exceptions.RowVersionError`, an `ArchiveError`;

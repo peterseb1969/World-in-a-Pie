@@ -85,7 +85,7 @@ def row_version(row: dict[str, Any], *, name: str | None = None) -> int:
     raw = row.get("version", 1)
     try:
         return int(raw or 1)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: infinity
         raise RowVersionError(
             f"{name or _row_name(row)} has version {raw!r}, which is not a number"
         ) from None
