@@ -151,8 +151,14 @@ These follow from the decisions above; the design did not spell them out.
   schema matches with those references left aside (the same schema, or the
   target's preferred version when compatible). A candidate is dropped while
   a version it pins is not a candidate of the archive version it stands for,
-  until nothing is dropped. Each version then takes its preferred candidate,
-  the versions it names first (in a cycle, a fixed order), and every choice
-  is narrowed into the rest. A mapped version is checked once more against
-  its target version with the other mappings in place; a version left
-  without a consistent target version is unplaceable.
+  until nothing is dropped. Each version then takes a candidate, preferred
+  first, backing out of a choice that leaves another version with none, so a
+  mapping is not missed because the first preference did not work out. Every
+  mapping is written before any version is compared, and each mapped version
+  is checked against its target version with the other mappings in place,
+  which unmaps one that no longer holds: **every version reported as mapped is
+  consistent with every other mapping.** A version whose candidates were all
+  dropped is never mapped onto a target version by its archived number —
+  those numbers are another install's — it is reported unplaceable, with the
+  reason: that its version references do not line up with the other
+  templates', or what differs from the target's preferred version.
