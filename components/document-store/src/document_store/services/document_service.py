@@ -62,7 +62,12 @@ from .reference_validator import (
     RegistryUnavailableError,
     get_reference_validator,
 )
-from .registry_client import RegistryError, get_registry_client, qualified_synonym_values
+from .registry_client import (
+    RegistryError,
+    RegistryUnreachableError,
+    get_registry_client,
+    qualified_synonym_values,
+)
 from .template_store_client import TemplateStoreError, get_template_store_client
 from .timing_stats import TimingStats
 from .validation_service import ValidationService
@@ -4803,19 +4808,27 @@ class DocumentService:
         if not candidates:
             return set()
 
-        refusals = await get_registry_client().register_auto_synonyms_per_item(
-            [
-                {
-                    "document_id": results[pos].document_id,
-                    "template_value": vr.template_value or "",
-                    "identity_hash": vr.identity_hash,
-                    "has_identity_fields": bool(vr.identity_hash),
-                }
-                for pos, _item, vr in candidates
-            ],
-            namespace=namespace,
-            created_by=actor,
-        )
+        # A Registry that does not answer refuses every candidate as an
+        # outage (details.rule registry_unavailable), not as a refusal: a
+        # caller that stops on an outage (an import) must see it as one.
+        outage: dict[str, Any] | None = None
+        try:
+            refusals = await get_registry_client().register_auto_synonyms_per_item(
+                [
+                    {
+                        "document_id": results[pos].document_id,
+                        "template_value": vr.template_value or "",
+                        "identity_hash": vr.identity_hash,
+                        "has_identity_fields": bool(vr.identity_hash),
+                    }
+                    for pos, _item, vr in candidates
+                ],
+                namespace=namespace,
+                created_by=actor,
+            )
+        except RegistryUnreachableError as e:
+            outage = error_fields(e)
+            refusals = [outage["error"]] * len(candidates)
         reasons: dict[str, str] = {}
         for (pos, _item, _vr), refusal in zip(candidates, refusals, strict=True):
             if refusal is not None:
@@ -4840,11 +4853,10 @@ class DocumentService:
             await self._release_entry_if_minted(document_id, minted=document_id in minted)
         for pos, result in enumerate(results):
             if result.document_id in reasons and result.status != "error":
-                results[pos] = BulkResultItem(
-                    index=result.index, status="error",
-                    error=reasons[result.document_id],
-                    error_code="registry_error",
-                )
+                fields = outage or {
+                    "error": reasons[result.document_id], "error_code": "registry_error",
+                }
+                results[pos] = BulkResultItem(index=result.index, status="error", **fields)
         return set(reasons)
 
     async def bulk_create(

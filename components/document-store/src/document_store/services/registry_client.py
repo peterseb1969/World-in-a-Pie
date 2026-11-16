@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 @contextlib.asynccontextmanager
 async def _transport_errors(operation: str) -> AsyncIterator[None]:
     """A call the Registry could not be reached for raises
-    RegistryUnreachableError, a RegistryError, as an error status does, so
-    every caller reports it per item as registry_error. A bare httpx error
+    RegistryUnreachableError, a RegistryError, so every caller reports it per
+    item as registry_error, with the outage's rule. A bare httpx error
     escaped them as a 500."""
     try:
         yield
@@ -44,10 +44,45 @@ async def _transport_errors(operation: str) -> AsyncIterator[None]:
 
 
 class RegistryUnreachableError(RegistryError):
-    """A Registry write that could not reach the Registry. A RegistryError,
-    so every write path's handler reports it per item; its item carries
-    ``details.rule: registry_unavailable``, as every other "could not be
-    reached" does, so a caller can tell the outage from a refusal."""
+    """A Registry call the Registry did not answer: unreachable, timed out,
+    or an error status (5xx: its restart, overload, an unhandled error). A
+    RegistryError, so every write path's handler reports it per item; its
+    item carries ``details.rule: registry_unavailable``, as every other
+    "could not be reached" does, so a caller (an import that stops on an
+    outage) can tell it from a refusal."""
+
+
+def _auto_synonym_refusals(rows: list[Any] | None, count: int) -> list[str | None]:
+    """Per document, None when the Registry added its auto-synonym (or the
+    entry already held it), else the reason it was refused. Rows the answer
+    lacks, or cannot be read, refuse their documents."""
+    if rows is None or len(rows) != count:
+        return ["Failed to register auto-synonym: unreadable Registry response"] * count
+    out: list[str | None] = ["Failed to register auto-synonym: no result from the Registry"] * count
+    for pos, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        index = row.get("index", pos)
+        if not isinstance(index, int) or not 0 <= index < count:
+            continue
+        status = row.get("status")
+        if status in ("added", "already_exists"):
+            out[index] = None
+        else:
+            error = row.get("error")
+            out[index] = (
+                f"Failed to register auto-synonym: status={status}" + (f": {error}" if error else "")
+            )
+    return out
+
+
+def _status_error(message: str, response: httpx.Response) -> RegistryError:
+    """The error for a Registry answer that is not 200: a 5xx is the
+    Registry not answering (RegistryUnreachableError), a 4xx a refusal."""
+    text = f"{message}: {response.status_code} - {response.text}"
+    if response.status_code >= 500:
+        return RegistryUnreachableError(text)
+    return RegistryError(text)
 
 __all__ = [
     "SYSTEM_QUALIFIER_KEY",
@@ -154,9 +189,7 @@ class RegistryClient(RegistryClientBase):
                 json=[item],
             )
             if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to generate document ID: {response.status_code} - {response.text}"
-                )
+                raise _status_error("Failed to generate document ID", response)
             data = response.json()
             result = data["results"][0]
             if result["status"] == "error":
@@ -210,9 +243,7 @@ class RegistryClient(RegistryClientBase):
                 json=registry_items,
             )
             if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to generate document IDs: {response.status_code} - {response.text}"
-                )
+                raise _status_error("Failed to generate document IDs", response)
             data = response.json()
             return cast(list[dict[str, Any]], data["results"])
 
@@ -279,9 +310,7 @@ class RegistryClient(RegistryClientBase):
                 json=items,
             )
             if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to re-key identities: {response.status_code} - {response.text}"
-                )
+                raise _status_error("Failed to re-key identities", response)
             return cast(list[dict[str, Any]], response.json()["results"])
 
     async def add_synonyms(
@@ -315,9 +344,7 @@ class RegistryClient(RegistryClientBase):
                 json=items,
             )
             if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to add synonyms: {response.status_code} - {response.text}"
-                )
+                raise _status_error("Failed to add synonyms", response)
             data = response.json()
             return cast(list[dict[str, Any]], data.get("results", []))
 
@@ -347,9 +374,7 @@ class RegistryClient(RegistryClientBase):
                 json=items,
             )
             if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to remove synonyms: {response.status_code} - {response.text}"
-                )
+                raise _status_error("Failed to remove synonyms", response)
             data = response.json()
             return cast(list[dict[str, Any]], data.get("results", []))
 
@@ -391,17 +416,23 @@ class RegistryClient(RegistryClientBase):
 
         For documents with identity fields: composite key includes template +
         identity_hash. Without: includes a portable UUID4. Failure raises and
-        prevents document creation.
+        prevents document creation: a refusal as RegistryError, a Registry
+        that does not answer (unreachable, or a 5xx) as
+        RegistryUnreachableError, so the item reads as an outage. The one-item
+        case of register_auto_synonyms_per_item, which draws that line.
         """
-        await self._register_auto_synonym(
-            target_id=document_id,
+        [refusal] = await self.register_auto_synonyms_per_item(
+            [{
+                "document_id": document_id,
+                "template_value": template_value,
+                "identity_hash": identity_hash,
+                "has_identity_fields": has_identity_fields,
+            }],
             namespace=namespace,
-            entity_type="documents",
-            composite_key=self._auto_synonym_key(
-                namespace, template_value, identity_hash, has_identity_fields,
-            ),
             created_by=created_by,
         )
+        if refusal is not None:
+            raise RegistryError(f"{refusal} (document {document_id})")
 
     async def register_auto_synonyms_per_item(
         self,
@@ -415,8 +446,11 @@ class RegistryClient(RegistryClientBase):
         identity_hash and has_identity_fields. Returns one entry per
         document, in order: None when its synonym is registered (or already
         was), else the reason it was refused — so a bulk create can fail
-        exactly the documents whose synonym the Registry refused. A transport
-        or HTTP failure refuses every document with the same reason.
+        exactly the documents whose synonym the Registry refused. A refusing
+        status (4xx) refuses every document with the same reason. A Registry
+        that does not answer (unreachable, or a 5xx) raises
+        RegistryUnreachableError: an outage, which the caller reports on every
+        document as one.
         """
         if not documents:
             return []
@@ -434,43 +468,24 @@ class RegistryClient(RegistryClientBase):
             for d in documents
         ]
         try:
-            async with self._make_client() as client:
+            async with _transport_errors("auto-synonym registration"), self._make_client() as client:
                 response = await client.post(
                     f"{self.base_url}/api/registry/synonyms/add",
                     headers=self._get_headers(),
                     json=payload,
                 )
+        except RegistryUnreachableError:
+            raise
         except Exception as e:
             return [f"Failed to register auto-synonym: {e}"] * len(documents)
+        if response.status_code >= 500:
+            raise _status_error("Failed to register auto-synonym", response)
         if response.status_code != 200:
             reason = (
                 f"Failed to register auto-synonym: {response.status_code} - {response.text}"
             )
             return [reason] * len(documents)
-        rows = _result_rows(response)
-        if rows is None or len(rows) != len(documents):
-            return ["Failed to register auto-synonym: unreadable Registry response"] * len(
-                documents
-            )
-        out: list[str | None] = [
-            "Failed to register auto-synonym: no result from the Registry"
-        ] * len(documents)
-        for pos, row in enumerate(rows):
-            if not isinstance(row, dict):
-                continue
-            index = row.get("index", pos)
-            if not isinstance(index, int) or not 0 <= index < len(documents):
-                continue
-            status = row.get("status")
-            if status in ("added", "already_exists"):
-                out[index] = None
-            else:
-                error = row.get("error")
-                out[index] = (
-                    f"Failed to register auto-synonym: status={status}"
-                    + (f": {error}" if error else "")
-                )
-        return out
+        return _auto_synonym_refusals(_result_rows(response), len(documents))
 
     async def get_namespace_status(self, namespace: str) -> str | None:
         """The namespace's lifecycle status as the Registry serves it, or None
@@ -481,7 +496,7 @@ class RegistryClient(RegistryClientBase):
         Raises RegistryError (or the transport's error) when the Registry
         cannot answer — callers gating a destructive action must fail closed.
         """
-        async with self._make_client() as client:
+        async with _transport_errors("namespace status"), self._make_client() as client:
             response = await client.get(
                 f"{self.base_url}/api/registry/namespaces/{namespace}",
                 headers=self._get_headers(),
@@ -489,10 +504,7 @@ class RegistryClient(RegistryClientBase):
         if response.status_code == 404:
             return None
         if response.status_code != 200:
-            raise RegistryError(
-                f"Failed to fetch namespace {namespace}: "
-                f"{response.status_code} - {response.text}"
-            )
+            raise _status_error(f"Failed to fetch namespace {namespace}", response)
         return cast(str, response.json().get("status"))
 
     async def get_namespace_deletion_journal(self, namespace: str) -> dict[str, Any] | None:
@@ -511,10 +523,7 @@ class RegistryClient(RegistryClientBase):
         if response.status_code == 404:
             return None
         if response.status_code != 200:
-            raise RegistryError(
-                f"Failed to fetch the deletion journal of {namespace}: "
-                f"{response.status_code} - {response.text}"
-            )
+            raise _status_error(f"Failed to fetch the deletion journal of {namespace}", response)
         return cast(dict[str, Any], response.json())
 
     async def get_namespace_deletion_step_keys(
@@ -535,9 +544,8 @@ class RegistryClient(RegistryClientBase):
         if response.status_code == 404:
             return None
         if response.status_code != 200:
-            raise RegistryError(
-                f"Failed to fetch step {step_order} of {namespace}'s deletion journal: "
-                f"{response.status_code} - {response.text}"
+            raise _status_error(
+                f"Failed to fetch step {step_order} of {namespace}'s deletion journal", response,
             )
         return cast(dict[str, Any], response.json())
 
