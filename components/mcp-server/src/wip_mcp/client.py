@@ -2220,17 +2220,17 @@ class WipClient:
 
     async def get_api_key(self, name: str) -> dict:
         return await self._get(
-            self.registry_url, f"/api/registry/api-keys/{name}"
+            self.registry_url, f"/api/registry/api-keys/{quote(name, safe='')}"
         )
 
     async def update_api_key(self, name: str, **kwargs) -> dict:
         return await self._patch(
-            self.registry_url, f"/api/registry/api-keys/{name}", json=kwargs
+            self.registry_url, f"/api/registry/api-keys/{quote(name, safe='')}", json=kwargs
         )
 
     async def revoke_api_key(self, name: str) -> dict:
         return await self._delete(
-            self.registry_url, f"/api/registry/api-keys/{name}"
+            self.registry_url, f"/api/registry/api-keys/{quote(name, safe='')}"
         )
 
     # ========================================================

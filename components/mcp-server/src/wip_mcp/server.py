@@ -1766,7 +1766,8 @@ async def create_api_key(
     has not arrived there yet: retry shortly, do not recreate the key.
 
     Args:
-        name: Unique name for the key (e.g., 'my-app')
+        name: Unique name for the key (e.g., 'my-app'). It may not start with
+            'apikey:' or contain '/', which no key route could address.
         owner: Owner identifier (default 'system')
         groups: Authorization groups (e.g., ['wip-users']). Empty = no special privileges.
         namespaces: Namespace scope (e.g., ['wip']). None = unrestricted.

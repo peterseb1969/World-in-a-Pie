@@ -126,19 +126,40 @@ def key_name_error(name: str) -> str | None:
     return None
 
 
+def new_key_name_error(name: str) -> str | None:
+    """Why a key created now cannot take `name`, or None when it can: every
+    rule a stored key's name must follow (key_name_error), and one that
+    binds new keys only.
+
+    A key is read, changed and revoked at /api-keys/{name}, one URL path
+    segment, and a percent-encoded '/' is decoded back to '/' before
+    routing: a name holding one could be created but never addressed by name
+    again. Only creation refuses it, so a key already stored, loaded from a
+    key file or restored under such a name keeps working as it does."""
+    if "/" in name:
+        return (
+            f"key name {name!r} contains '/': the name is one URL path segment on "
+            "the key routes, and a percent-encoded %2F is decoded back to '/' "
+            "before routing, so such a key could never be read, changed or "
+            "revoked by name"
+        )
+    return key_name_error(name)
+
+
 class APIKeyCreateRequest(BaseModel):
     """Request body for creating a new runtime API key."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(
-        ..., description="Unique name for the key; must not start with 'apikey:'",
+        ...,
+        description="Unique name for the key; must not start with 'apikey:' or contain '/'",
     )
 
     @field_validator("name")
     @classmethod
     def _name_is_free(cls, v: str) -> str:
-        error = key_name_error(v)
+        error = new_key_name_error(v)
         if error:
             raise ValueError(error)
         return v

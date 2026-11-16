@@ -10,7 +10,7 @@ one. The scan keeps every outgoing service URL encoding what it carries.
 
 from __future__ import annotations
 
-import re
+import ast
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -58,23 +58,49 @@ async def test_get_terminology_sends_the_whole_value(seen, value):
     assert _sent(seen, "/api/def-store/terminologies/") == value
 
 
-# An f-string building another service's URL, and a bare interpolation in its
-# path. Namespace prefixes are one safe token by the Registry's rule, and a
-# deletion step's order is an int; neither is an entity identifier.
-_SERVICE_URL = re.compile(r'f"\{[^}]*(?:_url|_base)\}/api/[a-z-]+/[^"]*"')
-_BARE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.]*)\}")
-_NOT_IDENTIFIERS = {"namespace", "prefix", "step_order"}
+def _unencoded_path_values(source: str, allowed: frozenset[str]) -> list[tuple[int, str]]:
+    """Every value interpolated into the path of an f-string naming a WIP
+    route (literal text holding '/api/'), other than one passed through
+    quote(), seg() or _seg(), or an allowed expression. Adjacent literals are one
+    f-string, so a URL split over lines is read whole, and a subscript or an
+    attribute is checked like a bare name. The query part (after '?') is
+    not a path."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        in_path = False
+        for part in node.values:
+            if isinstance(part, ast.Constant):
+                text = str(part.value)
+                in_path = in_path or "/api/" in text
+                if in_path and "?" in text.split("/api/")[-1]:
+                    break
+                continue
+            if not in_path or not isinstance(part, ast.FormattedValue):
+                continue
+            expr = part.value
+            func = expr.func if isinstance(expr, ast.Call) else None
+            if func is not None and getattr(func, "id", getattr(func, "attr", None)) in ("quote", "seg", "_seg"):
+                continue
+            if ast.unparse(expr) not in allowed:
+                found.append((node.lineno, ast.unparse(expr)))
+    return found
+
+
+# Namespace prefixes are one safe token by the Registry's rule, and a
+# deletion step's order is an int; neither is an entity identifier. Two
+# messages name a backup job by its minted id.
+_NOT_IDENTIFIERS = frozenset({
+    "namespace", "prefix", "step_order", "running_job_id", "job.job_id",
+})
 
 
 def test_no_outgoing_service_url_interpolates_a_bare_identifier():
     src = Path(def_store_client.__file__).parent
-    offenders = []
-    for path in sorted(src.glob("*.py")):
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            for literal in _SERVICE_URL.findall(line):
-                route = literal.split("/api/", 1)[1].split("?", 1)[0]
-                offenders += [
-                    f"{path.name}:{lineno}: {{{m}}}"
-                    for m in _BARE.findall(route) if m not in _NOT_IDENTIFIERS
-                ]
+    offenders = [
+        f"{path.name}:{lineno}: {{{expr}}}"
+        for path in sorted(src.glob("*.py"))
+        for lineno, expr in _unencoded_path_values(path.read_text(), _NOT_IDENTIFIERS)
+    ]
     assert offenders == [], "identifiers sent unencoded:\n" + "\n".join(offenders)

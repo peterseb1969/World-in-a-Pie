@@ -2,6 +2,7 @@
 
 import os
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -61,9 +62,12 @@ class DefStoreClient:
             Terminology data if found, None otherwise
         """
         if terminology_id:
-            url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}"
+            url = f"{self.base_url}/api/def-store/terminologies/{quote(terminology_id, safe='')}"
         elif terminology_value:
-            url = f"{self.base_url}/api/def-store/terminologies/by-value/{terminology_value}"
+            url = (
+                f"{self.base_url}/api/def-store/terminologies/by-value/"
+                f"{quote(terminology_value, safe='')}"
+            )
         else:
             return None
 

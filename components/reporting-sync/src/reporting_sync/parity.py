@@ -234,7 +234,7 @@ async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
                 if item.get("extends"):
                     resolved = await client.get(
                         f"{settings.template_store_url}/api/template-store/templates/"
-                        f"{item['template_id']}",
+                        f"{seg(str(item['template_id']))}",
                         params={"version": str(item.get("version", 1))},
                         headers={"X-API-Key": settings.api_key},
                         timeout=30.0,
@@ -296,7 +296,8 @@ async def _read_foreign_template(
     ``failed`` saying why it could not be read."""
     try:
         template = await client.get(
-            f"{settings.template_store_url}/api/template-store/templates/{facet['template_id']}",
+            f"{settings.template_store_url}/api/template-store/templates/"
+            f"{seg(str(facet['template_id']))}",
             headers={"X-API-Key": settings.api_key},
             timeout=30.0,
         )
