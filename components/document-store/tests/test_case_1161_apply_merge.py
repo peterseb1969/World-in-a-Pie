@@ -40,8 +40,8 @@ def engine(monkeypatch):
     async def insert_batch(collection, batch, entity_type):
         calls.append(("insert", entity_type, [r["id"] for r in batch]))
 
-    async def structure(namespace, **kw):
-        calls.append(("structure", namespace))
+    async def verify(namespace, **kw):
+        calls.append(("verify", namespace))
 
     async def overwrite(namespace, plan, doc_groups, *, on_clash, older_versions, sources=None, batch_size=None):
         calls.append(("overwrite", on_clash, older_versions, sources, batch_size))
@@ -60,7 +60,7 @@ def engine(monkeypatch):
         calls.append(("emit", phase, message))
 
     monkeypatch.setattr(eng, "_insert_batch", insert_batch)
-    monkeypatch.setattr(eng, "_reporting_phase_structure", structure)
+    monkeypatch.setattr(eng, "_reporting_phase_verify", verify)
     monkeypatch.setattr(eng, "_overwrite_documents", overwrite)
     monkeypatch.setattr(eng, "_recount_file_references", recount)
     monkeypatch.setattr(eng, "_claim_inserted_entries", claim)
@@ -122,7 +122,7 @@ async def test_a_plan_without_documents_or_files_inserts_in_order_and_claims_ent
         ("insert", "registry_entries", ["r1"]),
     ]
     assert ("emit", "phase_terminologies", "[ns] inserted 0 terminologies") not in engine.calls
-    assert not any(c[0] in ("structure", "recount", "overwrite") for c in engine.calls)
+    assert not any(c[0] in ("verify", "recount", "overwrite") for c in engine.calls)
     assert engine.calls[-2:] == [("claim", ["r1"]), ("report", 1, 0)]
 
 

@@ -1,20 +1,20 @@
-"""Thin client for reporting-sync, used by the restore verification phases.
+"""Thin client for reporting-sync, used by the restore's reporting phase.
 
 The restore engine writes directly to MongoDB and bypasses the NATS event
 path, so the reporting layer only learns about restored data when told. This
-client carries the three verbs the phased restore verification needs:
-parity (is postgres structurally/numerically consistent for a namespace),
-trigger (kick a namespace batch sync), and drop (clear a stale reporting
+client carries the three verbs the restore needs: parity (what postgres
+reflects for a namespace, including the verdict reporting-sync computed for
+it), trigger (kick a namespace batch sync), and drop (clear a stale reporting
 schema, gated by the caller's explicit opt-in).
 
-Reporting-sync is an optional module (the core preset deploys without it),
-so every method degrades to None/False on unreachability instead of raising —
-the engine turns that into a logged warning and skips the reporting phases.
-A restore must never fail because the convenience layer is absent; it must
-only fail on POSITIVE verification failures.
+Reporting-sync is an optional module (the core preset deploys without it), so
+every method degrades to None/False on unreachability instead of raising — the
+engine turns that into an unverified verdict and a logged warning. A restore
+never fails because the convenience layer is absent, and never fails on the
+state of the reporting layer either: what the tables look like is reported, not
+acted on.
 """
 
-import asyncio
 import logging
 import os
 from typing import Any, cast
@@ -40,10 +40,6 @@ class ReportingSyncClient:
     def __init__(self) -> None:
         self._base = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
         self._api_key: str = service_api_key(*REPORTING_SYNC_KEY)
-        # Per namespace, the batch-sync jobs the last trigger answered with
-        # (each {job_id, template_value, status, message}), so a caller
-        # whose wait timed out can ask why (failed_jobs).
-        self._started: dict[str, list[dict[str, Any]]] = {}
 
     def _headers(self) -> dict[str, str]:
         return {"X-API-Key": self._api_key}
@@ -93,7 +89,7 @@ class ReportingSyncClient:
                     headers=self._headers(),
                 )
                 if 200 <= resp.status_code < 300:
-                    return self._queued_any(namespace, resp, self._started)
+                    return self._queued_any(namespace, resp)
                 logger.warning(
                     "reporting batch sync for %s refused: HTTP %s %s",
                     namespace, resp.status_code, resp.text[:200],
@@ -104,13 +100,9 @@ class ReportingSyncClient:
             return False
 
     @staticmethod
-    def _queued_any(
-        namespace: str, resp: httpx.Response,
-        started: dict[str, list[dict[str, Any]]] | None = None,
-    ) -> bool:
+    def _queued_any(namespace: str, resp: httpx.Response) -> bool:
         """Whether a batch-sync answer started at least one job; logs those
-        that failed to start and an answer that started none. With
-        ``started``, records the answer's jobs under the namespace."""
+        that failed to start and an answer that started none."""
         try:
             jobs = resp.json()
         except ValueError:
@@ -121,8 +113,6 @@ class ReportingSyncClient:
                 namespace, resp.text[:200],
             )
             return False
-        if started is not None:
-            started[namespace] = [j for j in jobs if isinstance(j, dict)]
         failed = [j for j in jobs if isinstance(j, dict) and j.get("status") == "failed"]
         for job in failed:
             logger.warning(
@@ -133,75 +123,6 @@ class ReportingSyncClient:
             logger.warning("reporting batch sync for %s queued no job", namespace)
             return False
         return True
-
-    # The whole read-back of failed jobs, after the structure gate has
-    # already waited out its own timeout: a bounded addition to the halt.
-    _FAILED_JOBS_TIMEOUT_S = 10.0
-
-    async def failed_jobs(
-        self, namespace: str, template_ids: set[str]
-    ) -> dict[str, str]:
-        """Why the last trigger's jobs for these templates failed, by
-        template_id: those that did not start (their answer's message) and
-        those that started and then failed (the job record's error_message).
-
-        Keyed by id, not value: the trigger's job list is instance-wide, and
-        two namespaces can share a template value. Only the jobs of
-        ``template_ids`` are read, concurrently, and the whole read is bounded
-        by _FAILED_JOBS_TIMEOUT_S; what it could not read in time is left
-        out. Best effort like the rest of this client: a job that cannot be
-        read is left out, and an unreachable reporting-sync answers {}.
-        """
-        reasons: dict[str, str] = {}
-        pending: list[dict[str, Any]] = []
-        for job in self._started.get(namespace, []):
-            if str(job.get("template_id")) not in template_ids:
-                continue
-            if job.get("status") == "failed":
-                reasons[str(job["template_id"])] = str(job.get("message") or "did not start")
-            elif job.get("job_id"):
-                pending.append(job)
-        if pending:
-            reasons.update(await self._read_job_failures(namespace, pending))
-        return reasons
-
-    async def _read_job_failures(
-        self, namespace: str, jobs: list[dict[str, Any]]
-    ) -> dict[str, str]:
-        """The failures among these started jobs' records, read
-        concurrently within _FAILED_JOBS_TIMEOUT_S, by template_id."""
-        async with httpx.AsyncClient(timeout=self._FAILED_JOBS_TIMEOUT_S) as client:
-            tasks = [asyncio.ensure_future(self._job_failure(client, job)) for job in jobs]
-            done, late = await asyncio.wait(tasks, timeout=self._FAILED_JOBS_TIMEOUT_S)
-            for task in late:
-                task.cancel()
-        if late:
-            logger.warning(
-                "reporting-sync job status for %s: %d job(s) not read in %ss",
-                namespace, len(late), self._FAILED_JOBS_TIMEOUT_S,
-            )
-        failures = [task.result() for task in done]
-        return {f[0]: f[1] for f in failures if f is not None}
-
-    async def _job_failure(
-        self, client: httpx.AsyncClient, job: dict[str, Any]
-    ) -> tuple[str, str] | None:
-        """(template_id, error) of a started job whose record says it
-        failed; None when it did not, or its record cannot be read."""
-        try:
-            resp = await client.get(
-                f"{self._base}/api/reporting-sync/sync/batch/jobs/{job['job_id']}",
-                headers=self._headers(),
-            )
-            if resp.status_code != 200:
-                return None
-            record = resp.json()
-        except (httpx.HTTPError, ValueError) as e:
-            logger.warning("reporting-sync job %s unreadable: %s", job.get("job_id"), e)
-            return None
-        if record.get("status") != "failed":
-            return None
-        return str(job["template_id"]), str(record.get("error_message") or "failed")
 
     async def drop_namespace_schema(self, namespace: str) -> bool:
         """Drop the namespace's reporting schema. True on success."""

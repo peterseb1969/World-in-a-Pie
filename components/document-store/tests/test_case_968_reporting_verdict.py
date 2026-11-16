@@ -1,11 +1,14 @@
-"""A restore says in its result whether reporting was verified.
+"""A restore says, in its result, what reporting looks like.
 
-The reporting verification used to surface only as a free-text warning, so a
-script could not tell "verified" from "gave up after the wait" — the job
-ended `complete` either way. The completion result now carries
-``reporting_verification``: a verdict per namespace the run wrote
-(verified / incomplete / unavailable / not_checked, with a reason and the
-gaps) and the worst of them as the overall status.
+A restore never stops on reporting — but the job still has to say whether the
+reporting layer came out right, in a form a script can branch on. The
+completion result carries ``reporting_verification``: reporting-sync's verdict
+per namespace the run wrote (verified / failed / unverified, with a one-line
+reason and the findings behind it) and the worst of them as the overall status.
+
+The verdict and its reasons are reporting-sync's, computed over the tables it
+owns. This engine records what it is told; it keeps no judgement of its own, so
+there is no second copy of the verdict to drift from the first.
 """
 
 import os
@@ -21,8 +24,19 @@ from document_store.services.backup_engine import (
     PROVENANCE_COLLECTION,
     DirectRestoreEngine,
 )
-from tests.test_case_689_restore_phases import CLEAN, _engine, _reporting_stub
-from tests.test_case_942_restore_provenance import NAMESPACE, TERMINOLOGY, _http, _reader
+from tests.test_case_689_restore_phases import (
+    BROKEN,
+    CLEAN,
+    _engine,
+    _reason,
+    _reporting_stub,
+)
+from tests.test_case_942_restore_provenance import (
+    NAMESPACE,
+    TERMINOLOGY,
+    _http,
+    _reader,
+)
 from tests.test_merge_restore import REMAP_TARGET, _clear_remap_target, _run_remap
 
 
@@ -41,9 +55,33 @@ async def mongo():
     await _clear()
     client.close()
 
+
+TEMPLATE = {
+    "template_id": "TPL-968", "namespace": NAMESPACE, "value": "THING", "version": 1,
+    "identity_fields": ["code"],
+}
+DOCUMENT = {
+    "document_id": "DOC-968", "namespace": NAMESPACE, "template_id": "TPL-968",
+    "template_value": "THING", "template_version": 1, "version": 1, "status": "active",
+    "data": {"code": "X-1"},
+}
+
+# What reporting-sync answers for a namespace whose tables are behind.
+GAP_REASONS = [
+    {"kind": "template", "name": "T1", "issue": "count_mismatch",
+     "detail": "T1: 3 of 10 live documents have rows", "expected": 10, "actual": 3},
+    {"kind": "template", "name": "T2", "issue": "table_missing",
+     "detail": "T2: no reporting table in the namespace's schema",
+     "expected": None, "actual": None},
+    {"kind": "table", "name": "term_relations", "issue": "term_relations_mismatch",
+     "detail": "term_relations: 0 rows where 7 are expected", "expected": 7, "actual": 0},
+    {"kind": "view", "name": "v_open", "issue": "view_missing",
+     "detail": "registered view 'v_open' is gone — re-register it",
+     "expected": None, "actual": None},
+]
 GAPPED = dict(
-    CLEAN,
-    ok=False,
+    CLEAN, ok=False, verdict="failed", reasons=GAP_REASONS,
+    structural_issues=1, count_mismatches=1, derived_issues=2,
     templates=[
         {"template_value": "T1", "table_present": True, "counts_match": False,
          "expected_documents": 10, "actual_rows": 3},
@@ -68,78 +106,96 @@ def _verdict(eng, namespaces, reason="unchecked"):
 class TestVerdicts:
     @pytest.mark.asyncio
     async def test_parity_held_is_verified(self):
-        eng = _engine(_reporting_stub(dict(CLEAN, ok=True)), [])
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        eng = _engine(_reporting_stub(CLEAN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
         v = _verdict(eng, ["ns1"])
         assert v == {"status": "verified", "namespaces": {
-            "ns1": {"status": "verified", "reason": None, "gaps": []}}}
+            "ns1": {"status": "verified", "reason": None, "reasons": []}}}
 
     @pytest.mark.asyncio
-    async def test_giving_up_is_incomplete_with_the_gaps(self):
+    async def test_a_failed_verdict_is_recorded_with_reporting_syncs_reasons(self):
+        """The findings are copied as served — this engine does not read the
+        counters and assemble its own list."""
         eng = _engine(_reporting_stub(GAPPED), [])
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
-        v = _verdict(eng, ["ns1"])
-        ns1 = v["namespaces"]["ns1"]
-        assert v["status"] == ns1["status"] == "incomplete"
-        assert "no reporting rows written" in ns1["reason"]
-        assert ns1["gaps"] == [
-            {"kind": "template", "name": "T1", "issue": "count_mismatch",
-             "expected": 10, "actual": 3},
-            {"kind": "template", "name": "T2", "issue": "table_missing",
-             "expected": None, "actual": None},
-            {"kind": "table", "name": "term_relations", "issue": "term_relations_mismatch",
-             "expected": 7, "actual": 0},
-            {"kind": "view", "name": "v_open", "issue": "view_missing",
-             "expected": None, "actual": None},
-        ]
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        ns1 = _verdict(eng, ["ns1"])["namespaces"]["ns1"]
+        assert ns1["status"] == "failed"
+        assert ns1["reasons"] == GAP_REASONS
+        assert ns1["reason"].startswith("T1: 3 of 10")
+        assert "(and 1 more)" in ns1["reason"]
 
     @pytest.mark.asyncio
-    async def test_unreachable_reporting_is_unavailable_for_this_and_later_namespaces(self):
+    async def test_unreachable_reporting_is_unverified_for_this_and_later_namespaces(self):
         stub = _reporting_stub(None)
         eng = _engine(stub, [])
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
-        await eng._reporting_phase_counts("ns2", skip_documents=False)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        await eng._reporting_phase_verify("ns2", skip_documents=False)
         v = _verdict(eng, ["ns1", "ns2"])
-        assert v["status"] == "unavailable"
-        assert "count parity" in v["namespaces"]["ns1"]["reason"]
+        assert v["status"] == "unverified"
+        assert "count" not in (v["namespaces"]["ns1"]["reason"] or "")
+        assert "unreachable" in v["namespaces"]["ns1"]["reason"]
         assert v["namespaces"]["ns2"] == {
-            "status": "unavailable", "reason": "reporting-sync not reachable", "gaps": []}
+            "status": "unverified", "reason": "reporting-sync not reachable", "reasons": []}
 
     @pytest.mark.asyncio
-    async def test_no_reporting_client_is_unavailable(self):
+    async def test_no_reporting_client_is_unverified(self):
         eng = DirectRestoreEngine(MagicMock(), None, lambda _e: None)
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
-        assert _verdict(eng, ["ns1"])["status"] == "unavailable"
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert _verdict(eng, ["ns1"])["status"] == "unverified"
 
     @pytest.mark.asyncio
-    async def test_skipped_documents_are_not_checked(self):
-        eng = _engine(_reporting_stub(dict(CLEAN, ok=True)), [])
-        await eng._reporting_phase_counts("ns1", skip_documents=True)
+    async def test_skipped_documents_are_unverified(self):
+        eng = _engine(_reporting_stub(CLEAN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=True)
         assert _verdict(eng, ["ns1"])["namespaces"]["ns1"] == {
-            "status": "not_checked", "reason": "documents were skipped", "gaps": []}
+            "status": "unverified", "reason": "documents were skipped", "reasons": []}
+
+    @pytest.mark.asyncio
+    async def test_a_namespace_the_run_never_verified_is_unverified_not_clean(self):
+        eng = _engine(_reporting_stub(CLEAN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert _verdict(eng, ["ns1", "ns2"], "not run")["namespaces"]["ns2"] == {
+            "status": "unverified", "reason": "not run", "reasons": []}
 
     @pytest.mark.asyncio
     async def test_the_worst_namespace_decides_the_run(self):
-        eng = _engine(_reporting_stub(dict(CLEAN, ok=True)), [])
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
-        eng._reporting = _reporting_stub(GAPPED)
-        await eng._reporting_phase_counts("ns2", skip_documents=False)
-        v = _verdict(eng, ["ns1", "ns2", "ns3"], "not run")
-        assert v["status"] == "incomplete"
-        assert [v["namespaces"][n]["status"] for n in ("ns1", "ns2", "ns3")] == [
-            "verified", "incomplete", "not_checked"]
-        assert v["namespaces"]["ns3"]["reason"] == "not run"
+        eng = _engine(_reporting_stub(CLEAN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        eng._reporting = _reporting_stub(BROKEN)
+        await eng._reporting_phase_verify("ns2", skip_documents=False)
+        eng._reporting = _reporting_stub(dict(
+            CLEAN, ok=False, verdict="unverified",
+            reasons=[_reason("ns3", "templates_unreadable", "template store did not answer",
+                            kind="namespace")],
+        ))
+        await eng._reporting_phase_verify("ns3", skip_documents=False)
+        v = _verdict(eng, ["ns1", "ns2", "ns3", "ns4"], "not run")
+        assert v["status"] == "failed"
+        assert [v["namespaces"][n]["status"] for n in ("ns1", "ns2", "ns3", "ns4")] == [
+            "verified", "failed", "unverified", "unverified"]
+        assert v["namespaces"]["ns4"]["reason"] == "not run"
+
+    @pytest.mark.asyncio
+    async def test_an_unverified_namespace_makes_the_run_unverified(self):
+        eng = _engine(_reporting_stub(CLEAN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        eng._reporting = _reporting_stub(dict(
+            CLEAN, ok=False, verdict="unverified",
+            reasons=[_reason("ns2", "nothing_checked", "nothing to check", kind="namespace")],
+        ))
+        await eng._reporting_phase_verify("ns2", skip_documents=False)
+        assert _verdict(eng, ["ns1", "ns2"])["status"] == "unverified"
 
     @pytest.mark.asyncio
     async def test_a_verified_namespace_stays_verified_when_reporting_goes_away(self):
-        eng = _engine(_reporting_stub(dict(CLEAN, ok=True)), [])
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        eng = _engine(_reporting_stub(CLEAN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
         eng._reporting_unavailable("ns1", "a later phase")
         assert _verdict(eng, ["ns1"])["status"] == "verified"
 
     def test_only_namespaces_the_run_wrote_are_reported(self):
         eng = DirectRestoreEngine(MagicMock(), None, lambda _e: None)
-        eng._set_reporting_verdict("probed-only", "unavailable", "precondition")
+        eng._set_reporting_verdict("probed-only", "unverified", "precondition")
         assert list(_verdict(eng, ["written"])["namespaces"]) == ["written"]
 
 
@@ -160,25 +216,51 @@ def _completion(events):
     return complete.details["reporting_verification"]
 
 
-@pytest.mark.asyncio
-async def test_a_restore_reports_its_verdict(mongo, tmp_path):
+async def _run_restore(mongo, entities, reporting, tmp_path):
     events = []
-    engine = DirectRestoreEngine(
-        mongo, None, events.append, reporting_client=_reporting_stub(dict(CLEAN, ok=True)),
-    )
+    engine = DirectRestoreEngine(mongo, None, events.append, reporting_client=reporting)
     with patch(
         "document_store.services.backup_engine.ArchiveReader",
-        return_value=_reader({"terminologies": [TERMINOLOGY]}),
+        return_value=_reader(entities),
     ), patch("httpx.AsyncClient", return_value=_http()):
         await engine.run_restore(tmp_path / "a.zip", NAMESPACE, allow_missing_identity=True)
+    return events
 
+
+@pytest.mark.asyncio
+async def test_a_restore_reports_its_verdict(mongo, tmp_path):
+    events = await _run_restore(
+        mongo, {"terminologies": [TERMINOLOGY]}, _reporting_stub(CLEAN), tmp_path,
+    )
     verdict = _completion(events)
     assert verdict["status"] == "verified"
     assert verdict["namespaces"][NAMESPACE]["status"] == "verified"
 
 
 @pytest.mark.asyncio
-async def test_a_merge_that_gives_up_reports_incomplete(mongo, tmp_path):
+async def test_a_broken_reporting_layer_does_not_stop_the_restore(mongo, tmp_path):
+    """The incident class: reporting-sync could not build the tables, the gate
+    halted mid-restore, and the namespace was left with its definitions and no
+    documents. The tables are derived data — the restore writes the documents
+    and reports what reporting looks like."""
+    events = await _run_restore(
+        mongo,
+        {"terminologies": [TERMINOLOGY], "templates": [TEMPLATE], "documents": [DOCUMENT]},
+        _reporting_stub(BROKEN),
+        tmp_path,
+    )
+    assert not [e for e in events if e.phase == "failed"]
+    verdict = _completion(events)
+    assert verdict["status"] == "failed"
+    assert verdict["namespaces"][NAMESPACE]["reasons"] == BROKEN["reasons"]
+
+    db, coll = COLLECTION_MAP["documents"]
+    rows = await mongo[db][coll].find({"namespace": NAMESPACE}).to_list(10)
+    assert [r["document_id"] for r in rows] == ["DOC-968"]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_fails_reporting_reports_failed(mongo, tmp_path):
     await mongo[_DB_REGISTRY]["namespaces"].insert_one(
         {"prefix": NAMESPACE, "isolation_mode": "open"}
     )
@@ -186,7 +268,7 @@ async def test_a_merge_that_gives_up_reports_incomplete(mongo, tmp_path):
     stub = _reporting_stub(GAPPED)
     try:
         engine = DirectRestoreEngine(mongo, None, events.append, reporting_client=stub)
-        engine._REPORTING_COUNTS_STALL_S = 0.05
+        engine._REPORTING_SYNC_STALL_S = 0.05
         engine._REPORTING_POLL_INTERVAL_S = 0.01
         with patch(
             "document_store.services.backup_engine.ArchiveReader",
@@ -197,8 +279,8 @@ async def test_a_merge_that_gives_up_reports_incomplete(mongo, tmp_path):
         await mongo[_DB_REGISTRY]["namespaces"].delete_many({"prefix": NAMESPACE})
 
     verdict = _completion(events)
-    assert verdict["status"] == "incomplete"
-    assert {g["name"] for g in verdict["namespaces"][NAMESPACE]["gaps"]} == {
+    assert verdict["status"] == "failed"
+    assert {g["name"] for g in verdict["namespaces"][NAMESPACE]["reasons"]} == {
         "T1", "T2", "term_relations", "v_open"}
 
 
@@ -215,7 +297,7 @@ async def test_a_fresh_restore_says_it_did_not_check(mongo):
         await _clear_remap_target(mongo)
 
     verdict = _completion(events)
-    assert verdict["status"] == "not_checked"
+    assert verdict["status"] == "unverified"
     assert "does not wait for reporting" in verdict["namespaces"][REMAP_TARGET]["reason"]
 
 
@@ -227,7 +309,7 @@ async def test_the_verdict_lands_on_the_job_record():
     from document_store.models.backup_job import BackupJobKind
     from document_store.services import backup_service
 
-    verdict = {"status": "incomplete", "namespaces": {}}
+    verdict = {"status": "failed", "namespaces": {}}
     job = MagicMock(kind=BackupJobKind.BACKUP, archive_path=None)
     job.set = AsyncMock()
     with patch.object(backup_service.BackupJob, "find_one", AsyncMock(return_value=job)):

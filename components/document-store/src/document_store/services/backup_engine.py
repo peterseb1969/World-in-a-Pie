@@ -1927,42 +1927,58 @@ def _convert_legacy_term_names(row: dict[str, Any]) -> None:
     row["names"] = names
 
 
-# Reporting verdicts, best first. A run's overall verdict is its worst
-# namespace's: one namespace that gave up makes the run "incomplete".
-_VERDICT_RANK = {"verified": 0, "not_checked": 1, "unavailable": 2, "incomplete": 3}
+# Reporting verdicts, best first — the same three reporting-sync puts on its
+# parity answer. A run's overall verdict is its worst namespace's, so a script
+# can tell "the tables match" from "reporting needs a look" without reading
+# warnings. `failed` outranks `unverified`: a proven gap is the actionable one.
+_VERIFIED = "verified"
+_UNVERIFIED = "unverified"
+_FAILED = "failed"
+_VERDICT_RANK = {_VERIFIED: 0, _UNVERIFIED: 1, _FAILED: 2}
 
 
-def _parity_gaps(parity: dict[str, Any]) -> list[dict[str, Any]]:
-    """What a reporting parity result says is missing, one entry per gap:
-    ``kind`` (template, table, view), ``name``, ``issue``, and the expected
-    and actual counts where the check has them."""
-    gaps: list[dict[str, Any]] = []
-    for t in parity.get("templates", []):
-        if not t.get("table_present", True):
-            issue = "table_missing"
-        elif t.get("missing_columns"):
-            issue = "columns_missing"
-        elif t.get("counts_match") is False:
-            issue = "count_mismatch"
-        else:
-            continue
-        gaps.append({
-            "kind": "template", "name": t.get("template_value"), "issue": issue,
-            "expected": t.get("expected_documents"), "actual": t.get("actual_rows"),
-        })
-    for d in parity.get("derived_tables", []):
-        if d.get("issue"):
-            gaps.append({
-                "kind": "table", "name": d.get("table"), "issue": d.get("issue"),
-                "expected": d.get("expected_rows"), "actual": d.get("actual_rows"),
-            })
-    for v in parity.get("views", []):
-        if not v.get("present"):
-            gaps.append({
-                "kind": "view", "name": v.get("view_name"), "issue": "view_missing",
-                "expected": None, "actual": None,
-            })
-    return gaps
+def _parity_reasons(parity: dict[str, Any]) -> list[dict[str, Any]]:
+    """The findings reporting-sync computed for this answer."""
+    return [r for r in (parity.get("reasons") or []) if isinstance(r, dict)]
+
+
+def _sync_still_running(parity: dict[str, Any]) -> bool:
+    """Whether reporting-sync says it still has this namespace's sync in
+    flight — read from its answer, not from a job count of our own."""
+    return any(r.get("issue") == "sync_running" for r in _parity_reasons(parity))
+
+
+def _reason_line(reasons: list[dict[str, Any]], limit: int = 3) -> str:
+    """The findings on one line, for a warning or a job record. The full list
+    travels with the verdict as ``reasons``."""
+    details = [d for d in (
+        str(r.get("detail") or r.get("issue") or "") for r in reasons
+    ) if d]
+    if not details:
+        return "no detail from reporting-sync"
+    if len(details) > limit:
+        return f"{'; '.join(details[:limit])} (and {len(details) - limit} more)"
+    return "; ".join(details)
+
+
+def _parity_rows(parity: dict[str, Any]) -> int:
+    """The rows the namespace's reporting tables hold: the signal that a sync
+    landing its pages is making progress."""
+    return sum(int(t.get("actual_rows") or 0) for t in parity.get("templates") or [])
+
+
+def _parity_expected(parity: dict[str, Any]) -> int:
+    """The rows reporting expects for the namespace."""
+    return sum(
+        int(t.get("expected_documents") or 0) for t in parity.get("templates") or []
+    )
+
+
+def _waited_out(parity: dict[str, Any], why: str) -> dict[str, Any]:
+    """An answer stamped with the fact that the wait gave out rather than the
+    sync settling. The verdict itself is untouched: this engine records
+    reporting-sync's verdict and never substitutes one."""
+    return {**parity, "_waited_out": why}
 
 
 def _drop_unchanged_mappings(remapper: IDRemapper) -> None:
@@ -2231,12 +2247,6 @@ def _drain(chains: Iterator[Any]) -> None:
         pass
 
 
-def _describe_gap(gap: dict[str, Any]) -> str:
-    if gap["kind"] == "view":
-        return f"view {gap['name']} missing"
-    return f"{gap['name']} {gap['issue']} expected={gap['expected']} actual={gap['actual']}"
-
-
 def _declares_only_empty(manifest: Any) -> bool:
     """Whether a manifest declares an archive of empty namespaces: it lists
     them, and states zero counts for the archive and for each. Counts it
@@ -2265,45 +2275,17 @@ _PLAIN_RESTORE_ORDER = (
 assert sorted(_PLAIN_RESTORE_ORDER) == sorted(BACKUP_ENTITY_ORDER)
 
 # The Registry entries of definitions. They are written with the definitions,
-# ahead of the reporting structure gate and of any document, not with the
-# rest of the entries at the end: every service resolves a template or
-# terminology id through the Registry, so until its entry exists the
-# definition is unknown to every read. Reporting-sync's batch sync lists a
-# template's documents by its id, and document-store answers 404 for an id the
-# Registry does not know; reporting-sync rightly reads that as "source did
-# not answer", creates no table, and the gate times out.
+# ahead of any document, not with the rest of the entries at the end: every
+# service resolves a template or terminology id through the Registry, so until
+# its entry exists the definition is unknown to every read. Reporting-sync's
+# batch sync lists a template's documents by its id, and document-store answers
+# 404 for an id the Registry does not know; reporting-sync rightly reads that
+# as "source did not answer" and creates no table.
 _DEFINITION_ENTRY_TYPES = frozenset({"terminologies", "terms", "templates"})
 
 
 def _is_definition_entry(row: dict[str, Any]) -> bool:
     return row.get("entity_type") in _DEFINITION_ENTRY_TYPES
-
-
-# The advice after a halted reporting structure gate. A plain restore
-# filled an empty namespace, so removing what it wrote is the way back; a
-# merge added to a namespace that already held data, which must survive.
-_RESTORE_STRUCTURE_HALT = (
-    "NOTE: namespace '{namespace}' is now PARTIAL — definitions were "
-    "restored but documents and their registry identities were NOT, so "
-    "namespaced lookups against it will fail to resolve. Delete the "
-    "namespace and re-restore after remediating."
-)
-_MERGE_STRUCTURE_HALT = (
-    "NOTE: this merge {added} namespace '{namespace}', but none of its "
-    "documents; the documents the namespace already held are untouched. Do "
-    "not delete the namespace: remediate reporting-sync and run the merge "
-    "again."
-)
-
-
-def _merge_added(definitions_added: int) -> str:
-    """What a halted merge wrote before its documents, for the halt."""
-    if not definitions_added:
-        return "added none of the archive's definitions to"
-    return (
-        f"added {definitions_added} of the archive's definitions "
-        "(terminologies, terms, templates) to"
-    )
 
 
 def _served_on_archived_keys(
@@ -2323,20 +2305,6 @@ def _served_on_archived_keys(
 
 # The types a merge writes ahead of every namespace's reporting gate.
 _MERGE_DEFINITION_TYPES = frozenset({"terminologies", "terms", "term_relations", "templates"})
-
-
-def _merge_written_templates(plan: EntityPlan, on_clash: str) -> set[str]:
-    """The ids of the templates a merge's documents may be written under: the
-    inserted ones', and every clashing one's when the policy overwrites.
-    Whether a clash is identical, or older under ``newer``, is decided only
-    as documents are written, against the target's head then, so a clash the
-    merge will in the end leave alone still counts here."""
-    overwrites = on_clash in ("overwrite", "newer")
-    return {
-        str(row.get("template_id"))
-        for row in [*plan.to_insert, *(c.entity for c in plan.clashes if overwrites)]
-        if row.get("template_id")
-    }
 
 
 _MERGE_WRITTEN_NOUN = {
@@ -2484,86 +2452,6 @@ def _aligned_heads(
         chain[0] for chain in chains
         if chain and str(chain[0].get("template_id")) in alignment
     ]
-
-
-def _definitions_added(plans: dict[str, EntityPlan]) -> int:
-    """How many terminologies, terms and templates a merge plan inserts."""
-    return sum(
-        len(plans[t].to_insert) for t in _DEFINITION_ENTRY_TYPES if plans.get(t)
-    )
-
-
-def _table_present(template: dict[str, Any]) -> bool:
-    """Whether a parity row's template has the table reporting-sync's
-    structural check needs: its latest version's table for a template the
-    namespace owns; any version table for one another namespace owns, whose
-    tables are made per pinned version as documents arrive."""
-    if template.get("template_namespace"):
-        return bool(template.get("version_tables"))
-    return bool(template.get("table_present"))
-
-
-def _structure_failures(parity: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """The parity rows of templates whose reporting table is missing or
-    misshaped, by the rule of reporting-sync's structural check."""
-    return [
-        t for t in (parity or {}).get("templates", [])
-        if not (
-            _table_present(t)
-            and not t.get("missing_columns")
-            and not t.get("legacy_table")
-            and not t.get("error")
-        )
-    ]
-
-
-def _structure_halt(
-    namespace: str, timeout_s: float, issues: list[str], *,
-    merged_definitions: int | None,
-) -> str:
-    """The message of a halted reporting structure gate: the first five
-    issues, how many more, and the advice for the mode. ``merged_definitions``
-    is None for a plain restore, else how many definitions the merge added."""
-    more = f" (and {len(issues) - 5} more)" if len(issues) > 5 else ""
-    merge = merged_definitions is not None
-    advice = (
-        _MERGE_STRUCTURE_HALT.format(
-            namespace=namespace, added=_merge_added(merged_definitions or 0)
-        )
-        if merge else _RESTORE_STRUCTURE_HALT.format(namespace=namespace)
-    )
-    return (
-        f"Reporting tables for namespace '{namespace}' did not verify "
-        f"within {timeout_s}s — halting before "
-        f"{'merging documents' if merge else 'document restore'}. "
-        f"Issues: {'; '.join(issues[:5]) or 'unknown'}{more}. "
-        + advice
-    )
-
-
-def _parity_owner(namespace: str, template: dict[str, Any]) -> tuple[str, str]:
-    """(owning namespace, value) of a parity row's template: its
-    template_namespace when another namespace owns it, else the checked one."""
-    return (
-        str(template.get("template_namespace") or namespace),
-        str(template.get("template_value")),
-    )
-
-
-def _structure_issue(template: dict[str, Any], sync_error: str | None) -> str:
-    """One template's failed structure check, with reporting-sync's reason
-    for it when its batch-sync job failed."""
-    if template.get("error"):
-        problem = str(template["error"])
-    elif template.get("legacy_table"):
-        problem = "legacy pre-split table shadows the entity view"
-    elif not _table_present(template):
-        problem = "table missing"
-    else:
-        problem = f"missing columns {template.get('missing_columns')}"
-    if sync_error:
-        problem += f" — its reporting sync failed: {sync_error}"
-    return f"{template.get('template_value')}: {problem}"
 
 
 class DirectRestoreEngine:
@@ -2886,19 +2774,14 @@ class DirectRestoreEngine:
                     processed=processed, total=total, skipped=skipped,
                     definition_entries=True,
                 )
-                # Structural gate between templates and documents: the
-                # reporting tables the restored templates imply must be
-                # creatable and correctly shaped BEFORE any document
-                # moves. Catches broken bookkeeping / mis-shaped tables
-                # at the first template instead of after a full restore.
-                await self._reporting_phase_structure(tgt)
 
         await self._release_retired_synonyms(tgt)
 
-        # Count parity after the namespace's data is in: expected vs
-        # actual rows, bounded wait. Mismatch completes WITH a
-        # warning — never a hard fail (operator ruling).
-        await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+        # Reporting is verified after the data is in, and never halts it: the
+        # verdict reporting-sync gives is recorded on the job with a warning
+        # naming the re-sync to run (operator ruling: a restore protects the
+        # documents; the tables are derived from them).
+        await self._reporting_phase_verify(tgt, skip_documents=skip_documents)
         await self._write_restore_provenance(
             archive_path, manifest, raw_manifest,
             source=src, target=tgt, mode="restore",
@@ -5637,8 +5520,8 @@ class DirectRestoreEngine:
         batch_size: int,
         skip_documents: bool,
     ) -> None:
-        """Write every planned namespace in three steps across all of them:
-        definitions, then the reporting gates, then the rest. What each target
+        """Write every planned namespace in two steps across all of them:
+        definitions first, then the documents and what is left. What each target
         has received is kept in ``self.result["written"]``, and a failure after
         the first write carries it. The Registry has accounted for the entry
         ids already (_commit_staged_merges)."""
@@ -5652,8 +5535,6 @@ class DirectRestoreEngine:
                 await self._apply_merge_definitions(stage.tgt, stage.built, batch_size)
                 written[stage.tgt].append("definitions")
             for stage in staged:
-                await self._merge_reporting_gate(stage, on_clash=policy["on_clash"])
-            for stage in staged:
                 await self._apply_staged_merge(
                     stage, archive_path, manifest, raw_manifest,
                     policy=policy, batch_size=batch_size, skip_documents=skip_documents,
@@ -5663,19 +5544,6 @@ class DirectRestoreEngine:
             if not any(written.values()):
                 raise
             raise _partial_merge_error(exc, written) from exc
-
-    async def _merge_reporting_gate(self, stage: _StagedMerge, *, on_clash: str) -> None:
-        """The reporting structure gate a plain restore runs after templates:
-        the tables of the templates this namespace's merged documents use must
-        exist and be correctly shaped before any document moves. It runs once
-        every namespace's definitions are written, and before any documents."""
-        plan = stage.built.get("documents")
-        if plan is None:
-            return
-        await self._reporting_phase_structure(
-            stage.tgt, merged_definitions=_definitions_added(stage.built),
-            templates=_merge_written_templates(plan, on_clash),
-        )
 
     async def _apply_staged_merge(
         self,
@@ -5698,7 +5566,7 @@ class DirectRestoreEngine:
             batch_size=batch_size, streamed=stage.streamed,
         )
         await self._release_retired_synonyms(tgt)
-        await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+        await self._reporting_phase_verify(tgt, skip_documents=skip_documents)
         # A merge adds to a namespace that already holds data, so its
         # record says what arrived and under which policy, not that
         # the namespace came from the archive. The plan summary is
@@ -6630,8 +6498,7 @@ class DirectRestoreEngine:
     ) -> None:
         """A merge's documents: the inserted chains (streamed from the
         archive, or from ``doc_groups``), then the clashes when the policy
-        overwrites them. Their reporting gate has run already
-        (_merge_reporting_gate)."""
+        overwrites them."""
         overwrites = on_clash in ("overwrite", "newer")
         if streamed is not None:
             await self._merge_insert_streamed(namespace, collection, streamed, batch_size)
@@ -7610,28 +7477,32 @@ class DirectRestoreEngine:
             details=self.result,
         )
 
-    # -- Reporting verification phases (restore-verification design) --------
+    # -- Reporting verification (restore-verification design) ---------------
     #
-    # Poll pacing: structure materializes within a couple of batch-sync
-    # seconds. Counts follow the batch sync of the full document set, which
-    # for a large namespace takes minutes — so the count wait follows
-    # progress: it lasts while reporting rows keep landing and gives up after
-    # _REPORTING_COUNTS_STALL_S without a change, or at the overall cap.
-    # Exceeding either delays only the warning, never the restore's data.
-    _REPORTING_STRUCTURE_TIMEOUT_S = 30
-    _REPORTING_COUNTS_STALL_S = 60
-    _REPORTING_COUNTS_MAX_S = 1800
+    # A restore never stops on reporting: the documents are what a restore
+    # protects, and the reporting tables are derived from them. There is one
+    # reporting phase, after the documents, and it records what reporting-sync
+    # says rather than judging the layer here.
+    #
+    # Poll pacing: the batch sync of a full document set takes minutes for a
+    # large namespace, so the wait follows progress — it lasts while reporting
+    # rows keep landing and gives up after _REPORTING_SYNC_STALL_S without a
+    # change, or at the overall cap. Exceeding either delays only the verdict,
+    # never the restore's data.
+    _REPORTING_SYNC_STALL_S = 60
+    _REPORTING_SYNC_MAX_S = 1800
     _REPORTING_POLL_INTERVAL_S = 3
 
     def _reporting_unavailable(self, namespace: str, what: str) -> None:
-        """Disable further reporting phases and surface why, loudly once."""
+        """Disable further reporting phases and surface why, loudly once. The
+        verdict is unverified, not failed: nobody looked."""
         self._emit(
             "warning",
             f"[{namespace}] reporting-sync unreachable during {what} — "
             "reporting verification skipped for this restore",
         )
         self._set_reporting_verdict(
-            namespace, "unavailable", f"reporting-sync unreachable during {what}"
+            namespace, _UNVERIFIED, f"reporting-sync unreachable during {what}"
         )
         self._reporting = None
 
@@ -7640,30 +7511,32 @@ class DirectRestoreEngine:
         namespace: str,
         status: str,
         reason: str | None = None,
-        gaps: list[dict[str, Any]] | None = None,
+        reasons: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Record one namespace's reporting verdict. The first verdict
-        stands: reporting-sync going away mid-restore must not overwrite a
-        namespace that was already verified."""
+        """Record one namespace's reporting verdict: the status, one line saying
+        why, and reporting-sync's findings behind it. The first verdict stands:
+        reporting-sync going away mid-restore must not overwrite a namespace
+        that was already verified."""
         self._reporting_verdicts.setdefault(
-            namespace, {"status": status, "reason": reason, "gaps": gaps or []}
+            namespace, {"status": status, "reason": reason, "reasons": reasons or []}
         )
 
     def _finish_reporting_verification(
         self, namespaces: list[str], unchecked_reason: str
     ) -> None:
-        """Put the reporting verdict on the result: one per namespace the
-        run wrote, and the worst of them as the overall status, so a script
-        can tell "verified" from "gave up" without reading warnings."""
+        """Put the reporting verdict on the result: one per namespace the run
+        wrote — the run's own phase recorded it, otherwise nothing was
+        verified — and the worst of them as the overall status, so a script can
+        tell "verified" from "gave up" without reading warnings."""
         for namespace in dict.fromkeys(namespaces):
-            self._set_reporting_verdict(namespace, "not_checked", unchecked_reason)
+            self._set_reporting_verdict(namespace, _UNVERIFIED, unchecked_reason)
         verdicts = {
             ns: v for ns, v in self._reporting_verdicts.items() if ns in namespaces
         }
         overall = max(
             (v["status"] for v in verdicts.values()),
             key=_VERDICT_RANK.__getitem__,
-            default="not_checked",
+            default=_UNVERIFIED,
         )
         self.result["reporting_verification"] = {
             "status": overall, "namespaces": verdicts,
@@ -7727,216 +7600,122 @@ class DirectRestoreEngine:
                 f"({parity.get('table_count')} table(s))",
             )
 
-    async def _reporting_phase_structure(
-        self, namespace: str, *, merged_definitions: int | None = None,
-        templates: set[str] | None = None,
-    ) -> None:
-        """Post-templates gate: reporting tables must materialize correctly.
-
-        Triggers a namespace batch sync (no documents are restored yet, so
-        tables materialize empty) and polls the structure-only parity until
-        green. A persistent structural failure HALTS the restore before any
-        document moves. ``merged_definitions`` (a merge: how many
-        definitions it added) says the namespace held data before this run,
-        which the halt's advice must not tell the operator to delete.
-        ``templates``: for a merge, the ids of the templates whose documents
-        it may write (every clashing template under overwrite / newer). Only
-        their tables (and unusable bookkeeping) halt it; a
-        live namespace's issue with another template's table was there
-        before the merge and is reported, not a reason to refuse it.
-        """
-        if not self._reporting:
-            return
-        self._emit(
-            "phase_reporting_structure",
-            f"[{namespace}] verifying reporting tables for restored templates",
-        )
-        await self._reporting.trigger_batch_sync(namespace)
-        deadline = asyncio.get_event_loop().time() + self._REPORTING_STRUCTURE_TIMEOUT_S
-        parity: dict[str, Any] | None = None
-        while asyncio.get_event_loop().time() < deadline:
-            parity = await self._reporting.parity(namespace, include_counts=False)
-            if parity is None:
-                self._reporting_unavailable(namespace, "structure verification")
-                return
-            if parity.get("bookkeeping_tables_ok", True) and parity.get("structural_issues", 0) == 0:
-                return
-            if templates is not None and await self._merge_passes_structure(
-                namespace, parity, templates,
-            ):
-                return
-            await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
-        raise RestoreEngineError(_structure_halt(
-            namespace, self._REPORTING_STRUCTURE_TIMEOUT_S,
-            await self._structure_issues(namespace, parity, templates),
-            merged_definitions=merged_definitions,
-        ))
-
-    async def _structure_issues(
-        self, namespace: str, parity: dict[str, Any] | None, templates: set[str] | None,
-    ) -> list[str]:
-        """The failing tables to name in the halt (for a merge, only those of
-        templates it may write), each with reporting-sync's reason for it. The
-        jobs are matched by template id, since another namespace can hold a
-        template of the same value; a missing table says only that the sync
-        did not get there."""
-        failing = _structure_failures(parity)
-        ids = await self._halt_template_ids(namespace, failing)
-        if templates is not None and ids is not None:
-            failing = [t for t in failing if ids.get(_parity_owner(namespace, t)) in templates]
-        keys = {_parity_owner(namespace, t) for t in failing}
-        sync_errors = await self._sync_errors_of(
-            namespace, {k: v for k, v in (ids or {}).items() if k in keys},
-        )
-        return [
-            _structure_issue(t, sync_errors.get(_parity_owner(namespace, t)))
-            for t in failing
-        ]
-
-    async def _halt_template_ids(
-        self, namespace: str, failing: list[dict[str, Any]]
-    ) -> dict[tuple[str, str], str] | None:
-        """_template_ids_of for the halt, or None when it cannot be read: the
-        halt it explains is raised whatever happens here."""
-        try:
-            return await self._template_ids_of(namespace, failing)
-        except Exception:  # must not replace the halt it explains
-            logger.warning(
-                "template ids for %s's halt unreadable", namespace, exc_info=True,
-            )
-            return None
-
-    async def _merge_passes_structure(
-        self, namespace: str, parity: dict[str, Any], templates: set[str],
-    ) -> bool:
-        """Whether a merge may go on although the structure check is not
-        green: the bookkeeping is usable and no failing table is one of a
-        template whose documents it may write. The others are reported."""
-        if not parity.get("bookkeeping_tables_ok", True):
-            return False
-        failing = _structure_failures(parity)
-        ids = await self._template_ids_of(namespace, failing)
-        if any(ids.get(_parity_owner(namespace, t)) in templates for t in failing):
-            return False
-        self._emit(
-            "warning",
-            f"[{namespace}] reporting tables of templates this merge writes no "
-            "documents of are missing or misshaped; the merge goes on: "
-            f"{', '.join(sorted(str(t.get('template_value')) for t in failing))}",
-        )
-        return True
-
-    async def _sync_errors_of(
-        self, namespace: str, ids: dict[tuple[str, str], str]
-    ) -> dict[tuple[str, str], str]:
-        """Why reporting-sync's jobs failed for these templates (ids keyed by
-        owning namespace and value), under the same keys. Best effort: the
-        halt it explains is raised whatever happens here, so a failure to
-        read the reasons is logged and leaves them out."""
-        if not ids:
-            return {}
-        try:
-            by_id = await self._reporting.failed_jobs(namespace, set(ids.values()))
-        except Exception:  # must not replace the halt it explains
-            logger.warning(
-                "reporting-sync job reasons for %s unreadable", namespace, exc_info=True,
-            )
-            return {}
-        return {key: by_id[tid] for key, tid in ids.items() if tid in by_id}
-
-    async def _template_ids_of(
-        self, namespace: str, templates: list[dict[str, Any]]
-    ) -> dict[tuple[str, str], str]:
-        """The template_id of each parity row's template, keyed by
-        (owning namespace, value): the namespace's own, or the other
-        namespace that owns a shared one."""
-        wanted = {_parity_owner(namespace, t) for t in templates}
-        if not wanted:
-            return {}
-        db_name, coll_name = COLLECTION_MAP["templates"]
-        ids: dict[tuple[str, str], str] = {}
-        async for row in self._mongo[db_name][coll_name].find(
-            {"$or": [{"namespace": ns, "value": value} for ns, value in wanted]},
-            {"namespace": 1, "value": 1, "template_id": 1},
-        ):
-            ids[(str(row.get("namespace")), str(row.get("value")))] = str(
-                row.get("template_id")
-            )
-        return ids
-
-    async def _reporting_phase_counts(
+    async def _reporting_phase_verify(
         self, namespace: str, *, skip_documents: bool
     ) -> None:
-        """Post-data count parity: wait while the sync progresses, then
-        complete WITH warning if parity still does not hold.
+        """The restore's one reporting phase, after the documents: trigger the
+        namespace batch sync, and record reporting-sync's verdict on the job.
 
-        Never a hard fail — data is safely in MongoDB at this point and the
-        reporting layer can catch up or be replayed; the warning makes the
-        gap visible instead of silent. Progress is the namespace's total
-        reporting row count from the parity check itself: while it keeps
-        changing the sync is alive, however long the namespace takes.
+        Reporting-sync computes the verdict and its per-template reasons — it
+        owns the tables and knows its own jobs. This engine records what it is
+        told and re-derives no verdict of its own.
+
+        A restore never stops on reporting. The documents are what a restore
+        protects, and the tables are derived from them: a namespace whose
+        reporting tables were missing for the whole restore ends up complete
+        once the batch sync lands. So a ``failed`` or ``unverified`` verdict is
+        a warning naming the re-sync to run, never a halt that leaves the
+        namespace half-written.
+
+        The wait is for the sync to settle, not for a green answer: it lasts
+        while reporting-sync still has work for the namespace, and then records
+        the verdict as it stands.
         """
         if skip_documents:
-            self._set_reporting_verdict(
-                namespace, "not_checked", "documents were skipped"
-            )
+            self._set_reporting_verdict(namespace, _UNVERIFIED, "documents were skipped")
             return
         if not self._reporting:
             self._set_reporting_verdict(
-                namespace, "unavailable", "reporting-sync not reachable"
+                namespace, _UNVERIFIED, "reporting-sync not reachable"
             )
             return
         self._emit(
             "phase_reporting_parity",
-            f"[{namespace}] verifying reporting row-count parity",
+            f"[{namespace}] verifying the reporting layer",
         )
         if await self._reporting.trigger_batch_sync(namespace):
             self._reporting_synced.append(namespace)
+        parity = await self._wait_for_reporting_sync(namespace)
+        if parity is not None:
+            self._record_reporting_verdict(namespace, parity)
+
+    async def _wait_for_reporting_sync(self, namespace: str) -> dict[str, Any] | None:
+        """Poll parity while reporting-sync still has this namespace's sync in
+        flight, and return the last answer (None once reporting-sync goes away,
+        which records its own verdict).
+
+        The service's own "still syncing" reason is what keeps the wait open:
+        rows land page by page, so anything short of that is an answer this
+        engine must not sit on. The stall and overall caps bound the wait for a
+        sync that never finishes — progress is the namespace's reporting row
+        count, so a sync that lands rows keeps its time and one that writes
+        nothing is given up on.
+        """
         clock = asyncio.get_event_loop()
         started = last_change = clock.time()
         last_rows: int | None = None
-        parity: dict[str, Any] | None = None
         while True:
             parity = await self._reporting.parity(namespace, include_counts=True)
             if parity is None:
-                self._reporting_unavailable(namespace, "count parity")
-                return
-            if parity.get("ok"):
-                self._set_reporting_verdict(namespace, "verified")
-                self._emit(
-                    "phase_reporting_parity",
-                    f"[{namespace}] reporting parity verified "
-                    f"({len(parity.get('templates', []))} template(s))",
-                )
-                return
-            templates = parity.get("templates", [])
-            rows = sum(int(t.get("actual_rows") or 0) for t in templates)
+                self._reporting_unavailable(namespace, "reporting verification")
+                return None
+            if not _sync_still_running(parity):
+                return parity
             now = clock.time()
+            rows = _parity_rows(parity)
             if rows != last_rows:
                 last_rows, last_change = rows, now
-                expected = sum(int(t.get("expected_documents") or 0) for t in templates)
                 self._emit(
                     "phase_reporting_parity",
-                    f"[{namespace}] reporting catching up: {rows} of {expected} rows",
+                    f"[{namespace}] reporting catching up: {rows} of "
+                    f"{_parity_expected(parity)} rows",
                 )
-            if now - last_change >= self._REPORTING_COUNTS_STALL_S:
-                reason = f"no reporting rows written for {self._REPORTING_COUNTS_STALL_S}s"
-                break
-            if now - started >= self._REPORTING_COUNTS_MAX_S:
-                reason = f"still catching up after {self._REPORTING_COUNTS_MAX_S}s"
-                break
+            if now - last_change >= self._REPORTING_SYNC_STALL_S:
+                return _waited_out(
+                    parity, f"no reporting rows written for "
+                    f"{self._REPORTING_SYNC_STALL_S}s",
+                )
+            if now - started >= self._REPORTING_SYNC_MAX_S:
+                return _waited_out(parity, f"still syncing after {self._REPORTING_SYNC_MAX_S}s")
             await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
-        gaps = _parity_gaps(parity or {})
-        self._set_reporting_verdict(namespace, "incomplete", reason, gaps)
-        mismatches = [_describe_gap(g) for g in gaps]
+
+    def _record_reporting_verdict(
+        self, namespace: str, parity: dict[str, Any]
+    ) -> None:
+        """Record reporting-sync's answer as this namespace's verdict: its
+        status, its reasons, and one line saying why. The only thing added here
+        is why the wait ended, when the wait ended on a cap."""
+        reasons = _parity_reasons(parity)
+        verdict = str(parity.get("verdict") or "")
+        if verdict not in _VERDICT_RANK:
+            # An answer with no verdict — an older reporting-sync, or one that
+            # cannot say. Nothing was verified, and this engine computes no
+            # verdict of its own.
+            self._set_reporting_verdict(
+                namespace, _UNVERIFIED, "reporting-sync gave no verdict", reasons,
+            )
+            return
+        if verdict == _VERIFIED:
+            self._set_reporting_verdict(namespace, _VERIFIED, None, [])
+            self._emit(
+                "phase_reporting_parity",
+                f"[{namespace}] reporting verified "
+                f"({len(parity.get('templates') or [])} template(s))",
+            )
+            return
+        waited_out = parity.get("_waited_out")
+        line = _reason_line(reasons)
+        reason = f"{waited_out} ({line})" if waited_out else line
+        self._set_reporting_verdict(namespace, verdict, reason, reasons)
         self._emit(
             "warning",
-            f"[{namespace}] reporting count parity incomplete ({reason}): "
-            f"{'; '.join(mismatches[:5]) or 'no per-item detail'} — "
-            "restore data is complete in MongoDB; the batch sync may still be "
-            "running: watch GET /api/reporting-sync/sync/batch/jobs or "
-            f"GET /api/reporting-sync/parity?namespace={namespace}, or re-run "
-            "the batch sync",
+            f"[{namespace}] reporting {verdict}: {reason} — the restore's data is "
+            "complete in MongoDB, and the reporting layer is derived from it. "
+            f"Re-run the batch sync (POST /api/reporting-sync/sync/batch?"
+            f"namespace={namespace}&force=true) and check "
+            f"GET /api/reporting-sync/parity?namespace={namespace}; the standing "
+            "parity check may already be repairing it (GET "
+            "/api/reporting-sync/parity/status).",
         )
 
     async def _upsert_namespace(

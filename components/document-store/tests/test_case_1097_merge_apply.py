@@ -423,21 +423,24 @@ async def test_a_different_overwrite_still_adds_a_version(mongo):
 
 
 @pytest.mark.asyncio
-async def test_the_reporting_gate_runs_before_documents_move(mongo):
+async def test_reporting_is_verified_after_the_merged_documents_are_written(mongo):
+    """The batch sync a merge triggers is what builds its documents' reporting
+    rows, so it runs after them. Nothing about reporting stands between the
+    definitions and the documents any more."""
     await _seed_namespace(mongo)
     await _seed(mongo, "templates", [_template()])
     seen: list[int] = []
 
-    async def gate(self, namespace, **kw):
+    async def verify(self, namespace, **kw):
         db_name, coll_name = COLLECTION_MAP["documents"]
         seen.append(await self._mongo[db_name][coll_name].count_documents({"namespace": namespace}))
 
-    with patch.object(DirectRestoreEngine, "_reporting_phase_structure", gate):
+    with patch.object(DirectRestoreEngine, "_reporting_phase_verify", verify):
         await _run_merge(mongo, _archive({
             "documents": [_doc(1, doc_id="D2", ident="h2")],
         }))
 
-    assert seen == [0]
+    assert seen == [1]
     assert len(await _rows(mongo, "documents")) == 1
 
 

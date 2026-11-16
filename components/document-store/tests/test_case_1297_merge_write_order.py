@@ -1,13 +1,15 @@
-"""A multi-namespace merge writes in three steps across all its namespaces.
+"""A multi-namespace merge writes in two steps across all its namespaces.
 
-A merge wrote one namespace completely (definitions, reporting gate,
-documents) before it started the next, so namespace B's reporting gate could
-refuse after A had been fully merged, and the job reported a plain refusal
-with nothing saying what A had received. Now every namespace's definitions
-are written, then every gate runs, then every namespace's documents, files
-and remaining entries; a gate refusal therefore lands before any document is
-written anywhere, and any failure after the first write carries, per target,
-what was written (details.written).
+A merge wrote one namespace completely (definitions, documents, files) before
+it started the next, so namespace B could fail after A had been fully merged,
+and the job reported a plain refusal with nothing saying what A had received.
+Now every namespace's definitions are written, then every namespace's
+documents, files and remaining entries, and any failure after the first write
+carries, per target, what was written (details.written).
+
+Reporting is verified at the end of each namespace's documents: it never
+stands between the steps, because a reporting problem is reported, not
+acted on.
 """
 
 from __future__ import annotations
@@ -48,10 +50,9 @@ def _engine(calls: list[tuple], *, fail_at: tuple | None = None) -> DirectRestor
 
     eng._apply_definitions = step("definitions")
     eng._apply_merge_definitions = step("definition rows")
-    eng._reporting_phase_structure = step("gate")
     eng._apply_merge = step("documents")
     eng._release_retired_synonyms = step("synonyms")
-    eng._reporting_phase_counts = step("counts")
+    eng._reporting_phase_verify = step("verify")
 
     async def provenance(*args, target, **kwargs):
         calls.append(("provenance", target))
@@ -69,29 +70,39 @@ async def _write(eng: DirectRestoreEngine) -> None:
 
 
 @pytest.mark.asyncio
-async def test_definitions_everywhere_then_every_gate_then_the_rest():
+async def test_definitions_everywhere_then_the_documents():
     calls: list[tuple] = []
     await _write(_engine(calls))
-    order = [c for c in calls if c[0] in ("definitions", "gate", "documents")]
+    order = [c for c in calls if c[0] in ("definitions", "documents")]
     assert order == [
         ("definitions", "a"), ("definitions", "b"),
-        ("gate", "a"), ("gate", "b"),
         ("documents", "a"), ("documents", "b"),
     ]
 
 
 @pytest.mark.asyncio
-async def test_a_later_gate_refuses_before_any_document_and_says_what_was_written():
+async def test_reporting_is_verified_after_each_namespaces_documents():
+    """Nothing waits on reporting between the steps: the verify phase follows
+    the documents it reports on."""
     calls: list[tuple] = []
-    eng = _engine(calls, fail_at=("gate", "b"))
+    await _write(_engine(calls))
+    assert [c[0] for c in calls if c[1] == "a"] == [
+        "definitions", "definition rows", "documents", "synonyms", "verify", "provenance",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_later_namespaces_definition_failure_says_what_the_earlier_got():
+    calls: list[tuple] = []
+    eng = _engine(calls, fail_at=("definitions", "b"))
     with pytest.raises(RestoreEngineError) as refused:
         await _write(eng)
     assert not any(c[0] == "documents" for c in calls)
     err = refused.value
     assert err.details["result_kind"] == "merge_partial"
-    assert err.details["written"] == {"a": ["definitions"], "b": ["definitions"]}
-    assert err.details["cause"] == "gate"
-    assert "gate refused in b" in str(err)
+    assert err.details["written"] == {"a": ["definitions"], "b": []}
+    assert err.details["cause"] == "definitions"
+    assert "definitions refused in b" in str(err)
     assert "'a': definitions and their Registry entries" in str(err)
 
 
@@ -117,8 +128,8 @@ async def test_a_failure_before_the_first_write_is_raised_as_it_is():
 
 @pytest.mark.asyncio
 async def test_definition_entries_are_claimed_with_the_definitions():
-    """A gate that refuses later leaves no definition entry unclaimed; the
-    claims are reported once, with the remaining entries'."""
+    """No definition entry is left unclaimed: the claims are reported once,
+    with the remaining entries'."""
     events: list[tuple] = []
     eng = DirectRestoreEngine(MagicMock(), None, lambda e: None)
 

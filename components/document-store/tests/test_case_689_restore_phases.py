@@ -1,11 +1,11 @@
-"""Restore verification phases: precondition, structural gate, count parity.
+"""Restore verification: a precondition before any write, one verdict after.
 
 Engine-method tests with a stubbed reporting client — no HTTP, no mongo I/O
 (the phase methods touch only the injected client and the progress emitter).
 Covers the operator rulings: stale reporting schema refuses without the
-drop_stale_reporting opt-in and drops with it; structural failure halts; a
-count mismatch completes WITH a warning; an unreachable reporting-sync
-degrades to a warning and never fails the restore.
+drop_stale_reporting opt-in and drops with it; a reporting failure never halts
+the restore, and the verdict reporting-sync computed is recorded as it was
+given; an unreachable reporting-sync is an unverified verdict, never a failure.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -25,13 +25,9 @@ def _engine(reporting, events):
     )
     # Shrink the bounded waits — the logic under test is the decision,
     # not the pacing.
-    eng._REPORTING_STRUCTURE_TIMEOUT_S = 0.05
-    eng._REPORTING_COUNTS_STALL_S = 0.05
-    eng._REPORTING_COUNTS_MAX_S = 5
+    eng._REPORTING_SYNC_STALL_S = 0.05
+    eng._REPORTING_SYNC_MAX_S = 5
     eng._REPORTING_POLL_INTERVAL_S = 0.01
-    # The halt looks the failing templates' ids up in MongoDB, which these
-    # engines do not have.
-    eng._template_ids_of = AsyncMock(return_value={})
     return eng
 
 
@@ -40,14 +36,37 @@ def _reporting_stub(parity_result):
     stub.parity = AsyncMock(return_value=parity_result)
     stub.trigger_batch_sync = AsyncMock(return_value=True)
     stub.drop_namespace_schema = AsyncMock(return_value=True)
-    stub.failed_jobs = AsyncMock(return_value={})
     return stub
 
 
+def _reason(name, issue, detail, kind="template"):
+    """One finding as reporting-sync serves it."""
+    return {"kind": kind, "name": name, "issue": issue, "detail": detail,
+            "expected": None, "actual": None}
+
+
 CLEAN = {"schema_present": False, "table_count": 0, "bookkeeping_tables_ok": True,
-         "structural_issues": 0, "templates": [], "ok": True}
+         "structural_issues": 0, "templates": [], "ok": True,
+         "verdict": "verified", "reasons": []}
 STALE = {"schema_present": True, "table_count": 5, "bookkeeping_tables_ok": True,
          "schema_name": "ns1", "structural_issues": 0, "templates": []}
+# A table missing during the restore: reporting proved it, and says so.
+BROKEN = dict(
+    CLEAN, ok=False, verdict="failed", structural_issues=1, templates=[
+        {"template_value": "T1", "table_present": False, "missing_columns": [],
+         "error": None, "actual_rows": None, "expected_documents": None},
+    ],
+    reasons=[_reason("T1", "table_missing", "T1: no reporting table in the namespace's schema")],
+)
+# Reporting-sync still working: nothing it says about rows is settled yet.
+def _still_running(rows=None, expected=None):
+    return dict(
+        CLEAN, ok=False, verdict="unverified", templates=[
+            {"template_value": "T1", "actual_rows": rows, "expected_documents": expected},
+        ],
+        reasons=[_reason("ns1", "sync_running",
+                        "namespace 'ns1' has a batch sync still running", kind="namespace")],
+    )
 
 
 class TestPrecondition:
@@ -98,104 +117,94 @@ class TestPrecondition:
         assert any(ev.phase == "warning" for ev in events)
 
 
-class TestStructuralGate:
-    @pytest.mark.asyncio
-    async def test_green_structure_proceeds(self):
-        eng = _engine(_reporting_stub(CLEAN), [])
-        await eng._reporting_phase_structure("ns1")
+class TestNoHaltOnReporting:
+    """The ruling this case makes: reporting is derived data, so a restore
+    carries on and says what reporting looks like."""
 
     @pytest.mark.asyncio
-    async def test_persistent_structural_failure_halts(self):
-        broken = dict(CLEAN, structural_issues=1, templates=[
-            {"template_value": "T1", "table_present": False,
-             "missing_columns": [], "error": None},
-        ])
-        eng = _engine(_reporting_stub(broken), [])
-        with pytest.raises(RestoreEngineError, match="T1"):
-            await eng._reporting_phase_structure("ns1")
-
+    async def test_a_missing_table_does_not_stop_the_verify_phase(self):
+        eng = _engine(_reporting_stub(BROKEN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert eng._reporting_verdicts["ns1"]["status"] == "failed"
 
     @pytest.mark.asyncio
-    async def test_a_merge_halts_only_on_the_tables_of_templates_it_writes(self):
-        """A live namespace's broken table for a template the merge writes no
-        documents of was there before it: reported, never a refusal."""
-        broken = dict(CLEAN, structural_issues=2, templates=[
-            {"template_value": "OTHER", "table_present": False,
-             "missing_columns": [], "error": None},
-            {"template_value": "MINE", "table_present": False,
-             "missing_columns": [], "error": None},
-        ])
+    async def test_the_verdict_is_recorded_as_reporting_sync_gave_it(self):
+        """document-store copies reporting-sync's verdict and reasons; it does
+        not read the counters and form its own."""
         events = []
-        eng = _engine(_reporting_stub(broken), events)
-        eng._template_ids_of = AsyncMock(
-            return_value={("ns1", "OTHER"): "T-other", ("ns1", "MINE"): "T-mine"},
-        )
-        await eng._reporting_phase_structure("ns1", merged_definitions=0, templates={"T-none"})
-        assert any(ev.phase == "warning" and "OTHER" in ev.message for ev in events)
-
-        with pytest.raises(RestoreEngineError, match="MINE") as halted:
-            await eng._reporting_phase_structure("ns1", merged_definitions=0, templates={"T-mine"})
-        assert "OTHER" not in str(halted.value)
-
-
-class TestCountParity:
-    @pytest.mark.asyncio
-    async def test_parity_ok_no_warning(self):
-        events = []
-        eng = _engine(_reporting_stub(dict(CLEAN, ok=True)), events)
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
-        assert not any(ev.phase == "warning" for ev in events)
-
-    @pytest.mark.asyncio
-    async def test_mismatch_completes_with_warning(self):
-        mismatch = dict(CLEAN, ok=False, templates=[
-            {"template_value": "T1", "counts_match": False,
-             "expected_documents": 10, "actual_rows": 3},
-        ])
-        events = []
-        eng = _engine(_reporting_stub(mismatch), events)
-        # Must NOT raise — operator ruling: complete with warning.
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
-        warnings = [ev for ev in events if ev.phase == "warning"]
-        assert warnings and "T1" in warnings[-1].message
-
-    @pytest.mark.asyncio
-    async def test_derived_gaps_are_named_in_the_warning(self):
-        """Document tables can be complete while term tables or registered
-        views are not; the warning names those gaps rather than saying it
-        has no detail."""
-        gaps = dict(CLEAN, ok=False, derived_issues=2, derived_tables=[
-            {"table": "terms", "expected_rows": 5, "actual_rows": 5, "issue": None},
-            {"table": "term_relations", "expected_rows": 7, "actual_rows": 0,
-             "issue": "term_relations_mismatch"},
-        ], views=[{"view_name": "v_open", "present": False}])
-        events = []
-        eng = _engine(_reporting_stub(gaps), events)
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        eng = _engine(_reporting_stub(BROKEN), events)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        verdict = eng._reporting_verdicts["ns1"]
+        assert verdict["reasons"] == BROKEN["reasons"]
+        assert verdict["reason"] == "T1: no reporting table in the namespace's schema"
         warning = [ev for ev in events if ev.phase == "warning"][-1].message
-        assert "term_relations term_relations_mismatch expected=7 actual=0" in warning
-        assert "view v_open missing" in warning
-        assert "expected=5" not in warning  # a passing table is not listed
+        assert "reporting failed" in warning
+        assert "sync/batch?namespace=ns1" in warning
+        assert "the restore's data is complete in MongoDB" in warning
 
-    # CASE-967: a large namespace's catch-up takes minutes; a fixed 90 s wait
-    # declared it incomplete while it was still running. The wait now follows
-    # the reporting row count.
+    @pytest.mark.asyncio
+    async def test_an_answer_without_a_verdict_is_unverified_not_guessed(self):
+        """An older reporting-sync serves the counters only. Reading them here
+        would be the second copy of the verdict this case removes — even when
+        they happen to look clean."""
+        old = {k: v for k, v in CLEAN.items() if k != "verdict"}
+        eng = _engine(_reporting_stub(old), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert eng._reporting_verdicts["ns1"]["status"] == "unverified"
+        assert eng._reporting_verdicts["ns1"]["reason"] == "reporting-sync gave no verdict"
+
+
+class TestVerifyPhase:
+    @pytest.mark.asyncio
+    async def test_verified_completes_without_a_warning(self):
+        events = []
+        eng = _engine(_reporting_stub(CLEAN), events)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert not any(ev.phase == "warning" for ev in events)
+        assert eng._reporting_verdicts["ns1"] == {
+            "status": "verified", "reason": None, "reasons": []}
+
+    @pytest.mark.asyncio
+    async def test_an_unverified_that_waiting_cannot_fix_is_recorded_at_once(self):
+        """A template store that did not answer is settled the moment it is
+        heard: the wait is for a sync, not for luck."""
+        unreadable = dict(
+            CLEAN, ok=False, verdict="unverified",
+            reasons=[_reason("ns1", "templates_unreadable",
+                            "the namespace's templates could not be listed", kind="namespace")],
+        )
+        reporting = _reporting_stub(unreadable)
+        eng = _engine(reporting, [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        reporting.parity.assert_awaited_once()
+        assert eng._reporting_verdicts["ns1"]["status"] == "unverified"
+
+    @pytest.mark.asyncio
+    async def test_a_sync_still_running_is_waited_for(self):
+        answers = [_still_running(0, 100), _still_running(0, 100), CLEAN]
+        reporting = _reporting_stub(None)
+        reporting.parity = AsyncMock(side_effect=answers)
+        eng = _engine(reporting, [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert reporting.parity.await_count == 3
+        assert eng._reporting_verdicts["ns1"]["status"] == "verified"
+
+    # A large namespace's catch-up takes minutes; a fixed wait declared it done
+    # while it was still running. The wait follows the sync's own answer, and
+    # the row count keeps a sync that writes nothing bounded.
 
     @staticmethod
-    def _catching_up(rows_per_poll, *, ok_after=None, expected=1000):
-        """Parity results whose row count advances by rows_per_poll per call,
-        turning ok after ok_after calls (never, when None)."""
+    def _catching_up(rows_per_poll, *, settled_after=None, expected=1000):
+        """Parity results that say "still syncing" while the row count
+        advances by rows_per_poll per call, settling after settled_after calls
+        (never, when None)."""
         calls = {"n": 0}
 
         async def parity(namespace, include_counts=False):
             calls["n"] += 1
-            if ok_after is not None and calls["n"] > ok_after:
-                return dict(CLEAN, ok=True, templates=[{"template_value": "T1"}])
-            rows = calls["n"] * rows_per_poll
-            return dict(CLEAN, ok=False, templates=[
-                {"template_value": "T1", "counts_match": False,
-                 "expected_documents": expected, "actual_rows": rows},
-            ])
+            if settled_after is not None and calls["n"] > settled_after:
+                return dict(CLEAN, templates=[{"template_value": "T1"}])
+            return _still_running(calls["n"] * rows_per_poll, expected)
 
         stub = _reporting_stub(None)
         stub.parity = AsyncMock(side_effect=parity)
@@ -204,51 +213,82 @@ class TestCountParity:
     @pytest.mark.asyncio
     async def test_progress_keeps_the_wait_alive_past_the_stall_window(self):
         events = []
-        eng = _engine(self._catching_up(10, ok_after=30), events)  # 30 polls ≈ 0.3 s > 0.05 s stall
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        eng = _engine(self._catching_up(10, settled_after=30), events)  # 30 polls ≈ 0.3 s > stall
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
         assert not any(ev.phase == "warning" for ev in events)
         messages = [ev.message for ev in events if ev.phase == "phase_reporting_parity"]
         assert any("reporting catching up: 10 of 1000 rows" in m for m in messages)
-        assert "reporting parity verified" in messages[-1]
+        assert "reporting verified" in messages[-1]
 
     @pytest.mark.asyncio
     async def test_no_progress_gives_up_after_the_stall_window(self):
         events = []
         eng = _engine(self._catching_up(0), events)
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
         warning = [ev for ev in events if ev.phase == "warning"][-1].message
         assert "no reporting rows written for 0.05s" in warning
-        assert "GET /api/reporting-sync/sync/batch/jobs" in warning
+        assert "sync/batch?namespace=ns1" in warning
         assert "parity?namespace=ns1" in warning
+        # The wait gave out; the verdict is still the one reporting-sync gave.
+        assert eng._reporting_verdicts["ns1"]["status"] == "unverified"
+        assert eng._reporting_verdicts["ns1"]["reasons"][0]["issue"] == "sync_running"
 
     @pytest.mark.asyncio
     async def test_endless_progress_stops_at_the_cap(self):
-        events = []
-        eng = _engine(self._catching_up(1), events)
-        eng._REPORTING_COUNTS_MAX_S = 0.1
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
-        warning = [ev for ev in events if ev.phase == "warning"][-1].message
-        assert "still catching up after 0.1s" in warning
+        eng = _engine(self._catching_up(1), [])
+        eng._REPORTING_SYNC_MAX_S = 0.1
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        reason = eng._reporting_verdicts["ns1"]["reason"]
+        assert "still syncing after 0.1s" in reason
+        assert "still running" in reason  # and what reporting-sync said about it
+
+    @pytest.mark.asyncio
+    async def test_a_still_running_sync_that_turns_failed_is_reported_as_failed(self):
+        """Rows that stop short when the sync finishes are a proven gap, and
+        the restore says so — with the data still safely restored."""
+        answers = [_still_running(10, 100), BROKEN]
+        reporting = _reporting_stub(None)
+        reporting.parity = AsyncMock(side_effect=answers)
+        eng = _engine(reporting, [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert eng._reporting_verdicts["ns1"]["status"] == "failed"
 
     @pytest.mark.asyncio
     async def test_a_triggered_sync_is_recorded_for_the_completion(self):
-        eng = _engine(_reporting_stub(dict(CLEAN, ok=True)), [])
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        eng = _engine(_reporting_stub(CLEAN), [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
         assert eng._reporting_synced == ["ns1"]
 
     @pytest.mark.asyncio
     async def test_a_refused_trigger_is_not_recorded(self):
         """The completion's own trigger is the second chance — a namespace
-        whose count-phase trigger failed must not be skipped there."""
-        stub = _reporting_stub(dict(CLEAN, ok=True))
+        whose verify-phase trigger failed must not be skipped there."""
+        stub = _reporting_stub(CLEAN)
         stub.trigger_batch_sync = AsyncMock(return_value=False)
         eng = _engine(stub, [])
-        await eng._reporting_phase_counts("ns1", skip_documents=False)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
         assert eng._reporting_synced == []
 
     @pytest.mark.asyncio
-    async def test_skip_documents_skips_count_phase(self):
+    async def test_skip_documents_skips_the_phase(self):
         reporting = _reporting_stub(CLEAN)
         eng = _engine(reporting, [])
-        await eng._reporting_phase_counts("ns1", skip_documents=True)
+        await eng._reporting_phase_verify("ns1", skip_documents=True)
         reporting.parity.assert_not_awaited()
+        reporting.trigger_batch_sync.assert_not_awaited()
+        assert eng._reporting_verdicts["ns1"]["status"] == "unverified"
+
+    @pytest.mark.asyncio
+    async def test_no_reporting_client_is_unverified(self):
+        eng = DirectRestoreEngine(MagicMock(), None, lambda _e: None)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert eng._reporting_verdicts["ns1"]["status"] == "unverified"
+
+    @pytest.mark.asyncio
+    async def test_reporting_going_away_mid_wait_is_unverified(self):
+        reporting = _reporting_stub(_still_running(10, 100))
+        reporting.parity = AsyncMock(side_effect=[_still_running(10, 100), None])
+        eng = _engine(reporting, [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert eng._reporting_verdicts["ns1"]["status"] == "unverified"
+        assert "unreachable" in eng._reporting_verdicts["ns1"]["reason"]
