@@ -84,16 +84,60 @@ def test_other_files_keep_their_names():
     assert not re.search(r"\d", LIB_VERSION)
 
 
-def test_the_build_cache_variable_is_the_one_lib_artifacts_reads():
-    """The golden session hands lib_artifacts.py its build cache through an
-    environment variable; a harness that set another name would rebuild every
-    library on every run again, silently."""
+def _lib_artifacts():
+    """scripts/lib_artifacts.py loaded as a module — it is a script, not an
+    installed package."""
     import importlib.util
 
-    from golden_lib import BUILD_CACHE_ENV, REPO_ROOT
+    from golden_lib import REPO_ROOT
 
     spec = importlib.util.spec_from_file_location("lib_artifacts", REPO_ROOT / "scripts/lib_artifacts.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules["lib_artifacts"] = module
     spec.loader.exec_module(module)
-    assert module.BUILD_CACHE_ENV == BUILD_CACHE_ENV
+    return module
+
+
+def test_the_build_cache_variable_is_the_one_lib_artifacts_reads():
+    """The golden session hands lib_artifacts.py its build cache through an
+    environment variable; a harness that set another name would rebuild every
+    library on every run again, silently."""
+    from golden_lib import BUILD_CACHE_ENV
+
+    assert _lib_artifacts().BUILD_CACHE_ENV == BUILD_CACHE_ENV
+
+
+def test_fresh_rebuild_lifts_the_build_cache_for_the_second_run(monkeypatch, tmp_path):
+    """A cached session hands a refresh the artifact the create run built, so
+    the surfaces' immutability check (same artifact name, different bytes is
+    fatal) would compare a copy against itself. `fresh_rebuild` lifts the cache
+    for the second run only, and the empty value is what lib_artifacts.py reads
+    as no cache — the same spelling `_build_cache` already treats as unset."""
+    import subprocess
+
+    import golden_lib as G
+
+    module = _lib_artifacts()
+    seen: list[dict[str, str] | None] = []
+
+    def fake_run(cmd, cwd, env_extra=None):
+        seen.append(env_extra)
+        return subprocess.CompletedProcess(cmd, 0, "Refreshing\n", "")
+
+    monkeypatch.setattr(G, "_run", fake_run)
+    monkeypatch.setattr(G, "snapshot_tree", lambda root, roots: {"tree": [], "files": {}})
+
+    def run(refresh: bool, fresh_rebuild: bool) -> None:
+        G.run_app_scenario(
+            tmp_path, preset="standard", tier3=False, refresh=refresh,
+            slug="pins", fresh_rebuild=fresh_rebuild,
+        )
+
+    run(refresh=True, fresh_rebuild=True)
+    assert seen == [None, {module.BUILD_CACHE_ENV: ""}]
+    # Only the one scenario pays for a real build; the others keep reusing.
+    seen.clear()
+    run(refresh=True, fresh_rebuild=False)
+    assert seen == [None, None]
+    monkeypatch.setenv(module.BUILD_CACHE_ENV, "")
+    assert module._build_cache() is None

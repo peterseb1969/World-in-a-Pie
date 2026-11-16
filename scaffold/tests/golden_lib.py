@@ -273,8 +273,16 @@ def snapshot_tree_backend(clone: Path, roots: dict[str, str]) -> dict:
 # --- App scenarios -----------------------------------------------------------
 
 def run_app_scenario(
-    tmp: Path, *, preset: str, tier3: bool, refresh: bool, slug: str, profile: str = ""
+    tmp: Path, *, preset: str, tier3: bool, refresh: bool, slug: str, profile: str = "",
+    fresh_rebuild: bool = False,
 ) -> dict:
+    """Run the app scaffold (twice for refresh) and snapshot what it produced.
+
+    `fresh_rebuild` lifts the session's library build cache for the second run
+    only, so that run builds all five libraries again from the same source.
+    Without it the cache hands back the first run's artifact files and the
+    libraries' immutability checks (surfaces.py: same name, different bytes is
+    fatal) compare a copy against itself and pass whatever a build changed."""
     app_dir = tmp / slug
     cmd = [
         "bash", str(REPO_ROOT / "scripts/create-app-project.sh"),
@@ -288,8 +296,11 @@ def run_app_scenario(
 
     runs = 2 if refresh else 1
     last: subprocess.CompletedProcess | None = None
-    for _ in range(runs):
-        last = _run(cmd, cwd=REPO_ROOT)
+    for index in range(runs):
+        last = _run(
+            cmd, cwd=REPO_ROOT,
+            env_extra={BUILD_CACHE_ENV: ""} if fresh_rebuild and index else None,
+        )
         if last.returncode != 0:
             raise RuntimeError(
                 f"app scaffold failed (rc={last.returncode}):\n"

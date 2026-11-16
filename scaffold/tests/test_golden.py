@@ -73,6 +73,11 @@ def test_app_standard(tmp: Path, tier3: bool, refresh: bool):
     snap = G.run_app_scenario(
         tmp, preset="standard", tier3=tier3, refresh=refresh,
         slug=f"{mode}-{tier}",
+        # The one scenario that rebuilds the five libraries for real, so the
+        # surfaces' immutability check (same artifact name, different bytes is
+        # fatal) compares two builds of one source rather than a cached file
+        # against its own copy.
+        fresh_rebuild=refresh and not tier3,
     )
     _check(name, snap)
 

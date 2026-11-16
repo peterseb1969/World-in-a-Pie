@@ -661,11 +661,14 @@ echo "   .mcp.json: engine surface (key source: $WIP_API_KEY_FILE)"
 # --- Build the libraries apps vendor ---
 #
 # The three npm tarballs (@wip/client, @wip/react, @wip/proxy) and the two
-# wheels (wip-archive, wip-toolkit) are built fresh on every run, under
-# versions computed from git (scripts/lib_artifacts.py): a package's version
-# moves exactly when its directory changes, so one file name never names two
-# contents (npm's lockfile hash and pip's installed-version check both depend
-# on that). Nothing is selected from leftovers, and nothing is skipped: a
+# wheels (wip-archive, wip-toolkit) are built fresh on every run — the one
+# exception being a test session that names its own build directory through
+# WIP_LIB_BUILD_CACHE, which reuses the builds it made earlier in that session
+# (see scripts/lib_artifacts.py) — under versions computed from git
+# (scripts/lib_artifacts.py): a package's version moves exactly when its
+# directory changes, so one file name never names two contents (npm's lockfile
+# hash and pip's installed-version check both depend on that). Outside that
+# exception, nothing is selected from leftovers, and nothing is skipped: a
 # library that cannot be built stops the run before the app is touched, on
 # create and refresh alike.
 if $REFRESH_MODE; then
