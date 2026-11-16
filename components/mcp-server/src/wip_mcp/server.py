@@ -4032,13 +4032,17 @@ async def export_terminology(
     """Export a terminology with its terms (and optionally relations).
 
     By default only active terms are exported. To move a terminology whole,
-    with its lifecycle, pass include_inactive=true: deprecated terms then
-    carry their reason and replacement, inactive terms are included, and
-    import_terminology recreates both.
+    with its lifecycle, pass format='json' and include_inactive=true:
+    deprecated terms then carry their reason and replacement, inactive
+    terms are included, and import_terminology recreates both. A CSV export
+    carries only each term's value, label, description, sort order, status
+    and metadata: no names, parent, deprecation reason, replacement or
+    relations.
 
     Args:
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
-        format: 'json' or 'csv'.
+        format: 'json' (the format import_terminology takes) or 'csv' (a
+            flat term list).
         include_relations: Include ontology relations in export.
         namespace: Namespace the terminology identifier resolves in.
         include_inactive: Also export deprecated and inactive terms, and
