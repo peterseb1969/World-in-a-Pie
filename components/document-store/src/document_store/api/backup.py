@@ -532,7 +532,9 @@ async def start_restore(
         False,
         description=(
             "Merge only — add terms the target's terminology is missing, "
-            "and the names a term has in the archive but not on the target. "
+            "and give the target's copy of an active term the names only the "
+            "archive's copy has; a target term that is not active (deprecated "
+            "or inactive) gains none. "
             "Separate from add_missing on purpose: allowing new vocabulary "
             "entries is not the same decision as allowing new schemas."
         ),

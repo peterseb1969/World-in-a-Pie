@@ -16,8 +16,9 @@ that agreed:
   too, where it was previously imported as new versions.
 - A term's names compare as a set, one per (value, type, language); a
   difference is reported and the target's names stand. Under
-  `extend_terminologies` the target's term also gains the names only the
-  archive has.
+  `extend_terminologies` the target's copy of an active term also gains the
+  names only the archive has. A target term that is not active (deprecated or
+  inactive) gains none: its names stand and the difference is reported.
 - An edge type's endpoint lists and a field's `target_templates` compare as
   the templates they name; the stored `source_ref`/`target_ref` constraint and
   a term's `terminology_value` are no longer compared.
@@ -25,8 +26,6 @@ that agreed:
   term or name it adds would give that name to a second active term of a
   terminology that holds it, matched and reported as def-store would. A name
   two of the target's terms already share does not refuse the merge.
-- Under `extend_terminologies`, a deprecated target term gains none of the
-  archive's names: its names stand and the difference is reported.
 
 A merge whose document mappings never settle is now refused ("did not
 settle") as soon as the mappings repeat, before anything is written.

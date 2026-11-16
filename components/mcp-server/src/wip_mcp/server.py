@@ -5251,7 +5251,8 @@ async def start_restore(
     active, and the job reports how many (retirements_not_carried). Where a
     definition matches but its label, description or a term's names differ,
     the target's win and the difference is reported (under
-    extend_terminologies the target's term also gains the archive's names).
+    extend_terminologies the target's copy of an active term also gains the
+    archive's names, and a target term that is not active gains none).
     Templates are matched by (value, version) unless align_templates is set;
     a template the target holds with no version number in common with the
     archive is refused, naming align_templates. See its description below.
@@ -5321,8 +5322,9 @@ async def start_restore(
         add_missing: Merge only — insert terminologies and templates the
             target does not have, instead of refusing.
         extend_terminologies: Merge only — add terms the target's terminology
-            is missing, and the names a term has in the archive but not on
-            the target.
+            is missing, and give the target's copy of an active term the names
+            only the archive's copy has; a target term that is not active
+            (deprecated or inactive) gains none.
         align_templates: Merge only — for an archive from another install,
             whose template version numbers do not line up with the target's
             (a fresh bootstrap holds v1 while the archive's history runs to
