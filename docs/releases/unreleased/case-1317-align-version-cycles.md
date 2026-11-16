@@ -16,10 +16,15 @@ activated together.
 
 Each archive version now starts with every target version its schema matches
 with those references left aside, and keeps only the candidates whose
-references agree with the other versions' candidates. It then takes its
-preferred one (active first, then the highest version), the versions it names
-first, and the choice is checked against the target version by the same rule
-as before. Where two target versions differ only in a version they pin, the
-one that agrees is chosen. Merges whose templates name no other aligned
-template's version map exactly as before. The "did not settle" refusal is
-gone: the mapping always ends.
+references agree with the other versions' candidates. It then takes one of
+them, preferring the target's own order (active first, then the highest
+version), and backs out of a choice that leaves another version without a
+candidate — so a mapping that exists is found even when the preferred choice
+for one version blocks it. Where two target versions differ only in a version
+they pin, the one that agrees is chosen. A version that no candidate can take
+is reported unplaceable, naming whether its references do not line up with the
+other templates or what differs from the target's preferred version; it is
+never mapped onto a target version whose number only happens to match its
+archived one. Merges whose templates name no other aligned template's version
+map exactly as before. The "did not settle" refusal is gone: the mapping
+always ends.

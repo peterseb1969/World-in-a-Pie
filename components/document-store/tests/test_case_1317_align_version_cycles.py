@@ -8,6 +8,11 @@ waited for the other. A template that pins its own version is a cycle of
 one. Versions now start from every target version their schema matches with
 those references left aside, and keep only the candidates whose references
 agree.
+
+A version keeps no mapping the narrowing ruled out: the number it pinned is
+another install's, so it may not be matched against the target by it. And
+because one version's preferred candidate can block another's mapping, the
+choice backs out of it and tries the next one when that happens.
 """
 
 from __future__ import annotations
@@ -22,6 +27,9 @@ from document_store.services.backup_engine import COLLECTION_MAP
 from document_store.services.merge_definitions import DefinitionsPlanner
 
 NAMESPACE = "align-1317-ns"
+AGE_STR = {"name": "age", "type": "string"}
+AGE_INT = {"name": "age", "type": "integer"}
+NOTE = {"name": "note", "type": "string"}
 
 
 @pytest_asyncio.fixture
@@ -142,3 +150,78 @@ async def test_a_cycle_through_a_compatible_version_is_mapped(db):
     assert _mapped(plan, "A-a") == {1: 3}
     assert _mapped(plan, "A-b") == {1: 5}
     assert plan.alignment["A-a"].versions[1].reason == "compatible with target v3"
+
+
+@pytest.mark.asyncio
+async def test_a_version_whose_pinned_version_maps_nowhere_stays_unplaceable(db):
+    # The target's BETA v2 pins ALPHA v1. The archive's ALPHA v1 differs from
+    # every target ALPHA version and maps nowhere, so BETA v1 has no target
+    # version that can take it: the archive's number 1 lines up with the
+    # target's only by coincidence.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 1, AGE_STR),
+                _tpl("T-b", "BETA", 2, _ref("alpha", "T-a", 1))],
+        archive=[_tpl("A-a", "ALPHA", 1, AGE_INT),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1))],
+    )
+
+    assert _mapped(plan, "A-a") == {1: None}
+    assert _mapped(plan, "A-b") == {1: None}
+    assert "references do not line up" in plan.alignment["A-b"].versions[1].reason
+
+
+@pytest.mark.asyncio
+async def test_a_pin_that_maps_to_an_earlier_version_is_not_read_as_the_later_one(db):
+    # The archive pins BETA v1, which maps onto the target's BETA v2, which
+    # pins ALPHA v1. The archive's ALPHA v2, which the target's v1 does not
+    # match, is carried as history and maps nowhere: comparing it against
+    # ALPHA v1 is the only way to tell the two apart.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 1, AGE_STR),
+                _tpl("T-a", "ALPHA", 2, AGE_STR, NOTE),
+                _tpl("T-b", "BETA", 2, _ref("alpha", "T-a", 1))],
+        archive=[_tpl("A-a", "ALPHA", 1, AGE_STR),
+                 _tpl("A-a", "ALPHA", 2, AGE_INT),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 2))],
+    )
+
+    assert _mapped(plan, "A-a") == {1: 1, 2: None}
+    assert _mapped(plan, "A-b") == {1: None}
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_that_needs_a_non_preferred_choice_is_found(db):
+    # ALPHA v2 pins BETA v4 and ALPHA v1 pins BETA v5; both BETA versions pin
+    # ALPHA v1. Taking ALPHA's preferred (highest) version v2 leaves no BETA
+    # version whose pin agrees, so it and BETA v1 have no consistent mapping;
+    # v1 together with BETA v5 does have one.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 1, _ref("beta", "T-b", 5)),
+                _tpl("T-a", "ALPHA", 2, _ref("beta", "T-b", 4)),
+                _tpl("T-b", "BETA", 4, _ref("alpha", "T-a", 1)),
+                _tpl("T-b", "BETA", 5, _ref("alpha", "T-a", 1))],
+        archive=[_tpl("A-a", "ALPHA", 1, _ref("beta", "A-b", 1)),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1))],
+    )
+
+    assert _mapped(plan, "A-a") == {1: 1}
+    assert _mapped(plan, "A-b") == {1: 5}
+
+
+@pytest.mark.asyncio
+async def test_a_later_template_in_the_archive_sees_the_earlier_ones_mapping(db):
+    # BETA is listed first in the archive, so its version is compared before
+    # ALPHA's mapping exists: the numbering coincidence must not map it either.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 1, AGE_STR),
+                _tpl("T-b", "BETA", 2, _ref("alpha", "T-a", 1))],
+        archive=[_tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1)),
+                 _tpl("A-a", "ALPHA", 1, AGE_INT)],
+    )
+
+    assert _mapped(plan, "A-a") == {1: None}
+    assert _mapped(plan, "A-b") == {1: None}
