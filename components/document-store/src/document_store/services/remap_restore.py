@@ -285,10 +285,14 @@ class TemplateDefinitions:
     read from this install per version, already composed.
 
     When the pinned version is in neither, another version of the same
-    template stands in (the highest held): identity_fields cannot change
-    between versions (the template store refuses it), so the same fields
-    feed the hash. Only a template known in neither, or a parent chain that
-    cannot be followed, leaves a document without a definition.
+    template stands in: from the archive if it holds the template at all,
+    else from this install, the highest version that is not a draft and
+    carries its stored referent paths, else the highest held. identity_fields
+    cannot change between versions (the template store refuses it), so the
+    same fields feed the hash; the stored referent paths are why the choice
+    matters, since they are read from the stand-in too. Only a template known
+    in neither, or a parent chain that cannot be followed, leaves a document
+    without a definition.
     """
 
     archived: dict[DefinitionKey, dict[str, Any]] = field(default_factory=dict)
@@ -338,8 +342,11 @@ class TemplateDefinitions:
         return self._versions.get((source_index, template_id), [])
 
     def _held(self, template_id: str, version: int | None) -> tuple[dict[str, Any], bool] | None:
-        """(definition, composed) at the version, else at the highest version
-        held of the template; ``composed`` is False for an archived row."""
+        """(definition, composed) at the version (the archive first, then this
+        install); else, from the first of those that holds the template at
+        all, its highest version that is not a draft and carries stored
+        referent paths, else its highest held. ``composed`` is False for an
+        archived row."""
         sources = ((self.archived, False), (self.external, True))
         for source, composed in sources:
             if version is not None and (template_id, version) in source:
