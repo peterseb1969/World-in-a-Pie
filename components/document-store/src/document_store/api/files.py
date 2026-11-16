@@ -693,11 +693,63 @@ class StorageDeleteRequest(StrictModel):
     """Stored objects to remove for a namespace that is being deleted."""
 
     namespace: str = Field(..., min_length=1, description="Namespace being deleted")
+    journal_id: str = Field(
+        ...,
+        min_length=1,
+        description="The id of the running deletion journal this request comes from, "
+        "as the Registry serves it on deletion-status",
+    )
+    step_order: int = Field(
+        ...,
+        ge=1,
+        description="The order of the file-storage step, in that journal, whose keys "
+        "these are",
+    )
     storage_keys: list[str] = Field(
         ...,
         max_length=1000,
         description="Storage keys recorded in the namespace's deletion journal",
     )
+
+
+async def _recorded_step_keys(
+    registry: Any, namespace: str, journal_id: str, step_order: int
+) -> set[str]:
+    """The keys the deletion journal recorded for the step that sent a delete.
+
+    A delete is bound to its deletion: the step must belong to the journal named
+    in the request, and its recorded key set must still be readable. Anything
+    else refuses the request outright rather than deleting on an authority the
+    journal does not give — a key list from elsewhere, or one replayed against a
+    later deletion of a namespace re-created under the same name.
+    """
+    try:
+        step = await registry.get_namespace_deletion_step_keys(namespace, step_order)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Registry could not confirm step {step_order} of the deletion of "
+            f"namespace {namespace!r}: {e}",
+        ) from e
+    if step is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The deletion journal of namespace {namespace!r} has no file-storage "
+            f"step {step_order}; nothing is deleted.",
+        )
+    if step.get("journal_id") != journal_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Step {step_order} of namespace {namespace!r} belongs to deletion "
+            f"{step.get('journal_id')!r}, not to {journal_id!r}; nothing is deleted.",
+        )
+    if not step.get("keys_available"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Step {step_order} of the deletion of namespace {namespace!r} no "
+            f"longer has its recorded keys ({step.get('reason')}); nothing is deleted.",
+        )
+    return {str(k) for k in (step.get("keys") or [])}
 
 
 # The deletion-journal states a namespace deletion runs or resumes from.
@@ -710,11 +762,16 @@ _DELETION_RUNNING = ("in_progress", "failed", "completed_with_warnings")
     description="""
 Remove objects from file storage on behalf of namespace deletion. The
 Registry's deletion journal records each file's storage key before any
-metadata is removed and sends those keys here, so the step can be retried
-even after the files' records are gone.
+metadata is removed and sends those keys here, naming the journal and the
+step they come from, so the step can be retried even after the files'
+records are gone while only that step's own keys are ever removed.
 
 Guards, because this removes bytes outright:
 - wip-admins / wip-services only;
+- the request names the deletion it comes from (`journal_id`, `step_order`).
+  One that names no step is refused with 422, and one naming a journal other
+  than the running deletion's, a step that journal does not have, or a step
+  whose recorded keys can no longer be read with 409;
 - the Registry must hold a deletion journal for the namespace that is
   still running (`in_progress`, `failed` or `completed_with_warnings`, the
   states a deletion resumes from), and the namespace must not be live —
@@ -722,8 +779,8 @@ Guards, because this removes bytes outright:
   with 409, and with an unreachable Registry with 503. A namespace that is
   gone, locked, or not visible to this service's key is never by itself a
   reason to delete bytes;
-- a key whose file record belongs to a different namespace is refused
-  per key and left untouched.
+- a key the step did not record is refused per key and left untouched, as is
+  a key whose file record belongs to a different namespace.
 
 Deleting an object that does not exist counts as deleted, so a retried
 request is safe. Always 200 once the guards pass: per-key outcomes are in
@@ -769,6 +826,18 @@ async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dic
         )
 
     keys = list(dict.fromkeys(request.storage_keys))
+    # The keys are only the deletion's if its journal says so: a list that
+    # arrives while some deletion runs under the name is not authority.
+    if journal.get("journal_id") != request.journal_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Namespace {request.namespace!r} is being deleted as "
+            f"{journal.get('journal_id')!r}, not {request.journal_id!r}; nothing is deleted.",
+        )
+    recorded = await _recorded_step_keys(
+        registry, request.namespace, request.journal_id, request.step_order
+    )
+
     owners: dict[str, set[str]] = {}
     for file_doc in await FileModel.find({"storage_key": {"$in": keys}}).to_list():
         owners.setdefault(file_doc.storage_key, set()).add(file_doc.namespace)
@@ -778,6 +847,13 @@ async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dic
     refused: list[dict] = []
     failed: list[dict] = []
     for key in keys:
+        if key not in recorded:
+            refused.append({
+                "storage_key": key,
+                "reason": f"not recorded by step {request.step_order} of namespace "
+                f"{request.namespace!r}'s deletion journal",
+            })
+            continue
         foreign = sorted(ns for ns in owners.get(key, set()) if ns != request.namespace)
         if foreign:
             refused.append({"storage_key": key, "owner_namespaces": foreign})
