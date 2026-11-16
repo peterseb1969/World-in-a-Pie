@@ -466,7 +466,9 @@ export class DocumentStoreService extends BaseService {
    * target namespaces (each writes to itself). `mode: 'restore'` (default)
    * requires every target to be empty; `mode: 'merge'` reconciles the
    * archive into a namespace that already holds data, under the
-   * definitions-compatibility check, then `on_clash` for documents. Set `dry_run: true` to get the
+   * definitions-compatibility check, then `on_clash` for documents, and may
+   * redirect — `target_namespace` for a single-namespace archive,
+   * `namespace_map` for one target per archived namespace. Set `dry_run: true` to get the
    * report without writing anything. Retired toolkit-era params are no
    * longer sent — the endpoint 400s them; see `RestoreOptions`.
    */

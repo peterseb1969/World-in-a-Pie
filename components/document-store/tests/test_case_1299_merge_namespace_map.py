@@ -189,6 +189,32 @@ class TestEveryPairIsWritten:
         assert await _rows(mongo, TGT_A) == [] and await _rows(mongo, TGT_B) == []
 
     @pytest.mark.asyncio
+    async def test_an_id_still_registered_here_refuses_the_pair_that_carries_it(
+        self, mongo,
+    ):
+        """A merge keeps ids, so one id cannot name an entity in two
+        namespaces: the ids check still runs per pair under a map, and it
+        refuses before the other pair writes."""
+        db_name, coll_name = COLLECTION_MAP["registry_entries"]
+        await mongo[db_name][coll_name].insert_one({
+            "entry_id": "TA", "namespace": TGT_A, "entity_type": "templates",
+        })
+        reader = _archive({
+            SRC_A: {
+                "templates": [_template(SRC_A, "TA")],
+                "registry_entries": [{"entry_id": "TA", "namespace": SRC_A}],
+                "documents": [_doc(SRC_A, "DA", "TA")],
+            },
+            SRC_B: {"templates": [_template(SRC_B, "TB")], "documents": [_doc(SRC_B, "DB", "TB")]},
+        })
+
+        with pytest.raises(RestoreEngineError, match="still registered"):
+            await _merge(mongo, reader, namespace_map=MAP)
+
+        assert await _rows(mongo, TGT_A) == [] and await _rows(mongo, TGT_B) == []
+        await mongo[db_name][coll_name].delete_many({"entry_id": "TA"})
+
+    @pytest.mark.asyncio
     async def test_a_target_that_does_not_exist_refuses(self, mongo):
         """A merge never creates a namespace, and one pair's missing target
         stops the other pair too: the targets are all checked up front."""
@@ -356,6 +382,25 @@ async def test_a_target_namespace_and_a_map_compete(client, auth_headers, tmp_pa
     assert resp.status_code == 400, resp.text
     assert "one or the other" in resp.json()["detail"]
     assert await BackupJob.find_one() is None
+
+
+@pytest.mark.asyncio
+async def test_a_map_on_a_single_namespace_archive_redirects_like_a_target(
+    client, auth_headers: dict, tmp_path,
+):
+    """One pair by map is the same placement one pair by target_namespace is;
+    the job says where it went either way."""
+    archive = _make_v3_archive(tmp_path, [SRC_A])
+
+    resp = await _post_merge(
+        client, auth_headers, archive, {"namespace_map": json.dumps({SRC_A: TGT_A})}
+    )
+
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["namespaces"] == [TGT_A]
+    assert body["namespace"] == TGT_A
+    assert body["source_namespaces"] == [SRC_A]
 
 
 @pytest.mark.asyncio
