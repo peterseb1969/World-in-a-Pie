@@ -447,7 +447,7 @@ class DocumentGenerator:
 
     def _generate_array(self, field: dict, index: int) -> list:
         """Generate an array value."""
-        item_type = field.get("array_item_type", "string")
+        item_type = field.get("array_item_type") or "string"
         count = random.randint(1, 5)
 
         if item_type == "term":

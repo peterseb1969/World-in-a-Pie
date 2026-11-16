@@ -409,3 +409,26 @@ async def test_csv_export_requires_auth(client: AsyncClient):
         "/api/document-store/table/PERSON/csv",
     )
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_an_array_field_without_an_item_type_is_an_unknown_column(client: AsyncClient, auth_headers: dict):
+    """template-store accepts an array field with no array_item_type and
+    serves the key as null, which a .get() default does not replace: the
+    column's type was None and the route answered 500 (CASE-1275)."""
+    from .conftest import SAMPLE_TEMPLATES
+
+    template_id = "0190ffff-0000-7000-8000-000000012750"
+    SAMPLE_TEMPLATES[template_id] = {
+        "template_id": template_id, "namespace": "wip", "value": "TAGS1275", "label": "Tags",
+        "version": 1, "status": "active", "identity_fields": [],
+        "fields": [{"name": "tags", "label": "Tags", "type": "array", "array_item_type": None}],
+    }
+    try:
+        for path in (f"table/{template_id}", f"table/{template_id}/csv"):
+            response = await client.get(f"/api/document-store/{path}", headers=auth_headers)
+            assert response.status_code == 200, (path, response.text)
+        columns = (await client.get(f"/api/document-store/table/{template_id}", headers=auth_headers)).json()["columns"]
+        assert [(c["name"], c["type"]) for c in columns if c["name"] == "tags"] == [("tags", "unknown")]
+    finally:
+        SAMPLE_TEMPLATES.pop(template_id, None)

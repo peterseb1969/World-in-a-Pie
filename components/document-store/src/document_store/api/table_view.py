@@ -206,7 +206,9 @@ def _extract_columns_from_template(
             columns.append(TableColumn(
                 name=field_path,
                 label=label,
-                type=field.get("array_item_type", "unknown"),
+                # A template serves the key with null when no item type was
+                # declared, which a .get() default does not replace.
+                type=field.get("array_item_type") or "unknown",
                 is_array=True,
                 is_flattened=False  # Updated during processing
             ))
