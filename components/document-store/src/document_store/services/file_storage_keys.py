@@ -25,6 +25,11 @@ Idempotent: a repaired install has no such rows. Its query can use no index
 records a marker in `document_store_migrations` and later starts skip the
 scan: restores write `storage_key = file_id`, so no new such row appears. A
 pass that leaves rows unrepaired records none, and the next start retries.
+
+Nothing in this code can stop an older document-store image from writing
+such rows again (an install rolled back, restored fresh, and rolled forward).
+The skip is therefore logged at every start, with the marker's id and date:
+deleting that marker document makes the next start scan again.
 """
 
 from __future__ import annotations
@@ -69,7 +74,15 @@ async def repair_storage_keys(
     object their old key names there when it has none yet. Skipped once a
     pass has left nothing to repair (see the module docstring)."""
     markers = collection.database[_MIGRATIONS_COLLECTION]
-    if await markers.find_one({"_id": _marker_id(collection)}):
+    marker = await markers.find_one({"_id": _marker_id(collection)})
+    if marker:
+        # Printed, as the service's other startup lines are: it configures no
+        # log level, so an INFO record would never reach the container log.
+        print(
+            f"File storage-key repair skipped: a clean pass was recorded at "
+            f"{marker.get('completed_at')} ({_MIGRATIONS_COLLECTION}.{marker['_id']}). "
+            "Delete that document to scan again at the next start."
+        )
         return StorageKeyRepair(0, 0, [])
     result = await _repair_pass(collection, storage)
     if not result.failed:

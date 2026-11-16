@@ -186,3 +186,75 @@ async def test_a_file_whose_bytes_the_store_kept_is_reported(client, storage_on)
     assert [i.file_id for i in unreclaimed] == [file_id]
     assert "access denied" in unreclaimed[0].message
     assert report.summary["unreclaimed_file"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reclaim_that_failed_before_the_delete_is_not_reported_as_unreclaimed(client, storage_on):
+    """A database failure after the inactive-mark never asked the store to
+    delete anything: the bytes are untouched, so the file is not stamped as
+    one whose bytes the store kept (CASE-1355 R2)."""
+    from document_store.services.file_service import FileService
+
+    file_id = await _file(0)
+    warnings: list[str] = []
+
+    async def db_blip(self, *_a, **_kw):
+        raise RuntimeError("ServerSelectionTimeoutError")
+
+    with patch.object(FileService, "live_referrers", db_blip):
+        await DocumentService()._hard_delete_orphaned_files(
+            [{"file_id": file_id}], FileService(), deleting=_id(), warnings=warnings,
+        )
+
+    assert warnings and file_id in warnings[0]
+    assert (await File.find_one({"file_id": file_id})).reclaim_failed is None
+    report = await FileService().check_integrity()
+    # The scan covers the whole database; other tests leave their own files.
+    assert not [i for i in report.issues if i.type == "unreclaimed_file" and i.file_id == file_id]
+
+
+@pytest.mark.asyncio
+async def test_a_store_unreachable_for_the_delete_is_reported(client, storage_on):
+    """An object store that could not be reached for the delete left the
+    bytes, as a refusal does: the file is reported for another hard delete."""
+    from document_store.services.file_service import FileService
+    from document_store.services.file_storage_client import FileStorageUnavailableError
+
+    file_id = await _file(0)
+
+    async def unreachable(self, *_a, **_kw):
+        raise FileStorageUnavailableError("Object store unreachable")
+
+    with patch.object(FileService, "hard_delete_file", unreachable):
+        await DocumentService()._hard_delete_orphaned_files(
+            [{"file_id": file_id}], FileService(), deleting=_id(),
+        )
+
+    assert (await File.find_one({"file_id": file_id})).reclaim_failed == "Object store unreachable"
+
+
+@pytest.mark.parametrize("raised", ["document", "file"])
+@pytest.mark.asyncio
+async def test_a_typed_refusal_during_patch_keeps_its_code(client, raised):
+    """A refusal raised after a PATCH's validation (a file gone inactive
+    before the write held it) answered internal_error; a create answers it
+    with its own code (CASE-1355 R1)."""
+    from document_store.models.api_models import PatchDocumentItem
+    from document_store.services.file_service import FileServiceError
+
+    error = (
+        DocumentStoreError("File has been deleted: F-1", "validation_failed", rule="file_deleted")
+        if raised == "document"
+        else FileServiceError("File F-1 is inactive", "validation_failed", rule="file_deleted")
+    )
+
+    async def refuse(self, *_a, **_kw):
+        raise error
+
+    with patch.object(DocumentService, "_patch_one", refuse):
+        response = await DocumentService().bulk_patch(
+            [PatchDocumentItem(document_id=_id(), patch={"x": 1})],
+        )
+
+    [item] = response.results
+    assert (item.error_code, item.details) == ("validation_failed", {"rule": "file_deleted"})

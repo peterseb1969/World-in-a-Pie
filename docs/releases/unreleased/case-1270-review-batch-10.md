@@ -35,4 +35,7 @@ cases: [1270]
 
 **Action:** a hand-written key file entry that lists `namespaces` but no
 `grants` imports no grants, so it reads nothing: add `"grants": {}` to read
-each listed namespace (every key file wip-deploy renders already does).
+each listed namespace. Every key wip-deploy provisions itself (an app's key,
+the canary, the app edge's) already carries `grants`. A key declared in the
+spec's `auth.api_keys` is rendered without `grants` unless the spec declares
+them, so it reads nothing until it is given a grant or declares `grants: {}`.

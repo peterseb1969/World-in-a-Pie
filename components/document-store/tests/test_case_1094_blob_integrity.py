@@ -401,6 +401,22 @@ async def test_a_fresh_restores_dry_run_reports_its_blobs():
 
 
 @pytest.mark.asyncio
+async def test_a_fresh_restores_dry_run_reports_only_the_files_its_plans_write():
+    """The archive's folders can hold namespaces its manifest does not list,
+    and a fresh restore writes only the files its plans map. Its dry run
+    reported the bytes of every file in the archive (CASE-1351 R3)."""
+    from types import SimpleNamespace
+
+    storage, events = _Storage(), []
+    storage.exists = None  # a fresh dry run must not ask the store
+    engine = DirectRestoreEngine(MagicMock(), storage, events.append)
+    plans = {"src": SimpleNamespace(id_map={"files": {"F-GOOD": "placeholder-1"}})}
+    await engine._dry_run_remap_blobs(_reader(ROWS, BLOBS), plans, skip_files=False)
+    assert "dry run — would upload 1 file blob(s)" in [e.message for e in events]
+    assert not any("F-CORRUPT" in w or "F-MISSING" in w for w in _warnings(events))
+
+
+@pytest.mark.asyncio
 async def test_a_merges_dry_run_reports_the_blobs_of_the_files_it_inserts():
     storage, events = _Storage(), []
     engine = DirectRestoreEngine(MagicMock(), storage, events.append)

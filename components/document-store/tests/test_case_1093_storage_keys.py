@@ -121,8 +121,29 @@ async def test_a_row_the_store_cannot_answer_for_does_not_stop_the_others(files)
 @pytest.mark.asyncio
 async def test_a_second_run_finds_nothing(files):
     await files.insert_one({"file_id": "NEW", "storage_key": "OLD"})
+    storage = _Storage({"OLD"})
+    assert await repair_storage_keys(files, storage) == (1, 1, [])
+    # Drop the marker so the second call is the scan itself, not the skip
+    # (the skip has its own test below).
+    await files.database["document_store_migrations"].delete_one(
+        {"_id": f"storage_keys_v1:{files.name}"},
+    )
+    assert await repair_storage_keys(files, storage) == (0, 0, [])
+    assert storage.objects == {"OLD": b"bytes of OLD", "NEW": b"bytes of OLD"}
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_scan_is_announced_with_the_marker_to_delete(files, capsys):
+    """Once the marker is set the scan never runs again, so a skip must be
+    visible in the startup output: it names the marker an operator deletes
+    to re-run it."""
+    await files.insert_one({"file_id": "NEW", "storage_key": "OLD"})
     await repair_storage_keys(files, _Storage({"OLD"}))
+    capsys.readouterr()
     assert await repair_storage_keys(files, _Storage({"OLD"})) == (0, 0, [])
+    out = capsys.readouterr().out
+    assert "skipped" in out and f"storage_keys_v1:{files.name}" in out
+    assert "Delete that document" in out
 
 
 @pytest.mark.asyncio

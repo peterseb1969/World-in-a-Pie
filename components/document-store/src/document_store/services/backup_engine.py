@@ -353,7 +353,7 @@ def _scan_unresolved_references(
     sources: list[str],
     unresolved: dict[str, _UnresolvedReferent],
     edge_templates: set[str],
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
     """One pass over the archived documents of ``sources``: who references
     each unresolved referent, and which edges to drop.
 
@@ -3246,7 +3246,7 @@ class DirectRestoreEngine:
             }
 
             if dry_run:
-                await self._dry_run_remap_blobs(reader, skip_files=skip_files)
+                await self._dry_run_remap_blobs(reader, plans, skip_files=skip_files)
                 self._emit(
                     "complete",
                     "Remap dry run complete — nothing provisioned, nothing "
@@ -3855,7 +3855,7 @@ class DirectRestoreEngine:
         *,
         drop_edges: bool,
         unresolved_hint: str = "",
-    ) -> set[str]:
+    ) -> set[tuple[str, str]]:
         """Say which archived documents point at the referents
         ``_map_external_referents`` could not identify, and drop the edges
         among them when asked.
@@ -8542,11 +8542,16 @@ class DirectRestoreEngine:
             reader, {file_id: file_id for file_id in sorted(reader.list_blobs())},
         )
 
-    async def _dry_run_remap_blobs(self, reader: ArchiveReader, *, skip_files: bool) -> None:
+    async def _dry_run_remap_blobs(
+        self, reader: ArchiveReader, plans: dict[str, Any], *, skip_files: bool,
+    ) -> None:
         """A fresh restore's dry run reports its blobs as the real run would
-        copy them, when it restores files at all."""
+        copy them, when it restores files at all: those of the files its plans
+        write (by archive id, as _upload_remapped_blobs maps them), not every
+        file the archive's folders hold."""
         if self._storage is not None and not skip_files:
-            await self._dry_run_blob_report(reader, new_ids=True)
+            only = {old for plan in plans.values() for old in plan.id_map["files"]}
+            await self._dry_run_blob_report(reader, only=only, new_ids=True)
 
     async def _dry_run_blob_report(
         self, reader: ArchiveReader, *, only: set[str] | None = None,

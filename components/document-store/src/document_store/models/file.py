@@ -105,7 +105,9 @@ class File(BeanieDocument):
     )
 
     # Why the bytes of this file stayed when a document hard delete released
-    # it: the object store refused the delete. The file stays inactive and the
+    # it: the object store refused the delete, or could not be reached for
+    # it. A failure before the delete was tried is not recorded here. The
+    # file stays inactive and the
     # integrity check reports it (unreclaimed_file) until an operator
     # hard-deletes or reactivates it.
     reclaim_failed: str | None = Field(

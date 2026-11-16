@@ -956,6 +956,19 @@ async def _keep_referenced_file(
     )
 
 
+def _bytes_delete_failed(error: Exception) -> bool:
+    """Whether ``error`` is the object store failing to delete a file's
+    bytes: a refusal (storage_refused) or a store that could not be reached.
+    Anything else in the reclaim (a database error before the delete was
+    tried) left the bytes untouched, and is not recorded as a failed reclaim."""
+    from .file_service import FileServiceError
+    from .file_storage_client import FileStorageUnavailableError
+
+    if isinstance(error, FileStorageUnavailableError):
+        return True
+    return isinstance(error, FileServiceError) and (error.details or {}).get("rule") == "storage_refused"
+
+
 async def _record_failed_reclaim(files: Any, file_id: str, error: Exception) -> None:
     """Record on a file left inactive why its bytes were not deleted, so the
     integrity check reports it (unreclaimed_file) apart from a file
@@ -3659,7 +3672,8 @@ class DocumentService:
                 logger.warning(f"Failed to hard-delete orphaned file {file_id}: {e}")
                 if warnings is not None:
                     warnings.append(f"File {file_id} was left inactive, not deleted: {e}")
-                await _record_failed_reclaim(files, file_id, e)
+                if _bytes_delete_failed(e):
+                    await _record_failed_reclaim(files, file_id, e)
 
     async def query_documents(
         self,
@@ -5984,6 +5998,8 @@ class DocumentService:
         in the BulkResponse rather than aborting the batch (per the bulk-first
         contract in docs/api-conventions.md).
         """
+        from .file_service import FileServiceError
+
         results: list[BulkResultItem] = []
         for index, item in enumerate(items):
             try:
@@ -5996,9 +6012,12 @@ class DocumentService:
                     error=exc.message,
                     error_code=exc.code,
                 ))
-            except DependencyUnavailableError as exc:
-                # A service the validation needed did not answer: an outage
-                # on this item, never an internal error.
+            except (DependencyUnavailableError, DocumentStoreError, FileServiceError) as exc:
+                # A service the validation needed did not answer (an outage
+                # on this item), or a typed refusal raised after validation,
+                # such as a file that went inactive before the write held it
+                # (validation_failed, rule file_deleted): reported with its
+                # own code, as a create reports it, never as an internal error.
                 results.append(BulkResultItem(
                     index=index, status="error", document_id=item.document_id,
                     **error_fields(exc),

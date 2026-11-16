@@ -23,4 +23,7 @@ cases: [1287]
   query can use no index, so it read the whole `files` collection at every
   start. A pass that leaves nothing to repair now records a marker in
   `document_store_migrations` and later starts skip it; a pass that leaves
-  rows unrepaired records none and the next start retries.
+  rows unrepaired records none and the next start retries. Every start logs
+  the skip, naming the marker (`storage_keys_v1:files`). An install that ran
+  an older document-store image's fresh restore after this change deletes
+  that marker document, and the next start scans again.
