@@ -252,3 +252,54 @@ async def test_scoped_reads_never_grant_a_closed_schema(pg_pool, scoped_reads):
         async with pg_pool.acquire() as conn:
             for schema in (NS, live):
                 await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+SYNCED = {"template_id": "t-closing", "value": "closing", "version": 1,
+          "fields": [{"name": "k", "type": "string"}],
+          "identity_fields": ["k"], "reporting": {"sync_enabled": True}}
+
+
+@pytest.mark.parametrize("cached", [True, False], ids=["cached", "uncached"])
+async def test_an_existing_table_is_not_handed_out_after_close(pg_pool, cached):
+    """A document event for a closed namespace whose table exists must not
+    get the table to write into, whether the ensured-table cache holds it
+    or the catalog is checked."""
+    ns = "ns-closing-writes"
+    await init_postgres_schema(pg_pool)
+    sm = SchemaManager(pg_pool, namespace_status=_status({ns: "locked"}))
+    try:
+        assert await sm.ensure_table_for_template(ns, SYNCED)
+        await sm.close_namespace(ns)
+        with pytest.raises(NamespaceDeletedError):
+            await sm.ensure_table_for_template(ns, SYNCED, cached=cached)
+    finally:
+        async with pg_pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{ns}" CASCADE')
+            await conn.execute("DELETE FROM public._wip_deleted_namespaces WHERE namespace = $1", ns)
+
+
+@pytest.mark.parametrize("prefix", ["pg_legacy", "public", "x" * 64], ids=["pg_", "public", "64-bytes"])
+async def test_a_prefix_reporting_cannot_use_does_not_block_its_deletion(pg_pool, monkeypatch, prefix):
+    """A namespace created before the prefix rules can carry a prefix that
+    cannot name a reporting schema. Both deletion steps answer 200, so the
+    Registry can finish its deletion; the drop says what it could not do."""
+    await init_postgres_schema(pg_pool)
+    monkeypatch.setattr(state, "postgres_pool", pg_pool)
+    monkeypatch.setattr(state, "deletions_closed", True)
+    async with pg_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO public._wip_sync_status (namespace, template_value) VALUES ($1, 't')", prefix,
+        )
+    async with _client(ADMIN) as c:
+        closed = await c.post(f"/api/reporting-sync/namespace/{prefix}/close")
+        assert closed.status_code == 200, closed.text
+        assert closed.json()["schema"] is None and closed.json()["schema_existed"] is False
+        dropped = await c.delete(f"/api/reporting-sync/namespace/{prefix}")
+        assert dropped.status_code == 200, dropped.text
+        body = dropped.json()
+        assert body["dropped_schema"] is None and body["total_deleted"] == 1
+        assert "no reporting schema to drop" in body["warning"]
+    async with pg_pool.acquire() as conn:
+        assert not await conn.fetchval(
+            "SELECT 1 FROM public._wip_sync_status WHERE namespace = $1", prefix,
+        )

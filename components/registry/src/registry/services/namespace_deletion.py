@@ -173,6 +173,24 @@ _FILE_STORAGE_STORES = ("file_storage", "minio")
 _CLOSE_REPORTING = "close_namespace_reads"
 
 
+def _postgres_drop_outcome(step: DeletionStep, body: dict) -> int:
+    """The row count of a reporting drop that answered 200, recording on
+    ``step.error`` what makes the outcome degraded rather than clean."""
+    total = body.get("total_deleted")
+    if total is None:
+        # The schema is gone; only the audit count is missing. A
+        # present-but-null count must not reach the int-typed journal
+        # fields — it poisons the journal document and the DELETE reports
+        # failure after the deletion already succeeded.
+        step.error = "postgres row count unavailable (upstream returned null total_deleted)"
+        return 0
+    if body.get("warning"):
+        # Reporting-sync completed the step but could not do all of it (a
+        # prefix it cannot use as a schema name).
+        step.error = f"reporting-sync: {body['warning']}"
+    return int(total)
+
+
 class _ReportingRefused(RuntimeError):
     """reporting-sync answered, and not with a success: the step fails."""
 # document-store accepts at most this many keys per request.
@@ -1890,12 +1908,4 @@ class NamespaceDeletionService:
             )
         if closing:
             return 0
-        total = resp.json().get("total_deleted")
-        if total is None:
-            # The schema is gone; only the audit count is missing. A
-            # present-but-null count must not reach the int-typed journal
-            # fields — it poisons the journal document and the DELETE reports
-            # failure after the deletion already succeeded.
-            step.error = "postgres row count unavailable (upstream returned null total_deleted)"
-            return 0
-        return int(total)
+        return _postgres_drop_outcome(step, resp.json())

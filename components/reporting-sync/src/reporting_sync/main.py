@@ -3023,17 +3023,22 @@ async def close_namespace(prefix: str):
     The Registry calls this as the first step of a namespace deletion, right
     after it locks the namespace, so no SQL — privileged or scoped, naming the
     schema or reading it through a function — reads its data from then on,
-    and nothing writes into it or creates it again. The schema itself goes
-    with the deletion's later drop step (DELETE /namespace/{prefix}).
-    Idempotent.
+    no new sync reaches it, and nothing creates it again. A write already
+    under way when it closes may still land; the deletion's later drop step
+    (DELETE /namespace/{prefix}) removes it with the schema. Idempotent.
+
+    A namespace created before the prefix rules may carry a prefix reporting
+    cannot use as a schema name. It never had a schema of its own, so there
+    is nothing to close: the answer is 200 with schema null, since a refusal
+    would keep the namespace's deletion locked for good.
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
     sm = SchemaManager(state.postgres_pool)
     try:
         schema = sm.schema_for(prefix)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError:
+        return {"namespace": prefix, "schema": None, "closed": True, "schema_existed": False}
     existed = await sm.close_namespace(prefix)
     return {"namespace": prefix, "schema": schema, "closed": True, "schema_existed": existed}
 
@@ -3042,12 +3047,18 @@ async def close_namespace(prefix: str):
 async def delete_namespace(prefix: str):
     """Delete all reporting data for a namespace.
 
-    CASE-628: each namespace is a PostgreSQL schema, so removal is a single
+    Each namespace is a PostgreSQL schema, so removal is a single
     ``DROP SCHEMA "<prefix>" CASCADE`` — every doc_* and metadata table inside
     it (and their indexes) goes atomically. The namespace's rows in the shared
     bookkeeping tables are cleared too.
 
     Called by Registry during namespace deletion.
+
+    A prefix reporting cannot use as a schema name (a namespace created
+    before the prefix rules) has no schema to drop: its bookkeeping rows are
+    cleared and the answer is 200 with a ``warning``, which the Registry
+    records on the deletion step. A refusal would keep the deletion locked
+    for good.
     """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
@@ -3061,7 +3072,14 @@ async def delete_namespace(prefix: str):
     try:
         schema = sm.schema_for(prefix)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        total_deleted = await _clear_namespace_bookkeeping(prefix)
+        return {
+            "namespace": prefix, "dropped_schema": None, "total_deleted": total_deleted,
+            "warning": (
+                f"{e}, so it has no reporting schema to drop; reporting rows "
+                "written for it before that rule, if any, remain"
+            ),
+        }
 
     total_deleted = await _drop_namespace_reporting(sm, prefix)
     logger.info(f"Namespace {prefix} reporting schema dropped ({schema})")
@@ -3078,8 +3096,15 @@ async def _drop_namespace_reporting(sm: SchemaManager, prefix: str) -> int:
     DELETE into a validation error. drop_namespace_schema counts the schema's
     rows before dropping it.
     """
-    assert state.postgres_pool is not None
     total_deleted = await sm.drop_namespace_schema(prefix)
+    return total_deleted + await _clear_namespace_bookkeeping(prefix)
+
+
+async def _clear_namespace_bookkeeping(prefix: str) -> int:
+    """Remove the namespace's rows from the shared bookkeeping tables.
+    Returns how many went."""
+    assert state.postgres_pool is not None
+    total_deleted = 0
     async with state.postgres_pool.acquire() as conn:
         # The bookkeeping tables all live in public, keyed by namespace (see
         # init_postgres_schema). asyncpg returns a "DELETE <n>" status string;

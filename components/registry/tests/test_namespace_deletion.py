@@ -1046,6 +1046,40 @@ class TestPostgresRowCountSeam:
         assert await svc._exec_postgresql_step(step, "probe-ns") == 42
         assert step.error is None
 
+    async def test_a_warning_marks_the_step_degraded(self, monkeypatch):
+        """A drop reporting-sync could not fully do (a prefix it cannot use as
+        a schema name) answers 200 with a warning: the step completes, and
+        the warning is its error, so it ends completed_with_errors."""
+        from registry.models.deletion_journal import DeletionStep
+        from registry.services.namespace_deletion import NamespaceDeletionService
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"namespace": "pg_x", "dropped_schema": None, "total_deleted": 3,
+                        "warning": "no reporting schema to drop"}
+
+        class FakeClient:
+            def __init__(self, *a, **kw): ...
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def delete(self, *a, **kw):
+                return FakeResponse()
+
+        import registry.services.namespace_deletion as mod
+        monkeypatch.setattr(mod.httpx, "AsyncClient", FakeClient)
+
+        svc = NamespaceDeletionService()
+        svc._postgres_url = "http://reporting-sync.test"
+        step = DeletionStep(order=0, store="postgresql")
+
+        assert await svc._exec_postgresql_step(step, "pg_x") == 3
+        assert step.error == "reporting-sync: no reporting schema to drop"
+
 
 class TestPoisonedJournalHydration:
     """Journals persisted while the null-count bug was live must stay

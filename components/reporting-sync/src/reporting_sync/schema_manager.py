@@ -879,12 +879,16 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
 
     async def close_namespace(self, namespace: str) -> bool:
         """Close a namespace whose deletion has begun: no role but the owner
-        may read its schema any more, and nothing may create or reuse it.
+        may read its schema any more, and no new sync reaches it.
 
         Records the tombstone that drop_namespace_schema writes, now, under
         the same advisory lock, and marks the schema closed
         (CLOSED_SCHEMA_COMMENT), so ensure_schema refuses it from here on and
-        the startup grant loop leaves it out. Then revokes USAGE on
+        the startup grant loop leaves it out, and drops the namespace's
+        entries from the ensured-table cache, so a document event's next
+        ensure goes through ensure_schema and is refused too. A write already
+        past its ensure when this commits can still land; the deletion's
+        drop step removes it with the schema. Then revokes USAGE on
         the schema from every role holding it directly: the reader the
         privileged SQL runs as, and the per-namespace roles scoped reads
         inherit. Without USAGE nothing in the schema can be read — not by a
@@ -920,6 +924,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             for row in grantees:
                 # regrole::text quotes a name that needs it; PUBLIC is a keyword.
                 await conn.execute(f'REVOKE USAGE ON SCHEMA "{schema}" FROM {row["role"]}')
+        self._forget_ensured(namespace)
         logger.info(f"Namespace {namespace!r} closed: {len(grantees)} role(s) lost USAGE on its schema")
         return True
 
@@ -1758,7 +1763,11 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
             logger.info(f"Sync disabled for template {template_value}, skipping table creation")
             return ""
 
-        schema = self.schema_for(namespace)
+        # Through ensure_schema even for a table that exists: it refuses a
+        # closed or deleted namespace (NamespaceDeletedError), so no sync
+        # writes into a schema whose deletion has begun. An existing schema
+        # costs one catalog read.
+        schema = await self.ensure_schema(namespace)
         table_name = self.get_table_name(template_value, config, template_version)
 
         usage = template.get("usage", "entity")
