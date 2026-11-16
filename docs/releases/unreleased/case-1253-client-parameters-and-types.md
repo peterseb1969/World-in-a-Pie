@@ -50,6 +50,7 @@ still reads as no content.
 **Long reporting calls are no longer cut off by the client.** The client
 aborted every request after its timeout (30 s by default), even when the
 server allowed the call longer. `reporting.exportTableCsv` and `exportQueryCsv`
-(server default 120 s) and `runQuery` (30 s) now give the client at least the
-server's limit, the given `timeoutSeconds` / `timeout_seconds` or its default,
-plus 10 s. A larger configured client timeout is kept.
+(server default 120 s), and `runQuery` and `readViewRows` (30 s each), now give
+the client at least the server's limit plus 10 s. The limit is the given
+`timeoutSeconds` / `timeout_seconds` (up to 300 s for a query or a view's rows),
+or the server's default. A larger configured client timeout is kept.

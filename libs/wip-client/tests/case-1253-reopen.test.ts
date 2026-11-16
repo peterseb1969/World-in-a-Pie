@@ -80,4 +80,20 @@ describe('the client timeout follows the server timeout a call asks for', () => 
       '{"columns": [], "rows": [], "row_count": 0}', 150_000,
     )
   })
+
+  // The view-rows route runs its statement for timeout_seconds (1-300,
+  // default 30): the client gives the call that long plus the grace.
+  it('readViewRows waits for an explicit timeout_seconds', async () => {
+    await outlivesDefault(
+      client().reporting.readViewRows('clinic-a', 'v_recent', { timeout_seconds: 120, limit: 1000 }),
+      '{"columns": [], "rows": [], "row_count": 0}', 100_000,
+    )
+  })
+
+  it('readViewRows without a timeout waits through the server default and its grace', async () => {
+    await outlivesDefault(
+      client().reporting.readViewRows('clinic-a', 'v_recent'),
+      '{"columns": [], "rows": [], "row_count": 0}', 35_000,
+    )
+  })
 })

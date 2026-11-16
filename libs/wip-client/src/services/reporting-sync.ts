@@ -42,9 +42,11 @@ function isTransientSyncError(err: unknown): err is WipError {
   return err instanceof WipValidationError && /does not exist/.test(err.message)
 }
 
-// The server's own defaults for a query and a CSV export (reporting-sync
-// main.py: ReportQueryRequest / export_csv timeout_seconds).
+// The server's own timeout_seconds defaults (reporting-sync main.py): a
+// query (ReportQuery), a registered view's rows (ViewRowsRequest) and a CSV
+// export (CsvExportQuery, and the GET's query parameter).
 const QUERY_TIMEOUT_S = 30
+const VIEW_ROWS_TIMEOUT_S = 30
 const EXPORT_TIMEOUT_S = 120
 // What the answer needs on top of the server's limit to arrive.
 const RESPONSE_GRACE_S = 10
@@ -167,7 +169,12 @@ export class ReportingSyncService extends BaseService {
     name: string,
     params?: ViewRowsParams,
   ): Promise<ReportQueryResult> {
-    return this.post(`/namespace/${seg(namespace)}/views/${seg(name)}/rows`, params ?? {})
+    return this.post(
+      `/namespace/${seg(namespace)}/views/${seg(name)}/rows`,
+      params ?? {},
+      undefined,
+      serverBound(params?.timeout_seconds, VIEW_ROWS_TIMEOUT_S),
+    )
   }
 
   /**
