@@ -560,7 +560,7 @@ async def get_template_dependencies(template_id: str, namespace: str | None = Qu
     # gate read on the template's actual namespace.
     identity = require_current_identity()
     miss = await miss_detail(
-        raw_id, "template", namespace, f"Template {template_id} not found", "template_id",
+        raw_id, "template", namespace, f"Template {raw_id} not found", "template_id",
     )
     existing = await Template.find_one({"template_id": template_id})
     if existing is None:
@@ -773,11 +773,14 @@ async def validate_template(
     # One the caller cannot see, and one with no template behind its Registry
     # entry, are treated alike.
     # Both are answered as for an id that names nothing: the resolution 404
-    # of this request when ids resolve, else the not_found validation.
+    # of this request when ids resolve, else the not_found validation. That
+    # validation names the id as submitted: an unknown ns:VALUE passes through
+    # resolution unchanged, so naming the resolved id would give a hidden
+    # template's canonical id away.
     if existing is None or not await can_read(identity, existing.namespace):
         if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
             raise miss
-        return TemplateService.template_not_found_validation(template_id)
+        return TemplateService.template_not_found_validation(raw_id)
 
     return await TemplateService.validate_template(
         template_id=template_id,
@@ -906,7 +909,7 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
     # parent template's actual namespace.
     identity = require_current_identity()
     not_found = await miss_detail(
-        raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
+        raw_id, "template", namespace, f"Template '{raw_id}' not found", "template_id",
     )
     existing = await Template.find_one({"template_id": template_id})
     if existing is None:

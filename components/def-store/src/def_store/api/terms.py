@@ -166,7 +166,7 @@ async def create_terms(
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
     not_found = await miss_detail(
-        raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found",
+        raw_id, "terminology", namespace, f"Terminology '{raw_id}' not found",
         "terminology_id",
     )
     if term_parent is None:

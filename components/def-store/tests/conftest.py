@@ -58,6 +58,15 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "groups": [],
     "namespaces": ["scoped-test-ns"],
 }, {
+    # A key with several namespaces derives none, so a qualified id resolves
+    # by its own prefix (test_hidden_answers_as_missing). 'test-ns' is hidden.
+    "name": "test-xns-multi",
+    "key": "test_xns_multi_key",
+    "owner": "test-xns-multi",
+    "groups": [],
+    "namespaces": ["wip", "xns-closed"],
+    "grants": {"wip": "write", "xns-closed": "read"},
+}, {
     "name": "test-xns-only",
     "key": "test_xns_only_key",
     "owner": "test-xns-only",

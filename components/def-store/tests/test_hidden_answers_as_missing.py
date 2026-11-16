@@ -220,3 +220,31 @@ async def test_an_entry_whose_row_is_gone_still_answers_with_its_history(
     r = await client.get(f"{API}/{path.format(**ids)}", headers=APP_KEY)
     assert r.status_code == 200, r.text
     assert r.json()["total"] > 0, r.text
+
+
+# A key with several namespaces derives none, so a qualified ns:VALUE is
+# resolved by its own prefix: a hidden one resolves to its canonical id, an
+# unknown one passes through as submitted. Each terminology-keyed door must
+# still answer both alike, and never name the canonical id.
+MULTI_NS_KEY = {"X-API-Key": "test_xns_multi_key"}  # 'wip' and 'xns-closed'; not 'test-ns'
+QUALIFIED_NS = "test-ns"
+TERMINOLOGY_DOORS = [d for d in DOORS if "{term}" not in str(DOORS[d]) and "{other}" not in str(DOORS[d])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("door", TERMINOLOGY_DOORS)
+async def test_a_hidden_qualified_id_answers_as_an_unknown_one(
+    client: AsyncClient, auth_headers: dict, door: str,
+):
+    tid, _, _ = await _entities(client, auth_headers, QUALIFIED_NS)
+    value = (await client.get(f"{API}/terminologies/{tid}", headers=auth_headers)).json()["value"]
+    hidden_id = f"{QUALIFIED_NS}:{value}"
+    missing_id = f"{QUALIFIED_NS}:NOPE_{uuid.uuid4().hex[:8].upper()}"
+
+    hidden = await _call(client, MULTI_NS_KEY, door, {"tid": hidden_id})
+    missing = await _call(client, MULTI_NS_KEY, door, {"tid": missing_id})
+
+    assert missing.status_code not in (401, 403), missing.text  # the key is in effect
+    assert tid not in hidden.text, hidden.text  # the canonical id is not given away
+    assert hidden.status_code == missing.status_code, (hidden.text, missing.text)
+    assert hidden.text.replace(hidden_id, "<id>") == missing.text.replace(missing_id, "<id>")

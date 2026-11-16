@@ -285,7 +285,7 @@ async def get_terminology_dependencies(
     # referencing it). Gate by read permission on the entity's namespace.
     from ..models.terminology import Terminology as _T
     miss = await miss_detail(
-        raw_id, "terminology", None, f"Terminology {terminology_id} not found", "terminology_id",
+        raw_id, "terminology", None, f"Terminology {raw_id} not found", "terminology_id",
     )
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing is None:
