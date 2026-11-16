@@ -226,11 +226,7 @@ def run_export(
     else:
         console.print("\n[dim]Skipping closure (--skip-closure)[/dim]")
         if not include_inactive:
-            console.print(
-                "  [yellow]Warning:[/yellow] without the closure the export does not read "
-                "the documents first, so an inactive template version they pin is not "
-                "carried (pass --include-inactive, or drop --skip-closure)"
-            )
+            console.print(f"  [yellow]Warning:[/yellow] {_skip_closure_warning(skip_documents)}")
 
     # Phase 1b: Count documents for dry run or prepare streaming
     doc_count = 0
@@ -460,6 +456,20 @@ def _collect_terminology_refs(templates: list[dict[str, Any]]) -> set[str]:
             for tterm in field.get("target_terminologies") or []:
                 refs.add(tterm)
     return refs
+
+
+def _skip_closure_warning(skip_documents: bool) -> str:
+    """What an export without the closure (and without --include-inactive)
+    does not carry: the inactive template versions the exported templates
+    extend or nest, and, when it exports documents, those the documents pin."""
+    pinned_by = (
+        "templates extend or nest" if skip_documents
+        else "documents pin, or that templates extend or nest,"
+    )
+    return (
+        f"without the closure the inactive template versions that {pinned_by} "
+        "are not carried (pass --include-inactive, or drop --skip-closure)"
+    )
 
 
 def _carry_pinned_template_versions(

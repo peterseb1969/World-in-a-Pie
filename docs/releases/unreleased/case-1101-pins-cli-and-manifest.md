@@ -21,6 +21,8 @@ packages: [wip-archive, wip-toolkit]
   documents first and says so.
 - **An archive names the inactive template versions a backup left out.**
   `NamespaceEntry.template_versions_left_out` (`[{template_id, version}]`, in
-  the manifest) tells "left out by design" from "lost"; it is absent when
-  nothing was left out or with `include_inactive_templates`. The exclusion is
+  the manifest) tells "left out by design" from "lost" in a server backup's
+  archive, where it is absent when nothing was left out or with
+  `include_inactive_templates`. `wip-toolkit export` does not record it: in
+  its archives an absent field means not recorded. The exclusion is
   now one query clause per template rather than one per left-out version.

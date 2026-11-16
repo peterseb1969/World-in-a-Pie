@@ -306,6 +306,31 @@ class TestRunExportSkipClosure:
 
         mock_closure.assert_not_called()
 
+    @pytest.mark.parametrize("skip_documents, says, never", [
+        (False, "documents pin, or that templates extend or nest", None),
+        (True, "templates extend or nest", "documents"),
+    ])
+    @patch(f"{EXPORTER}.console")
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_skip_closure_warns_of_what_it_does_not_carry(
+        self, MockCollector, mock_closure, MockWriter, mock_console,
+        mock_client, mock_collector, mock_writer, skip_documents, says, never,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(mock_client, "wip", "/tmp/export.zip", skip_closure=True,
+                   skip_documents=skip_documents)
+
+        printed = [str(c.args[0]) for c in mock_console.print.call_args_list if c.args]
+        [warning] = [p for p in printed if "without the closure" in p]
+        assert says in warning
+        if never:
+            assert never not in warning
+
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
     @patch(f"{EXPORTER}.EntityCollector")

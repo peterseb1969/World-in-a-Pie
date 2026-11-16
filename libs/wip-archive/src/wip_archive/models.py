@@ -86,11 +86,14 @@ class NamespaceEntry(BaseModel):
     # file's checksum. None when every file's bytes are in it, or the archive
     # predates the field (additive, like provenance).
     files_without_bytes: list[str] | None = None
-    # Inactive template versions the backup left out by design (nothing in
-    # the archive needed them), as {"template_id", "version"}: an archive
-    # that lacks a version says here whether it was left out or lost. None
-    # when none was left out (or include_inactive_templates), or the archive
-    # predates the field (additive, like provenance).
+    # Inactive template versions the server backup left out by design
+    # (nothing in the archive needed them), as {"template_id", "version"}: an
+    # archive that lacks a version says here whether it was left out or lost.
+    # Only the server backup writes it, and from it None means none was left
+    # out (or include_inactive_templates). From any other producer (a
+    # tool_version starting with wip-toolkit, whose export also leaves out
+    # unpinned inactive versions without --include-inactive), or an archive
+    # older than the field, None means not recorded.
     template_versions_left_out: list[dict[str, Any]] | None = None
 
 
@@ -136,8 +139,9 @@ class Manifest(BaseModel):
     # flag carried no signal about what an archive holds. What it does skip is
     # stated by the fields that remain: include_files for the bytes,
     # include_all_versions for versions, and each namespace's
-    # template_versions_left_out for the template versions dropped because
-    # nothing in the archive pins them.
+    # template_versions_left_out for the template versions the server backup
+    # dropped because nothing in the archive pins them (another producer
+    # does not record them; see NamespaceEntry).
     include_files: bool = False
     include_all_versions: bool = False
     closure: ClosureInfo = Field(default_factory=ClosureInfo)
