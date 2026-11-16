@@ -38,6 +38,7 @@ import json
 import math
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -135,6 +136,67 @@ _PROXY_DELIVERED_FILE = ".proxy-config-delivered.json"
 
 
 def apply_compose(
+    *,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    tree: FileTree,
+    install_dir: Path,
+    services_scope: list[str] | None = None,
+) -> ApplyResult:
+    """Materialize the tree and bring the install up (see _apply_compose).
+
+    The render is written before any step that can fail. A failure that
+    leaves the running deployment where it was (``ApplyError.mutated``
+    False) makes the CLI keep the previous spec as the last-known-good, so
+    the install dir gets the previous render back: ``up``, ``rebuild`` and
+    ``start`` deploy from those files, and must not deploy what the spec
+    refused. A failure that moved the deployment keeps the new render,
+    which matches the spec the CLI then persists.
+    """
+    root = Path(install_dir)
+    previous = _snapshot_render(root, tree)
+    try:
+        return _apply_compose(
+            deployment=deployment, components=components, apps=apps, tree=tree,
+            install_dir=root, services_scope=services_scope,
+        )
+    except ApplyError as e:
+        if not e.mutated:
+            _restore_render(root, previous)
+        raise
+
+
+def _snapshot_render(root: Path, tree: FileTree) -> dict[Path, tuple[bytes, int] | None]:
+    """What each path the tree writes or removes holds now: its bytes and
+    mode, or None when it does not exist."""
+    snapshot: dict[Path, tuple[bytes, int] | None] = {}
+    for rel in set(tree.files) | set(tree.obsolete):
+        path = root / rel
+        snapshot[rel] = (
+            (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) if path.is_file() else None
+        )
+    return snapshot
+
+
+def _restore_render(root: Path, snapshot: dict[Path, tuple[bytes, int] | None]) -> None:
+    """Put back what _snapshot_render recorded: old content and mode, and
+    remove what did not exist before."""
+    import contextlib
+
+    for rel, held in snapshot.items():
+        path = root / rel
+        if held is None:
+            path.unlink(missing_ok=True)
+            continue
+        content, mode = held
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        with contextlib.suppress(NotImplementedError, OSError):
+            path.chmod(mode)
+
+
+def _apply_compose(
     *,
     deployment: Deployment,
     components: list[Component],
