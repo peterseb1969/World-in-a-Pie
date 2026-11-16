@@ -424,7 +424,9 @@ section: action-required
   and a `row_count_note`.
 - **Schema:** integer fields are `BIGINT` (document-store accepts any int);
   existing int4 integer columns are widened on every version table at their
-  next sync. A field named like a system column (`namespace`,
+  next sync, unless a view outside the registered reporting views depends on
+  them (the log then warns `… stay int4: …`; drop or register that view and
+  sync again). A field named like a system column (`namespace`,
   `file_references_json`, `_wip_revision`, and `source_ref_id` /
   `target_ref_id` on relationship templates) gets a `data_` prefix in DDL and
   rows alike (its table was never created). `sync_strategy: "disabled"` means
