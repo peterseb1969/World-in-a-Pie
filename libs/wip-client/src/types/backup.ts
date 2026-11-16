@@ -103,8 +103,8 @@ export interface BackupJobSnapshot {
   /**
    * Present on `validate` jobs once they complete. A restore job carries its
    * own result here: read it as `RestoreJobResult`. An `import` job carries its
-   * row report: read it as `ImportJobResult` (and while the run is still going,
-   * the counts written so far).
+   * row report — `(job.result as ImportJobResult | null)` when `job.kind` is
+   * `'import'` — and while the run is still going, the counts written so far.
    */
   result?: NamespaceIntegrityResult | null
   /**

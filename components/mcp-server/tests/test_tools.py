@@ -394,6 +394,29 @@ async def test_import_documents_csv_polls_a_job_still_running(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_a_watch_that_fails_names_the_job_that_goes_on(tmp_path, monkeypatch):
+    """The job started, so a poll that times out does not end the import: the
+    error hands the agent the job id to follow, not a hunt through the jobs."""
+    from wip_mcp import server
+
+    monkeypatch.setattr(server, "_IMPORT_POLL_INTERVAL_SECONDS", 0.01)
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": []}
+    mock.import_documents.return_value = _running_job()
+    mock.get_backup_job.side_effect = httpx.ReadTimeout("read timed out")
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        text = await import_documents_csv(
+            _rows_csv(tmp_path, 2), "PATIENT", column_mapping={"name": "name"},
+        )
+
+    assert "imp-0000000000000001" in text
+    assert "get_backup_job('imp-0000000000000001')" in text
+    assert "list_backup_jobs" not in text
+
+
+@pytest.mark.asyncio
 async def test_the_watch_hands_back_the_job_id_rather_than_nothing(tmp_path, monkeypatch):
     """When the watch runs out the answer is the live job: the rows keep being
     written either way, and the id is how the caller gets the report."""

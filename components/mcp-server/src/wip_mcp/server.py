@@ -4974,6 +4974,7 @@ async def import_documents_csv(
             the rest skipped. A row that meets an outage stops the import
             either way, with the rows after it counted as skipped.
     """
+    ns = namespace
     try:
         client = get_client()
         ns = client._ns(namespace)
@@ -5009,12 +5010,21 @@ async def import_documents_csv(
             namespace=ns,
             skip_errors=skip_errors,
         )
-        job = await _await_import_job(client, job)
+        job_id = job["job_id"]
+        try:
+            job = await _await_import_job(client, job)
+        except Exception as e:
+            # The job started, so the import goes on whatever this watch met.
+            return _error(e, check=(
+                f"the import runs as job {job_id} and goes on without this call: "
+                f"poll get_backup_job('{job_id}') for its progress and, at the end, "
+                "its report."
+            ))
         return json.dumps(job, indent=2, default=str)
     except Exception as e:
         return _error(e, check=(
             f"list the namespace's jobs (list_backup_jobs, namespace "
-            f"'{namespace or 'the default one'}'): an import that started is there, "
+            f"'{ns or 'the default one'}'): an import that started is there, "
             "with its id, its status and its report; an empty list means nothing was "
             f"written. The import's own report counts a row that changed nothing as "
             f"succeeded, so the document count of template '{template_value}' is "
