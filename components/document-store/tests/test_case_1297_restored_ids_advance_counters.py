@@ -140,25 +140,33 @@ async def test_a_registry_that_does_not_account_for_every_id_writes_nothing(
     assert await _entries_collection(mongo).count_documents({"namespace": NAMESPACE}) == 0
 
 
-@pytest.mark.asyncio
-async def test_a_merge_advances_every_target_s_entries_before_its_first_write(monkeypatch):
-    from document_store.services.backup_engine import _StagedMerge
-    from document_store.services.merge_plan import EntityPlan
-
-    order: list[tuple] = []
+def _merge_engine(order: list[tuple], *, advance_fails: bool = False) -> DirectRestoreEngine:
     engine = DirectRestoreEngine(MagicMock(), None, lambda _e: None)
 
     async def advance(entry_ids):
         order.append(("advance", sorted(entry_ids)))
+        if advance_fails:
+            raise RestoreEngineError("the Registry refused; nothing was written")
+
+    async def upload(reader, staged, first_target, *, dry_run):
+        order.append(("upload", dry_run))
 
     async def definitions(namespace, *args, **kwargs):
         order.append(("write", namespace))
         raise RestoreEngineError("stop here")
 
     engine._advance_registry_counters = advance
+    engine._upload_merge_blobs = upload
     engine._apply_definitions = definitions
     engine.result = {"namespaces": {}}
-    stages = [
+    return engine
+
+
+def _merge_stages():
+    from document_store.services.backup_engine import _StagedMerge
+    from document_store.services.merge_plan import EntityPlan
+
+    return [
         _StagedMerge(
             src=ns, tgt=ns, definitions=MagicMock(), remapper=MagicMock(),
             built={"registry_entries": EntityPlan("registry_entries", to_insert=[
@@ -168,14 +176,42 @@ async def test_a_merge_advances_every_target_s_entries_before_its_first_write(mo
         )
         for ns in ("a", "b")
     ]
-    with pytest.raises(RestoreEngineError):
-        await engine._write_staged_merges(
-            stages, MagicMock(), MagicMock(), MagicMock(),
-            policy={"on_clash": "skip", "older_versions": "retire"},
-            batch_size=10, skip_documents=False,
-        )
-    assert order[0] == ("advance", ["P1297-a", "P1297-b"])
-    assert order[1] == ("write", "a")
+
+
+async def _commit(engine, *, dry_run=False):
+    return await engine._commit_staged_merges(
+        MagicMock(), _merge_stages(), "a", MagicMock(), MagicMock(), MagicMock(),
+        policy={"on_clash": "skip", "older_versions": "retire"},
+        batch_size=10, skip_documents=False, skip_files=False, dry_run=dry_run,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_merge_advances_every_target_s_entries_before_its_first_write():
+    """Before the file bytes too (CASE-1349): a merge uploads its files before
+    its records, so an advance after the upload left bytes in storage while
+    the refusal said nothing was written."""
+    order: list[tuple] = []
+    with pytest.raises(RestoreEngineError, match="stop here"):
+        await _commit(_merge_engine(order))
+    assert order == [
+        ("advance", ["P1297-a", "P1297-b"]), ("upload", False), ("write", "a"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_whose_advance_is_refused_uploads_no_file():
+    order: list[tuple] = []
+    with pytest.raises(RestoreEngineError, match="nothing was written"):
+        await _commit(_merge_engine(order, advance_fails=True))
+    assert order == [("advance", ["P1297-a", "P1297-b"])]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_dry_run_asks_the_registry_nothing():
+    order: list[tuple] = []
+    assert await _commit(_merge_engine(order), dry_run=True) is False
+    assert order == [("upload", True)]
 
 
 @pytest.mark.asyncio

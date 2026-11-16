@@ -1729,6 +1729,16 @@ def _left_out_record(left_out: list[tuple[str, int]]) -> list[dict[str, Any]] | 
     return [{"template_id": tid, "version": v} for tid, v in sorted(left_out)] or None
 
 
+def _staged_entry_ids(staged: list[_StagedMerge]) -> list[str]:
+    """Every Registry entry id a merge's staged namespaces insert."""
+    return [
+        str(e["entry_id"])
+        for stage in staged
+        for e in stage.built.get("registry_entries", EntityPlan("registry_entries")).to_insert
+        if e.get("entry_id")
+    ]
+
+
 def _documents_said(documents: int, versions: int) -> str:
     """How a progress line counts inserted documents: each document brings
     its whole version chain, so the rows written are versions."""
@@ -5002,25 +5012,12 @@ class DirectRestoreEngine:
                 for src, tgt in targets
             ]
             await self._check_staged_references(staged)
-
-            if not skip_files:
-                # A dry run checks the file keys as the real run does, and
-                # uploads nothing.
-                await self._upload_merge_blobs(reader, staged, targets[0][1], dry_run=dry_run)
-
-            if dry_run:
-                self._emit(
-                    "complete",
-                    "Merge dry run complete — plan computed, no changes made",
-                    percent=100,
-                    details=self.result,
-                )
-                return
-
-            await self._write_staged_merges(
-                staged, archive_path, manifest, raw_manifest,
+            if not await self._commit_staged_merges(
+                reader, staged, targets[0][1], archive_path, manifest, raw_manifest,
                 policy=policy, batch_size=batch_size, skip_documents=skip_documents,
-            )
+                skip_files=skip_files, dry_run=dry_run,
+            ):
+                return
 
         self.result["reporting_synced"] = list(self._reporting_synced)
         self._finish_reporting_verification(
@@ -5541,6 +5538,47 @@ class DirectRestoreEngine:
             return
         await self._restore_blobs(reader, namespace, only=inserting)
 
+    async def _commit_staged_merges(
+        self,
+        reader: Any,
+        staged: list[_StagedMerge],
+        first_target: str,
+        archive_path: Path,
+        manifest: Any,
+        raw_manifest: Any,
+        *,
+        policy: dict[str, Any],
+        batch_size: int,
+        skip_documents: bool,
+        skip_files: bool,
+        dry_run: bool,
+    ) -> bool:
+        """What a merge does once every namespace is staged and checked, in
+        the restore's order: the Registry accounts for every entry id the
+        merge inserts, then the file bytes go up, then the records are
+        written. A Registry that cannot answer therefore stops the merge
+        with nothing written, bytes included (_advance_registry_counters). A
+        dry run asks the Registry nothing, checks the file keys as the real
+        run does, uploads nothing and reports its plan. Returns False for a
+        dry run (complete already emitted), True once the merge is written."""
+        if not dry_run:
+            await self._advance_registry_counters(_staged_entry_ids(staged))
+        if not skip_files:
+            await self._upload_merge_blobs(reader, staged, first_target, dry_run=dry_run)
+        if dry_run:
+            self._emit(
+                "complete",
+                "Merge dry run complete — plan computed, no changes made",
+                percent=100,
+                details=self.result,
+            )
+            return False
+        await self._write_staged_merges(
+            staged, archive_path, manifest, raw_manifest,
+            policy=policy, batch_size=batch_size, skip_documents=skip_documents,
+        )
+        return True
+
     async def _write_staged_merges(
         self,
         staged: list[_StagedMerge],
@@ -5555,17 +5593,10 @@ class DirectRestoreEngine:
         """Write every planned namespace in three steps across all of them:
         definitions, then the reporting gates, then the rest. What each target
         has received is kept in ``self.result["written"]``, and a failure after
-        the first write carries it."""
+        the first write carries it. The Registry has accounted for the entry
+        ids already (_commit_staged_merges)."""
         written: dict[str, list[str]] = {stage.tgt: [] for stage in staged}
         self.result["written"] = written
-        # Every entry id the merge inserts is accounted for by the Registry
-        # before the first write (_advance_registry_counters).
-        await self._advance_registry_counters(
-            str(e["entry_id"])
-            for stage in staged
-            for e in stage.built.get("registry_entries", EntityPlan("registry_entries")).to_insert
-            if e.get("entry_id")
-        )
         try:
             for stage in staged:
                 await self._apply_definitions(
