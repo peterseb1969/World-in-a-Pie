@@ -876,7 +876,8 @@ def _render_component(
 
     # A changed secret or key file must roll the pods that read it at start;
     # the hash makes that content change a template change (config_hash).
-    # Only NATS, MongoDB and Dex reach here with a StatefulSet (their config hash).
+    # NATS, MongoDB, Dex (their own config hash) and storage-bearing apps
+    # (config_hash) are the StatefulSets that reach here.
     if workload_hash is not None:
         workload["spec"]["template"]["metadata"]["annotations"] = {
             CONFIG_HASH_KEY: workload_hash,

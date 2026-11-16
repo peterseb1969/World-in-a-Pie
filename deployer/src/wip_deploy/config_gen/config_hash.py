@@ -18,14 +18,17 @@ definition change and the apply restarts exactly the services whose inputs
 moved.
 
 Scope: every owner except a storage-bearing component. A storage-bearing
-component (a database, the object store) renders as a StatefulSet on k8s,
-whose rolling replacement of a ReadWriteOnce volume can stall, and its
-secrets (database passwords) cannot be rotated by a restart anyway — the
-password lives in the data volume. An app that declares storage is hashed
-like any app: its secrets are keys it reads at start, which a restart does
-rotate, and its volume holds app state, which the restart keeps. Without
-the hash, rotating such an app's key left it running on the old key, which
-the install refuses once the rotation applies.
+component (a database, the object store) keeps its password in its data
+volume, so a restart cannot rotate it, and hashing it would restart it for
+nothing. An app that declares storage is hashed like any app. It renders on
+k8s as a one-replica StatefulSet, which stops the old pod before starting
+the new one, the same roll NATS, MongoDB and Dex take on their own config
+hashes; its volume holds app state, which the restart keeps. Without the
+hash, rotating such an app's key (`rotate-key app-<app>`) left it running on
+the old key, which the install refuses once the rotation applies. An
+operator-supplied secret reaches the app's environment on that restart too,
+but the app decides whether to use it: wip-aa prefers a key saved from its
+Settings page, kept on its volume, over `ANTHROPIC_API_KEY`.
 """
 
 from __future__ import annotations
