@@ -7635,11 +7635,13 @@ class DirectRestoreEngine:
         )
         if await self._reporting.trigger_batch_sync(namespace):
             self._reporting_synced.append(namespace)
-        parity = await self._wait_for_reporting_sync(namespace)
+        parity = await self._wait_for_reporting_sync(namespace, self._reporting)
         if parity is not None:
             self._record_reporting_verdict(namespace, parity)
 
-    async def _wait_for_reporting_sync(self, namespace: str) -> dict[str, Any] | None:
+    async def _wait_for_reporting_sync(
+        self, namespace: str, reporting: ReportingSyncClient
+    ) -> dict[str, Any] | None:
         """Poll parity while reporting-sync still has this namespace's sync in
         flight, and return the last answer (None once reporting-sync goes away,
         which records its own verdict).
@@ -7655,7 +7657,7 @@ class DirectRestoreEngine:
         started = last_change = clock.time()
         last_rows: int | None = None
         while True:
-            parity = await self._reporting.parity(namespace, include_counts=True)
+            parity = await reporting.parity(namespace, include_counts=True)
             if parity is None:
                 self._reporting_unavailable(namespace, "reporting verification")
                 return None
