@@ -58,7 +58,7 @@ A comprehensive security audit was performed on the World In a Pie (WIP) project
 | H2 | Hardcoded salt for API key hashing | **Fixed** | setup.sh generates per-deployment random salt (`openssl rand -hex 16`) in prod mode. Stored as `WIP_AUTH_API_KEY_HASH_SALT` in `.env`. Dev mode retains default salt. |
 | H3 | API key comparison not timing-safe | **Fixed** | Bundled with H1. bcrypt.checkpw() is inherently constant-time. Legacy SHA-256 fallback uses `hmac.compare_digest()`. |
 | H4 | Missing security headers | **Fixed** | setup.sh now generates security headers for ALL deployment modes (X-Content-Type-Options, X-Frame-Options, Referrer-Policy). Prod mode adds HSTS and CSP. |
-| H5 | No file content-type validation | **Fixed** | Added content-type allowlist validation and blocked-extension check. Configurable via `WIP_ALLOWED_MIME_TYPES` env var. Dangerous extensions (.exe, .bat, .ps1, etc.) always rejected. |
+| H5 | No file content-type validation | **Fixed** | Added content-type allowlist validation and blocked-extension check. Configurable via `WIP_ALLOWED_MIME_TYPES` env var. A name the file would be stored under that ends in a dangerous extension (.exe, .bat, .ps1, etc.) is rejected. The check judges the LAST extension only, so a dangerous extension in the middle of a name is not — that scope is recorded as accepted under Residual Risks. |
 | H6 | MinIO console and NATS monitoring exposed | **Fixed** | Ports controlled by `WIP_MINIO_CONSOLE_PORT` and `WIP_NATS_MONITOR_PORT` env vars. setup.sh sets these to empty (disabled) in prod mode. production-check.sh validates. |
 | H7 | Debug endpoints unauthenticated | **Fixed** | `/debug/timing`, `/debug/timing/reset`, `/debug/cache`, `/debug/cache/clear` now require API key authentication via `Depends(require_api_key)`. |
 
@@ -96,6 +96,7 @@ A comprehensive security audit was performed on the World In a Pie (WIP) project
 | MCP SSE transport lacks auth middleware | Medium | Warning on startup; typically local-only use | Depends on MCP library auth support |
 | MongoDB auth optional in dev mode | Low | Dev is trusted local only; prod check enforces | By design for ease of development |
 | No WAF or DDoS protection | Low | Per-client rate limit in the services (C3); Caddy itself renders no rate limit | Acceptable for Tier 1-2; Tier 3 needs external WAF |
+| Filename blocklist judges the last extension only (H5, L2) | Low | The final suffix is what the OS picks a handler by, and the check looks at names and declared types, never bytes: a stored name ending `.pdf` or `.zip` does not run | So `invoice.exe.pdf` and `deploy.sh.zip` upload and download normally. The rule is stated at `document-store/services/file_validation.py` (`BLOCKED_EXTENSIONS`, `blocked_extension`) and enforced by `document-store/tests/test_case_1155_filenames.py`. Re-checked 2026-11-16 (CASE-1356) against the expectation raised with CASE-1155 that every extension in a name be judged: the project owner kept last-extension-only, so that expectation no longer stands. Judging every suffix would refuse ordinary names such as `backup.sh.tar.gz` or `my.js.notes.txt` without stopping anything from running. |
 
 ---
 
