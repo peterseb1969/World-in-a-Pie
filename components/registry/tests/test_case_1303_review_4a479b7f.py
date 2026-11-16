@@ -6,11 +6,11 @@
   that name on the target, an unrelated one included. It is skipped there
   now (`unrelated_namespace_here`); where no namespace of the name is here it
   is still written effective, for the namespace that takes the name.
-- An install's reservation of an absent namespace was archived with a null
-  id and restored as a runtime reservation with an id of its own, which
-  refused the namespace restore that followed (409), and the null made the
-  archive unreadable to an older Registry. Backups leave it out now; an
-  archive that carries one has it skipped (`managed_on_source`).
+- An install's reservation of an absent namespace was restored as a runtime
+  reservation with an id of its own, which refused the namespace restore that
+  followed (409). Backups carry it with no id and the restore skips it
+  (`managed_on_source`), so nothing is written; the prefix stays named in the
+  archive, which is what a mirror reads when it decides what to release.
 - The flow the case was filed for keeps the app's key: after the namespace
   is deleted and restored under its archived id, the key-file grant is there
   and effective.
@@ -102,7 +102,7 @@ async def test_an_id_less_grant_still_waits_for_a_namespace_not_yet_here(
 
 
 @pytest.mark.asyncio
-async def test_a_backup_leaves_out_an_install_reservation_holding_no_id(
+async def test_a_backup_carries_an_install_reservation_of_an_absent_namespace(
     client, auth_headers, install_reserves,  # noqa: F811
 ):
     absent, present = _p("kb"), _p("lib")
@@ -111,7 +111,7 @@ async def test_a_backup_leaves_out_an_install_reservation_holding_no_id(
     assert created.status_code == 200, created.text
 
     prefixes = {r["prefix"]: r for r in (await _backup(client, auth_headers))["reservations"]}
-    assert absent not in prefixes
+    assert prefixes[absent]["namespace_id"] is None
     assert prefixes[present]["namespace_id"] == created.json()["namespace_id"]
 
 

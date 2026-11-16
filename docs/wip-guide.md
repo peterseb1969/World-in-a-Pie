@@ -868,6 +868,12 @@ in §5.5.
 - **Restored records are unmanaged** (`origin: restored`). Where the install's
   own key file or reservations file declares the same key, grant or prefix,
   the Registry's import takes it over on its next pass (§4.3).
+- **An install's reservation of a name with no namespace travels with no
+  namespace id**, because it holds none here (see "The restored namespace's
+  id" below). A restore skips such a record (`managed_on_source`): this
+  install's deployer reserves its own names. The prefix is still named in the
+  file, so a mirror keeps a reservation of that name here rather than
+  releasing it.
 - **The install's files win.** A restore never replaces a record wip-deploy
   manages on this instance, a grant to a key whose grants the key file
   declares, or a key named like a loaded config key, even with `--overwrite`.
@@ -908,9 +914,9 @@ in §5.5.
 - **Either order.** Every namespace has a `namespace_id`, its identity apart
   from its name, and the archive records the one each grant is for. A grant
   whose namespace is here (a namespace, active or archived, or a reservation,
-  holding that id) is written as it was. Any other grant is written
-  **orphaned**, with the id: on a name nobody holds here, and on a name held
-  here by *another* namespace (a namespace or reservation of the same name
+  holding that id) is written as it was. Any other grant **with an id** is
+  written **orphaned**, with the id: on a name nobody holds here, and on a name
+  held here by *another* namespace (a namespace or reservation of the same name
   with another id, such as another owner's reservation). A grant archived
   with **no** id was given while no namespace held its name on the source (a
   key-file grant, or a key created listing a namespace not yet created): it

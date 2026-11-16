@@ -151,15 +151,19 @@ async def test_the_migration_leaves_an_install_reservation_without_an_id(client,
 
 
 @pytest.mark.asyncio
-async def test_a_system_backup_leaves_it_out(client, auth_headers, install_reserves):
-    """It holds no id and the target's deployer reserves its own names, so it
-    is not archived (the review of 4a479b7f: archived, it came back as a
-    runtime reservation with an id of its own, refusing the namespace restore
-    after it, and its null was unreadable to an older Registry)."""
+async def test_a_system_backup_archives_it_without_an_id(client, auth_headers, install_reserves):
+    """It holds no namespace id, and the archive says so: the restore skips it
+    (`managed_on_source`) so it comes back neither as a runtime reservation with
+    an id of its own nor as nothing at all, which a mirror would read as the
+    source holding no reservation of the name."""
     prefix = _p("kb")
     await install_reserves(prefix)
-    archive = (await client.post(BACKUP, headers=auth_headers)).json()
-    assert prefix not in {r["prefix"] for r in archive["reservations"]}
+    record = next(
+        r for r in (await client.post(BACKUP, headers=auth_headers)).json()["reservations"]
+        if r["prefix"] == prefix
+    )
+    assert record["namespace_id"] is None
+    assert record["managed_by"] == "wip-deploy"
 
 
 @pytest.mark.asyncio

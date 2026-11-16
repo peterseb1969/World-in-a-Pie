@@ -72,7 +72,9 @@ class NamespaceGrant(Document):
             "not here (no active or archived namespace, or reservation, on this "
             "install has its identity, namespace_id); the full rules are the "
             "system restore's. A grant archived without a namespace id is never "
-            "written orphaned. An orphaned grant counts as no grant "
+            "written orphaned: it is written effective for the namespace that takes the "
+            "name later, or skipped (unrelated_namespace_here) where a namespace "
+            "of the name is here already. An orphaned grant counts as no grant "
             "until it becomes effective: when a namespace with its namespace_id "
             "is created, by whoever creates it, when a namespace admin "
             "activates it, or when the same grant is given again (the grant "
@@ -206,7 +208,10 @@ class GrantResponse(BaseModel):
         default=False,
         description="True for a grant a system restore wrote orphaned (held orphaned "
         "in the archive, or made for a namespace not on this install); it counts "
-        "as no grant until it becomes effective",
+        "as no grant until it becomes effective. A grant archived with no "
+        "namespace id is never orphaned: it is written effective for the "
+        "namespace that takes the name later, or skipped "
+        "(unrelated_namespace_here) where a namespace of the name is here already",
     )
     orphaned_at: datetime | None = None
 
