@@ -67,19 +67,22 @@ export class DefStoreService extends BaseService {
     return this.bulkWrite('/terminologies', data)
   }
 
-  async updateTerminology(id: string, data: UpdateTerminologyRequest): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terminologies', { ...data, terminology_id: id }, 'PUT')
+  /** `namespace` scopes a value-form or synonym `id`; a canonical id needs none. */
+  async updateTerminology(id: string, data: UpdateTerminologyRequest, namespace?: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', { ...data, terminology_id: id }, 'PUT', { namespace })
   }
 
   async deleteTerminology(id: string, options?: {
     force?: boolean
     hardDelete?: boolean
+    /** Scopes a value-form or synonym `id`; a canonical id needs none. */
+    namespace?: string
   }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/terminologies', {
       id,
       force: options?.force,
       hard_delete: options?.hardDelete,
-    }, 'DELETE')
+    }, 'DELETE', { namespace: options?.namespace })
   }
 
   // ---- Terms ----
@@ -409,6 +412,8 @@ export class DefStoreService extends BaseService {
 
   async getTerminologyAuditLog(terminologyId: string, params?: {
     action?: AuditAction
+    /** Scopes a value-form or synonym `terminologyId`; a canonical id needs none. */
+    namespace?: string
     page?: number
     page_size?: number
   }): Promise<AuditLogResponse> {

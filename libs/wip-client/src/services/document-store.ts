@@ -238,12 +238,14 @@ export class DocumentStoreService extends BaseService {
 
   // ---- Versions ----
 
-  async getVersions(id: string): Promise<DocumentVersionResponse> {
-    return this.get(`/documents/${seg(id)}/versions`)
+  /** `namespace` scopes a synonym `id`; a canonical id needs none. */
+  async getVersions(id: string, namespace?: string): Promise<DocumentVersionResponse> {
+    return this.get(`/documents/${seg(id)}/versions`, { namespace })
   }
 
-  async getVersion(id: string, version: number): Promise<Document> {
-    return this.get(`/documents/${seg(id)}/versions/${seg(version)}`)
+  /** `namespace` scopes a synonym `id`; a canonical id needs none. */
+  async getVersion(id: string, version: number, namespace?: string): Promise<Document> {
+    return this.get(`/documents/${seg(id)}/versions/${seg(version)}`, { namespace })
   }
 
   // ---- Table View ----
@@ -268,8 +270,9 @@ export class DocumentStoreService extends BaseService {
 
   // ---- Additional Lookups ----
 
-  async getLatestDocument(id: string): Promise<Document> {
-    return this.get(`/documents/${seg(id)}/latest`)
+  /** `namespace` scopes a synonym `id`; a canonical id needs none. */
+  async getLatestDocument(id: string, namespace?: string): Promise<Document> {
+    return this.get(`/documents/${seg(id)}/latest`, { namespace })
   }
 
   /**

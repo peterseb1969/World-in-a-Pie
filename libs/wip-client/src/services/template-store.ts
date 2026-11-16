@@ -35,12 +35,14 @@ export class TemplateStoreService extends BaseService {
     return this.get('/templates', params)
   }
 
-  async getTemplate(id: string, version?: number): Promise<Template> {
-    return this.get(`/templates/${seg(id)}`, version ? { version } : undefined)
+  /** `namespace` scopes a value-form or synonym `id`; a canonical id needs none. */
+  async getTemplate(id: string, version?: number, namespace?: string): Promise<Template> {
+    return this.get(`/templates/${seg(id)}`, { version: version || undefined, namespace })
   }
 
-  async getTemplateRaw(id: string, version?: number): Promise<Template> {
-    return this.get(`/templates/${seg(id)}/raw`, version ? { version } : undefined)
+  /** `namespace` scopes a value-form or synonym `id`; a canonical id needs none. */
+  async getTemplateRaw(id: string, version?: number, namespace?: string): Promise<Template> {
+    return this.get(`/templates/${seg(id)}/raw`, { version: version || undefined, namespace })
   }
 
   async getTemplateByValue(value: string, opts?: { namespace?: string }): Promise<Template> {
@@ -105,8 +107,9 @@ export class TemplateStoreService extends BaseService {
     return this.bulkWrite('/templates', data, 'POST', params)
   }
 
-  async updateTemplate(id: string, data: UpdateTemplateRequest): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/templates', { ...data, template_id: id }, 'PUT')
+  /** `namespace` scopes a value-form or synonym `id`; a canonical id needs none. */
+  async updateTemplate(id: string, data: UpdateTemplateRequest, namespace?: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/templates', { ...data, template_id: id }, 'PUT', { namespace })
   }
 
   async deleteTemplate(id: string, options?: {
@@ -114,6 +117,8 @@ export class TemplateStoreService extends BaseService {
     version?: number
     force?: boolean
     hardDelete?: boolean
+    /** Scopes a value-form or synonym `id`; a canonical id needs none. */
+    namespace?: string
   }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/templates', {
       id,
@@ -121,11 +126,14 @@ export class TemplateStoreService extends BaseService {
       force: options?.force,
       hard_delete: options?.hardDelete,
       updated_by: options?.updatedBy,
-    }, 'DELETE')
+    }, 'DELETE', { namespace: options?.namespace })
   }
 
-  async validateTemplate(id: string, request: ValidateTemplateRequest = {}): Promise<ValidateTemplateResponse> {
-    return this.post(`/templates/${seg(id)}/validate`, request)
+  /** `namespace` scopes a value-form or synonym `id`; a canonical id needs none. */
+  async validateTemplate(
+    id: string, request: ValidateTemplateRequest = {}, namespace?: string,
+  ): Promise<ValidateTemplateResponse> {
+    return this.post(`/templates/${seg(id)}/validate`, request, { namespace })
   }
 
   // ---- Inheritance ----
@@ -173,8 +181,9 @@ export class TemplateStoreService extends BaseService {
 
   // ---- Cascade ----
 
-  async cascadeTemplate(id: string): Promise<CascadeResponse> {
-    return this.post(`/templates/${seg(id)}/cascade`)
+  /** `namespace` scopes a value-form or synonym `id`; a canonical id needs none. */
+  async cascadeTemplate(id: string, namespace?: string): Promise<CascadeResponse> {
+    return this.post(`/templates/${seg(id)}/cascade`, undefined, { namespace })
   }
 
   // ---- Edge-type endpoints ----

@@ -1,9 +1,11 @@
 """CSV/XLSX import API for bulk document creation."""
 
 import asyncio
+import csv
 import json
 import logging
 import uuid
+import zipfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -32,6 +34,20 @@ from .uploads import read_upload
 
 logger = logging.getLogger(__name__)
 
+try:
+    from openpyxl.utils.exceptions import InvalidFileException
+except ImportError:  # openpyxl is optional; without it no XLSX is read
+    class InvalidFileException(Exception):  # type: ignore[no-redef]
+        """Placeholder: never raised when openpyxl is absent."""
+
+# What reading a bad upload raises: the parser's own refusals (ValueError,
+# UnicodeDecodeError among them), the csv module's, and a corrupt or
+# non-XLSX archive's (a zip that is no workbook raises KeyError from
+# openpyxl). Anything else is a fault of ours, not of the file.
+_FILE_ERRORS: tuple[type[Exception], ...] = (
+    ValueError, csv.Error, zipfile.BadZipFile, InvalidFileException, KeyError,
+)
+
 router = APIRouter(prefix="/import", tags=["Import"])
 
 
@@ -51,8 +67,8 @@ async def preview_import(
 
     try:
         return ImportService.preview(content, file.filename or "data.csv")
-    except Exception as e:
-        logger.info(f"Preview refused an unreadable file: {e}")
+    except _FILE_ERRORS as e:
+        logger.info("Preview refused an unreadable file: %s: %s", type(e).__name__, e)
         raise _parse_failure(e) from None
 
 
@@ -80,8 +96,9 @@ def _parse_mapping(column_mapping: str) -> dict[str, Any]:
 
 def _parse_failure(e: Exception) -> HTTPException:
     """A file the parser cannot read is the upload's fault: 422. A parser
-    refusal (ValueError) keeps its own message; anything else raised while
-    reading the bytes (a corrupt XLSX archive, say) is a parse failure too."""
+    refusal (ValueError) keeps its own message; the other _FILE_ERRORS (a
+    corrupt XLSX archive, say) read "Failed to parse file". Any other
+    exception is not caught here: it is a fault of ours and answers 500."""
     return _unusable(str(e) if isinstance(e, ValueError) else f"Failed to parse file: {e}")
 
 
@@ -489,7 +506,8 @@ async def import_documents(
 
     try:
         headers, rows = ImportService.parse_rows(content, file.filename or "data.csv")
-    except Exception as e:
+    except _FILE_ERRORS as e:
+        logger.info("Import refused an unreadable file: %s: %s", type(e).__name__, e)
         raise _parse_failure(e) from None
 
     # Validate mapping references valid columns

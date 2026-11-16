@@ -914,6 +914,18 @@ async def _caller_read_connection(identity: UserIdentity) -> AsyncIterator[async
         ) from e
 
 
+async def _implicit_namespace(identity: UserIdentity) -> str | None:
+    """The namespace a non-privileged key without one means, or None: the
+    one namespace it can read, or the one its scope implies when it can
+    read that one (the rule _effective_namespace applies, without its
+    refusals, for a request that may name its schemas itself)."""
+    accessible = await resolve_accessible_namespaces(identity)
+    if len(accessible) == 1:
+        return accessible[0]
+    implied = await implied_namespace(identity)
+    return implied if implied in accessible else None
+
+
 async def _effective_namespace(
     identity: UserIdentity, requested: str | None
 ) -> tuple[str | None, list[str]]:
@@ -2745,9 +2757,17 @@ async def execute_query(
     A wip-admins / wip-services key reads every schema. Any other key's
     query runs as a PostgreSQL role that can read only the namespaces the
     key can read; a relation outside them is refused by PostgreSQL.
+
+    Without ``namespace``, a key that can read exactly one namespace (or
+    whose scope implies one) gets that namespace's schema on its
+    search_path, as the platform derives a single-namespace key's
+    namespace everywhere; any other caller's query names its schemas.
     """
-    if body.namespace and not _is_privileged(identity):
-        await check_namespace_permission(identity, body.namespace, "read")
+    namespace = body.namespace
+    if namespace and not _is_privileged(identity):
+        await check_namespace_permission(identity, namespace, "read")
+    elif not namespace and not _is_privileged(identity):
+        namespace = await _implicit_namespace(identity)
     if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2762,9 +2782,9 @@ async def execute_query(
     # Resolve the namespace search_path schema (CASE-628), validating it as a
     # safe identifier before interpolation.
     search_path_schema: str | None = None
-    if body.namespace:
+    if namespace:
         try:
-            search_path_schema = SchemaManager(state.postgres_pool).schema_for(body.namespace)
+            search_path_schema = SchemaManager(state.postgres_pool).schema_for(namespace)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -3003,10 +3023,14 @@ async def export_query_csv(
     """Export a SQL query result as streaming CSV.
 
     Scoped like POST /query: a key that is not wip-admins / wip-services
-    reads only the namespaces it can read.
+    reads only the namespaces it can read, and without ``namespace`` a key
+    that means one namespace gets its schema on the search_path.
     """
-    if body.namespace and not _is_privileged(identity):
-        await check_namespace_permission(identity, body.namespace, "read")
+    namespace = body.namespace
+    if namespace and not _is_privileged(identity):
+        await check_namespace_permission(identity, namespace, "read")
+    elif not namespace and not _is_privileged(identity):
+        namespace = await _implicit_namespace(identity)
     if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -3017,7 +3041,7 @@ async def export_query_csv(
             "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
         )
 
-    search_path_schema = _search_path_schema(body.namespace)
+    search_path_schema = _search_path_schema(namespace)
     await _check_export_sql(body.sql, search_path_schema, identity=identity)
 
     async def generate():

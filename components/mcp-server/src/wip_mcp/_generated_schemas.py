@@ -10,7 +10,7 @@ Generated from:
   schemas/def-store.json  version 2.1.0  sha256 eece139c4bd1e52c
   schemas/template-store.json  version 2.1.0  sha256 674e4d233dea3c9c
   schemas/document-store.json  version 2.1.0  sha256 8b1ef43c91c65fdb
-  schemas/reporting-sync.json  version 2.1.0  sha256 47bc23f330d8bb47
+  schemas/reporting-sync.json  version 2.1.0  sha256 f3015275e3c3ed31
 """
 
 

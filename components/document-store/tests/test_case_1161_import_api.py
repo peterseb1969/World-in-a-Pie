@@ -48,3 +48,45 @@ async def test_parser_refusal_is_answered_with_its_message(client: AsyncClient, 
 async def test_unreadable_file_is_answered_as_a_parse_failure(client: AsyncClient, auth_headers: dict):
     detail = await _import(client, auth_headers, "broken.xlsx", b"this is not a zip archive")
     assert detail.startswith("Failed to parse file: ")
+
+
+def _zip_that_is_no_workbook() -> bytes:
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("readme.txt", "not a workbook")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_a_zip_that_is_no_workbook_is_a_parse_failure(client: AsyncClient, auth_headers: dict):
+    """openpyxl raises KeyError for a zip without the workbook's parts."""
+    detail = await _import(client, auth_headers, "other.xlsx", _zip_that_is_no_workbook())
+    assert detail.startswith("Failed to parse file: ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/document-store/import", "/api/document-store/import/preview"])
+async def test_a_fault_of_ours_while_parsing_is_a_500_not_a_bad_file(
+    client: AsyncClient, auth_headers: dict, monkeypatch, path,
+):
+    """Only what a bad upload raises is a 422 (CASE-1251, review of 7754542d,
+    R1): a bug in the parser must not read as the caller's file."""
+    from document_store.services.import_service import ImportService
+
+    def broken(*_args, **_kwargs):
+        raise AttributeError("a bug in the parser")
+
+    monkeypatch.setattr(ImportService, "preview", staticmethod(broken))
+    monkeypatch.setattr(ImportService, "parse_rows", staticmethod(broken))
+    # The test client re-raises what the app does not handle; served, it is
+    # a 500. Before, it was caught and answered 422 "Failed to parse file".
+    with pytest.raises(AttributeError, match="a bug in the parser"):
+        await client.post(
+            path,
+            headers=auth_headers,
+            files={"file": ("ok.csv", b"a\n1\n", "text/csv")},
+            data={"template_id": "PERSON", "column_mapping": json.dumps({"a": "first_name"}),
+                  "namespace": "wip"},
+        )
