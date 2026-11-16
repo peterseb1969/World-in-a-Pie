@@ -5021,6 +5021,7 @@ class DirectRestoreEngine:
                 definitions, reader, src, tgt, archive_entities, doc_groups, remapper,
                 dry_run=dry_run, on_clash=policy["on_clash"],
                 skip_documents=skip_documents,
+                rehash_probe=(manifest, [s for s, _t in targets]),
             )
         dropped = await self._report_unresolved_references(
             reader, [src], remapper, referents, tgt,
@@ -5142,6 +5143,7 @@ class DirectRestoreEngine:
         dry_run: bool,
         on_clash: str = "overwrite",
         skip_documents: bool = False,
+        rehash_probe: tuple[Any, list[str]] | None = None,
     ) -> tuple[dict[str, list[dict[str, Any]]] | None, dict[str, Any], set[str]]:
         """Settle the template alignment: re-pin documents onto the target
         versions, and leave out the documents whose versions map nowhere.
@@ -5152,7 +5154,11 @@ class DirectRestoreEngine:
         written, so its rows neither decide whether a version can be placed
         nor are left out: the target keeps its own copy. With
         ``skip_documents`` no document arrives: the versions are settled
-        against none, and the archive's documents are not read."""
+        against none, and the archive's documents are not read.
+
+        ``rehash_probe`` (the manifest and every archived namespace of the
+        merge) lets the held documents be found by the identity the merge
+        writes them under, as the planner finds them."""
         if skip_documents:
             doc_groups = {}
         held: set[str] = set()
@@ -5160,6 +5166,8 @@ class DirectRestoreEngine:
             heads = await self._off_loop(
                 _aligned_heads, definitions.alignment, reader, src, doc_groups,
             )
+            if rehash_probe is not None:
+                heads = await self._rehashed_heads(reader, *rehash_probe, remapper, heads)
             held = await self._held_by_target(tgt, heads, definitions.alignment)
         unplaceable, report = await self._off_loop(
             self._settle_alignment,
@@ -5925,6 +5933,35 @@ class DirectRestoreEngine:
             doc_id: [rehash.rehash(row, remapper.remap_document(row)) for row in rows]
             for doc_id, rows in doc_groups.items()
         }
+
+    async def _rehashed_heads(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        sources: list[str],
+        remapper: _AligningRemapper,
+        heads: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """The heads with the identity hash the merge will write them under.
+
+        A term- or reference-typed identity field hashes the canonical id it
+        resolves to, so a head whose term pass 1 mapped onto the target's own
+        term carries an identity the target knows under another hash. The
+        planner rehashes before it matches; the held probe must too, or it
+        misses the target's copy. Each head keeps its archived template_id,
+        which the alignment is keyed by. The rehash is a throwaway: the
+        planner builds its own, so nothing here is counted as rehashed."""
+        rehash = _IdentityRehash(
+            reader, sources,
+            await self._external_template_definitions(
+                reader, manifest, remapper, _archived_template_ids(reader, sources),
+            ),
+        )
+        out = []
+        for head in heads:
+            row = rehash.rehash(head, remapper.remap_document(head))
+            out.append({**head, "identity_hash": row.get("identity_hash")})
+        return out
 
     async def _held_by_target(
         self, namespace: str, heads: list[dict[str, Any]], alignment: dict[str, Any],
