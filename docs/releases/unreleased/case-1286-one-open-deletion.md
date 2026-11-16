@@ -25,9 +25,17 @@ packages: [wip-client]
   finished between its read and its claim.
 - **`DELETE /namespaces/{prefix}` answers 409** when another run holds the
   namespace's deletion, or took over this run's (it was a 500). It answers
-  409 naming `resume-delete` when an earlier deletion of the name stopped on
-  a failed step and is not finished; the namespace is then given back
-  unlocked, and nothing is deleted.
+  409 naming `resume-delete` when a deletion of the name stopped on a failed
+  step and is not finished, and nothing is deleted. The namespace stays
+  locked when that deletion is its own; it is given back unlocked when the
+  deletion is of an earlier namespace that held the name, or was recorded
+  before deletions stored the namespace's id.
+  - **Action:** a deletion that stopped on a failed step under an earlier
+    release, with an unlocked namespace holding the same name, cannot be
+    finished: `DELETE` answers 409 pointing at `resume-delete`, and
+    `resume-delete` answers 409 pointing back at `DELETE`. Check
+    `GET /namespaces/{prefix}/deletion-status` before upgrading, and finish
+    any stopped deletion with `resume-delete` on the old release first.
 - **A running deletion keeps its claim** for as long as it runs: a single
   long step (one large delete, many file batches) is no longer taken over by
   another run after 15 minutes.
