@@ -581,7 +581,7 @@ class WipClient:
 
     async def get_entry(self, entry_id: str) -> dict:
         return await self._get(
-            self.registry_url, f"/api/registry/entries/{entry_id}"
+            self.registry_url, f"/api/registry/entries/{quote(entry_id, safe='')}"
         )
 
     async def register_entry(
@@ -717,14 +717,14 @@ class WipClient:
     async def get_terminology(self, terminology_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.def_store_url,
-            f"/api/def-store/terminologies/{terminology_id}",
+            f"/api/def-store/terminologies/{quote(terminology_id, safe='')}",
             namespace=namespace,
         )
 
     async def get_terminology_by_value(self, value: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.def_store_url,
-            f"/api/def-store/terminologies/by-value/{value}",
+            f"/api/def-store/terminologies/by-value/{quote(value, safe='')}",
             namespace=namespace,
         )
 
@@ -778,7 +778,7 @@ class WipClient:
     ) -> dict:
         return await self._post(
             self.def_store_url,
-            f"/api/def-store/terminologies/{terminology_id}/restore",
+            f"/api/def-store/terminologies/{quote(terminology_id, safe='')}/restore",
             restore_terms=restore_terms,
             namespace=namespace,
         )
@@ -797,7 +797,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.def_store_url,
-            f"/api/def-store/terminologies/{terminology_id}/terms",
+            f"/api/def-store/terminologies/{quote(terminology_id, safe='')}/terms",
             search=search,
             page=page,
             page_size=page_size,
@@ -919,7 +919,7 @@ class WipClient:
             body["deprecation_reason"] = deprecation_reason
         return await self._post(
             self.def_store_url,
-            f"/api/def-store/terminologies/{terminology_id}/reconcile",
+            f"/api/def-store/terminologies/{quote(terminology_id, safe='')}/reconcile",
             json=body,
             namespace=namespace,
         )
@@ -1133,7 +1133,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}",
+            f"/api/template-store/templates/{quote(template_id, safe='')}",
             version=version,
             namespace=namespace,
             refs="portable" if portable else None,
@@ -1144,7 +1144,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.template_store_url,
-            f"/api/template-store/templates/by-value/{value}",
+            f"/api/template-store/templates/by-value/{quote(value, safe='')}",
             namespace=namespace,
             refs="portable" if portable else None,
         )
@@ -1154,7 +1154,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}/raw",
+            f"/api/template-store/templates/{quote(template_id, safe='')}/raw",
             namespace=namespace,
             refs="portable" if portable else None,
         )
@@ -1190,7 +1190,7 @@ class WipClient:
     ) -> dict:
         return await self._post(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}/activate",
+            f"/api/template-store/templates/{quote(template_id, safe='')}/activate",
             namespace=self._ns(namespace),
             dry_run=dry_run,
         )
@@ -1219,7 +1219,7 @@ class WipClient:
     ) -> dict:
         return await self._post(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}/reactivate",
+            f"/api/template-store/templates/{quote(template_id, safe='')}/reactivate",
             namespace=namespace or self.default_namespace,
             version=version,
         )
@@ -1233,7 +1233,7 @@ class WipClient:
     ) -> dict:
         return await self._post(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}/endpoints",
+            f"/api/template-store/templates/{quote(template_id, safe='')}/endpoints",
             json={
                 "add_source_templates": add_source_templates or [],
                 "add_target_templates": add_target_templates or [],
@@ -1244,20 +1244,20 @@ class WipClient:
     async def get_template_versions(self, template_id: str) -> dict:
         return await self._get(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}/versions",
+            f"/api/template-store/templates/{quote(template_id, safe='')}/versions",
         )
 
     async def get_template_versions_by_value(self, value: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.template_store_url,
-            f"/api/template-store/templates/by-value/{value}/versions",
+            f"/api/template-store/templates/by-value/{quote(value, safe='')}/versions",
             namespace=namespace,
         )
 
     async def validate_template(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._post(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}/validate",
+            f"/api/template-store/templates/{quote(template_id, safe='')}/validate",
             json={},
             namespace=namespace,
         )
@@ -1265,7 +1265,7 @@ class WipClient:
     async def get_template_dependencies(self, template_id: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.template_store_url,
-            f"/api/template-store/templates/{template_id}/dependencies",
+            f"/api/template-store/templates/{quote(template_id, safe='')}/dependencies",
             namespace=namespace,
         )
 
@@ -1310,7 +1310,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.document_store_url,
-            f"/api/document-store/documents/{document_id}",
+            f"/api/document-store/documents/{quote(document_id, safe='')}",
             version=version,
         )
 
@@ -1327,7 +1327,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.document_store_url,
-            f"/api/document-store/documents/{document_id}/relationships",
+            f"/api/document-store/documents/{quote(document_id, safe='')}/relationships",
             direction=direction,
             template=template,
             namespace=namespace,
@@ -1347,7 +1347,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.document_store_url,
-            f"/api/document-store/documents/{document_id}/traverse",
+            f"/api/document-store/documents/{quote(document_id, safe='')}/traverse",
             depth=depth,
             types=types,
             direction=direction,
@@ -1440,7 +1440,7 @@ class WipClient:
     async def get_document_versions(self, document_id: str) -> dict:
         return await self._get(
             self.document_store_url,
-            f"/api/document-store/documents/{document_id}/versions",
+            f"/api/document-store/documents/{quote(document_id, safe='')}/versions",
         )
 
     async def delete_document(
@@ -1503,7 +1503,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.document_store_url,
-            f"/api/document-store/table/{template_id}",
+            f"/api/document-store/table/{quote(template_id, safe='')}",
             status=status,
             page=page,
             page_size=page_size,
@@ -1526,7 +1526,7 @@ class WipClient:
         if namespace:
             params["namespace"] = namespace
         resp = await client.get(
-            f"{self.document_store_url}/api/document-store/table/{template_id}/csv",
+            f"{self.document_store_url}/api/document-store/table/{quote(template_id, safe='')}/csv",
             params=params,
         )
         _raise_for_status_with_body(resp)
@@ -1555,7 +1555,7 @@ class WipClient:
     async def get_file(self, file_id: str) -> dict:
         return await self._get(
             self.document_store_url,
-            f"/api/document-store/files/{file_id}",
+            f"/api/document-store/files/{quote(file_id, safe='')}",
         )
 
     async def upload_file(
@@ -1613,7 +1613,7 @@ class WipClient:
     async def hard_delete_file(self, file_id: str) -> dict:
         return await self._delete(
             self.document_store_url,
-            f"/api/document-store/files/{file_id}/hard",
+            f"/api/document-store/files/{quote(file_id, safe='')}/hard",
         )
 
     async def get_file_documents(
@@ -1621,7 +1621,7 @@ class WipClient:
     ) -> dict:
         return await self._get(
             self.document_store_url,
-            f"/api/document-store/files/{file_id}/documents",
+            f"/api/document-store/files/{quote(file_id, safe='')}/documents",
             page=page,
             page_size=page_size,
         )

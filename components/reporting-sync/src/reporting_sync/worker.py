@@ -29,6 +29,7 @@ from .models import DroppedEvent, EventType, ReportingConfig, SyncStatus
 from .schema_manager import NamespaceDeletedError, SchemaManager
 from .term_closure import TermClosureMaintainer
 from .transformer import DocumentTransformer, _parse_datetime, term_name_rows, write_counter
+from .url_path import seg
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class SyncWorker:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates/{template_id}",
+                    f"{settings.template_store_url}/api/template-store/templates/{seg(template_id)}",
                     params=params,
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,

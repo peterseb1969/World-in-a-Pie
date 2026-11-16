@@ -8,6 +8,7 @@ terminology-metadata lookups on top.
 
 import os
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -81,7 +82,7 @@ class DefStoreClient:
         a bare value names a different terminology in each namespace, so no
         answer for it may be reused across callers.
         """
-        url = f"{self.base_url}/api/def-store/terminologies/{terminology_ref}"
+        url = f"{self.base_url}/api/def-store/terminologies/{quote(terminology_ref, safe='')}"
         params = {"namespace": namespace} if namespace else None
         try:
             async with httpx.AsyncClient(timeout=self.timeout, transport=get_def_store_transport()) as client:
@@ -169,7 +170,7 @@ class DefStoreClient:
         Returns:
             Term data if found, None otherwise
         """
-        url = f"{self.base_url}/api/def-store/terms/{term_id}"
+        url = f"{self.base_url}/api/def-store/terms/{quote(term_id, safe='')}"
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout, transport=get_def_store_transport()) as client:

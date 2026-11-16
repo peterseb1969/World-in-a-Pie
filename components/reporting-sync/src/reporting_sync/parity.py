@@ -55,6 +55,7 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .models import ReportingConfig
 from .schema_manager import SchemaManager
+from .url_path import seg
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +372,7 @@ async def _expected_active_terms(namespace: str) -> int:
             page += 1
         for tid in terminology_ids:
             response = await client.get(
-                f"{settings.def_store_url}/api/def-store/terminologies/{tid}/terms",
+                f"{settings.def_store_url}/api/def-store/terminologies/{seg(tid)}/terms",
                 params={"namespace": namespace, "status": "active",
                         "page": 1, "page_size": 1},
                 headers={"X-API-Key": settings.api_key},

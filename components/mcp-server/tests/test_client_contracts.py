@@ -584,12 +584,10 @@ def test_document_relationship_tools_exist() -> None:
 def test_document_relationship_url_paths_match_phase4_routes() -> None:
     """Client methods must call the document-store routes Phase 4 added."""
     source = _CLIENT_SOURCE_PATH.read_text()
-    assert "/api/document-store/documents/{document_id}/relationships" in source, (
-        "client.py must reference /api/document-store/documents/{document_id}/relationships"
-    )
-    assert "/api/document-store/documents/{document_id}/traverse" in source, (
-        "client.py must reference /api/document-store/documents/{document_id}/traverse"
-    )
+    # The id is sent as one encoded path segment (quote(document_id, safe='')).
+    for route in ("relationships", "traverse"):
+        path = f"/api/document-store/documents/{{quote(document_id, safe='')}}/{route}"
+        assert path in source, f"client.py must reference {path}"
 
 
 # =========================================================================

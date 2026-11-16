@@ -32,6 +32,7 @@ from .models import (
 from .schema_manager import SchemaManager
 from .term_closure import TermClosureMaintainer
 from .transformer import DocumentTransformer, _parse_datetime, term_name_rows, write_counter
+from .url_path import seg
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ class BatchSyncService:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates/{template_id}",
+                    f"{settings.template_store_url}/api/template-store/templates/{seg(template_id)}",
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,
                 )
@@ -211,7 +212,7 @@ class BatchSyncService:
                 params["namespace"] = namespace
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates/by-value/{template_value}",
+                    f"{settings.template_store_url}/api/template-store/templates/by-value/{seg(template_value)}",
                     params=params,
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,
@@ -282,7 +283,7 @@ class BatchSyncService:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates/{template_id}",
+                    f"{settings.template_store_url}/api/template-store/templates/{seg(template_id)}",
                     params={"version": str(version)},
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,
@@ -1293,7 +1294,7 @@ class BatchSyncService:
         page = 1
         while True:
             resp = await client.get(
-                f"{settings.def_store_url}/api/def-store/terminologies/{tid}/terms",
+                f"{settings.def_store_url}/api/def-store/terminologies/{seg(tid)}/terms",
                 params={"page": page, "page_size": page_size},
                 headers={"X-API-Key": settings.api_key},
             )

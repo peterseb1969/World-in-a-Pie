@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from .config import settings
 from .schema_manager import SchemaManager
+from .url_path import seg
 
 logger = logging.getLogger(__name__)
 
@@ -1254,7 +1255,7 @@ class SearchService:
                     term_id = terminology.get("terminology_id")
 
                     terms_response = await client.get(
-                        f"{settings.def_store_url}/api/def-store/terminologies/{term_id}/terms",
+                        f"{settings.def_store_url}/api/def-store/terminologies/{_seg(term_id)}/terms",
                         params={"page_size": 20},
                         headers={"X-API-Key": settings.api_key}
                     )
@@ -1469,7 +1470,7 @@ class SearchService:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Fetch document
             doc_response = await client.get(
-                f"{settings.document_store_url}/api/document-store/documents/{document_id}",
+                f"{settings.document_store_url}/api/document-store/documents/{_seg(document_id)}",
                 headers={"X-API-Key": settings.api_key}
             )
             _raise_unless_answered(doc_response)
@@ -1487,7 +1488,7 @@ class SearchService:
             template_id = doc.get("template_id")
             if template_id:
                 tpl_response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates/{template_id}",
+                    f"{settings.template_store_url}/api/template-store/templates/{_seg(template_id)}",
                     headers={"X-API-Key": settings.api_key}
                 )
                 _raise_unless_answered(tpl_response)
@@ -1540,7 +1541,7 @@ class SearchService:
                 # Validate terms via Def-Store
                 for term_id in term_ids:
                     term_response = await client.get(
-                        f"{settings.def_store_url}/api/def-store/terms/{term_id}",
+                        f"{settings.def_store_url}/api/def-store/terms/{_seg(term_id)}",
                         headers={"X-API-Key": settings.api_key}
                     )
                     _raise_unless_answered(term_response)
@@ -1610,7 +1611,7 @@ class SearchService:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Fetch template
             tpl_response = await client.get(
-                f"{settings.template_store_url}/api/template-store/templates/{template_id}",
+                f"{settings.template_store_url}/api/template-store/templates/{_seg(template_id)}",
                 headers={"X-API-Key": settings.api_key}
             )
             _raise_unless_answered(tpl_response)
@@ -1775,7 +1776,7 @@ class SearchService:
         """Get terminology details (terminologies don't have outgoing references)."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                f"{settings.def_store_url}/api/def-store/terminologies/{terminology_id}",
+                f"{settings.def_store_url}/api/def-store/terminologies/{_seg(terminology_id)}",
                 headers={"X-API-Key": settings.api_key}
             )
             _raise_unless_answered(response)
@@ -1809,7 +1810,7 @@ class SearchService:
         """Get term details and its terminology reference."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                f"{settings.def_store_url}/api/def-store/terms/{term_id}",
+                f"{settings.def_store_url}/api/def-store/terms/{_seg(term_id)}",
                 headers={"X-API-Key": settings.api_key}
             )
             _raise_unless_answered(response)
@@ -1827,7 +1828,7 @@ class SearchService:
             terminology_id = term.get("terminology_id")
             if terminology_id:
                 term_response = await client.get(
-                    f"{settings.def_store_url}/api/def-store/terminologies/{terminology_id}",
+                    f"{settings.def_store_url}/api/def-store/terminologies/{_seg(terminology_id)}",
                     headers={"X-API-Key": settings.api_key}
                 )
                 _raise_unless_answered(term_response)
@@ -1981,7 +1982,7 @@ class SearchService:
         """Get file details (files don't have outgoing references to other entities)."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                f"{settings.document_store_url}/api/document-store/files/{file_id}",
+                f"{settings.document_store_url}/api/document-store/files/{_seg(file_id)}",
                 headers={"X-API-Key": settings.api_key}
             )
 
@@ -2027,7 +2028,7 @@ class SearchService:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Get file details
             file_response = await client.get(
-                f"{settings.document_store_url}/api/document-store/files/{file_id}",
+                f"{settings.document_store_url}/api/document-store/files/{_seg(file_id)}",
                 headers={"X-API-Key": settings.api_key}
             )
 
@@ -2050,7 +2051,7 @@ class SearchService:
 
             # Query the file→documents endpoint
             docs_response = await client.get(
-                f"{settings.document_store_url}/api/document-store/files/{file_id}/documents",
+                f"{settings.document_store_url}/api/document-store/files/{_seg(file_id)}/documents",
                 params={"page_size": limit},
                 headers={"X-API-Key": settings.api_key}
             )
@@ -2426,8 +2427,8 @@ class UpstreamError(RuntimeError):
 
 
 def _seg(identifier: str) -> str:
-    """An identifier as one URL path segment."""
-    return quote(identifier, safe=":")
+    """An identifier as one URL path segment (url_path.seg)."""
+    return seg(identifier)
 
 
 def _raise_unless_answered(response: httpx.Response) -> None:
