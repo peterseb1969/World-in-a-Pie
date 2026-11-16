@@ -308,6 +308,7 @@ async def test_a_pinned_write_whose_identity_is_a_live_document_is_refused(
     assert result["details"]["rule"] == "document_id_mismatch"
     assert result["details"]["resolved_document_id"] == live["document_id"]
     assert f"this identity is document '{live['document_id']}'" in result["error"]
+    assert "A pinned write keeps its document_id" in result["error"]
     rows = await _rows(live["document_id"])
     assert [(r.version, r.status) for r in rows] == [(1, DocumentStatus.ACTIVE)]
     assert await Document.find({"document_id": stray_id}).count() == 0
@@ -334,12 +335,45 @@ async def test_a_document_id_the_identity_does_not_name_is_refused(
     assert result["status"] == "error", result
     assert result["error_code"] == "invalid_request"
     assert result["details"]["rule"] == "document_id_mismatch"
+    # The identity has no document yet, so pinning a version would make the
+    # caller's id stick: the hint may offer it.
+    assert "no document has this identity yet" in result["error"]
+    assert "or pass version as well for a restore" in result["error"]
     assert await Document.find({"data.national_id": national_id}).count() == 0
     # The entry minted for the new identity is released, not left behind
     # (the bulk case's second, valid item keeps its own).
     assert await RegistryEntry.find(
         {"entity_type": "documents"}
     ).count() == entries_before + entries_extra
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bulk", [False, True])
+async def test_an_unpinned_mismatch_on_a_living_identity_does_not_offer_a_version(
+    client, auth_headers, bulk,
+):
+    """Naming another document_id on an identity that already has a live
+    document cannot be repaired by adding a version: a pinned write keeps its
+    document_id, so the same item with one is refused again. The refusal says
+    only what works — leave the identity to decide."""
+    national_id = "11440011" + ("2" if bulk else "1")
+    live = (await _post(client, auth_headers, [_item(_person(national_id))]))[0]
+    stray_id = str(uuid.uuid4())
+    items = [_item(_person(national_id, "Dee"), document_id=stray_id)]
+    if bulk:
+        items.append(_item(_person("114400119")))
+    result = (await _post(client, auth_headers, items))[0]
+
+    assert result["status"] == "error", result
+    assert result["details"]["rule"] == "document_id_mismatch"
+    assert result["details"]["resolved_document_id"] == live["document_id"]
+    assert f"this identity is document '{live['document_id']}'" in result["error"]
+    assert "Omit document_id to let the identity decide." in result["error"]
+    assert "version" not in result["error"]
+    assert [(r.version, r.status) for r in await _rows(live["document_id"])] == [
+        (1, DocumentStatus.ACTIVE)
+    ]
+    assert await Document.find({"document_id": stray_id}).count() == 0
 
 
 @pytest.mark.asyncio

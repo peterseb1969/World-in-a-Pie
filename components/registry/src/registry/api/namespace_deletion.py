@@ -142,9 +142,12 @@ async def deletion_status(
     Platform admins only — the callers who can start a deletion. Anyone else
     gets 404, as for a namespace with no journal: the journal lists where the
     namespace's data lived and what other namespaces referenced in it. Admin
-    on the namespace is not enough, and could not be: while the deletion runs
-    the namespace is locked, which closes it to everyone, and once it is
-    deleted no grant on it remains.
+    on the namespace is not enough, and during the deletion it could not be:
+    the namespace is locked, which closes it to everyone. Afterwards a grant
+    can exist again — a completed journal does not hold the prefix, so the
+    name can be created and administered — and that admin is not admitted
+    either: the journal describes the earlier namespace that held the name,
+    not the one standing under it now.
     """
     not_found = HTTPException(404, f"No deletion journal found for namespace '{prefix}'")
     if not identity.has_any_group(get_auth_config().admin_groups):

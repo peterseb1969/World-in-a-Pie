@@ -434,8 +434,9 @@ def _document_id_mismatch(
     the Registry for that exact id. The Registry answers with another
     document when the identity already belongs to one; writing the pinned
     version under that document would put a second active row beside its
-    live head and release the head's file references. So it is refused the
-    same way. Returns None when there is nothing to refuse.
+    live head — and on the bulk path, whose successor write releases the
+    version it replaces, also release the head's file references. So it is
+    refused the same way. Returns None when there is nothing to refuse.
     """
     if not request.document_id or resolved_id == request.document_id:
         return None
@@ -443,14 +444,23 @@ def _document_id_mismatch(
         "no document has this identity yet" if is_new
         else f"this identity is document '{resolved_id}'"
     )
-    advice = (
-        "A pinned write keeps its document_id, so it cannot land on another "
-        "document: restore into a namespace that does not hold this identity, "
-        "or omit document_id and version to write a new version of it."
-        if request.version is not None
-        else "Omit document_id to let the identity decide, or pass version as "
-        "well for a restore."
-    )
+    if request.version is not None:
+        advice = (
+            "A pinned write keeps its document_id, so it cannot land on another "
+            "document: restore into a namespace that does not hold this identity, "
+            "or omit document_id and version to write a new version of it."
+        )
+    elif is_new:
+        # Pinning can still make the caller's id stick here: the identity has
+        # no document, and the entry minted for it above is released.
+        advice = (
+            "Omit document_id to let the identity decide, or pass version as "
+            "well for a restore."
+        )
+    else:
+        # Adding a version would only meet the pinned refusal above, so the
+        # identity deciding is all that is offered.
+        advice = "Omit document_id to let the identity decide."
     return {
         "error": (
             f"document_id '{request.document_id}' is not the document this "

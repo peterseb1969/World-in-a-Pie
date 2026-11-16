@@ -9,8 +9,9 @@ cases: [1270]
   belongs to another, live document is refused** with
   `invalid_request` / `details.rule: "document_id_mismatch"`, naming that
   document. It used to be written as a pinned version of the live document,
-  beside its active head: two active rows, and the head's file references
-  released. Single and bulk writes alike.
+  beside its active head: two active rows, on single and bulk writes alike,
+  and on bulk writes the head's file references released as well (the
+  single-item path never released the version it replaced).
 - **`PATCH /api/registry/api-keys/{name}` with `namespaces`** gives each
   namespace it adds a read grant and revokes the grant on each it drops, as
   widening and narrowing one namespace at a time do. It used to change the
