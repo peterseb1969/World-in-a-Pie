@@ -28,9 +28,16 @@ Scope (v1, per CASE-353):
          Checked against every discovered app; an install checks only the
          enabled ones, so this is the stricter of the two.
 
-  Not answerable here, and named in the CLI's output: namespace
-  reservations and OIDC client-id collisions, which depend on the other
-  apps an install enables.
+  Not answered here, and named in the CLI's output: the install's rules
+  that depend on what it enables or how it is configured. Against the other
+  apps it enables: namespace reservations and OIDC client-id collisions.
+  Against what it runs: a required env var's from_component target must be
+  enabled. Against its settings: an oidc_client needs auth mode oidc or
+  hybrid, privileged_key needs the operator's grant, a short-name image
+  needs a registry, every from_spec must name a value the spec context
+  provides, and its own key and secret names must not collide with the
+  app's. The install's validation (spec/validators.py, validate_all) is the
+  complete list.
 
 Explicitly out of scope (v1):
 

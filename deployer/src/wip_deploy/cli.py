@@ -2412,9 +2412,12 @@ def validate_manifest_cmd(
          names its origin). Any reference that doesn't resolve is flagged
          with the list of valid alternatives.
 
-    Not checked here, because they depend on the other apps an install
-    enables: namespace reservations and OIDC client-id collisions. Out of
-    scope: build context, whether a secret exists, live cluster state.
+    Not checked here, because they depend on the install: namespace
+    reservations and OIDC client-id collisions (against the other apps it
+    enables), a required env var's from_component target being enabled,
+    an oidc_client needing auth mode oidc or hybrid, privileged_key needing
+    the operator's grant, and the install's other rules. Out of scope:
+    build context, whether a secret exists, live cluster state.
 
     Exit codes:
       0  Manifest passes schema + reference validation.
@@ -2503,8 +2506,11 @@ def validate_manifest_cmd(
         )
     )
     typer.echo(
-        "  Checked at install, not here: namespace reservations and OIDC "
-        "client ids against the other apps the install enables."
+        "  Checked at install, not here: the rules that depend on the install, "
+        "among them namespace reservations and OIDC client ids against the "
+        "other apps it enables, that a required env var's from_component "
+        "target is enabled, that an oidc_client has auth mode oidc or hybrid, "
+        "and that privileged_key has the operator's grant."
     )
 
 

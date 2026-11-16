@@ -92,4 +92,8 @@ def test_a_pass_names_the_checks_that_need_an_install(tmp_path: Path) -> None:
     path = _write_manifest(tmp_path / "wip-app.yaml", _valid_manifest_body("solo-app"))
     r = runner.invoke(cli_app, ["validate-manifest", str(path), "--repo-root", str(REPO_ROOT)])
     assert r.exit_code == 0, r.output
-    assert "Checked at install, not here: namespace reservations and OIDC" in r.output
+    out = " ".join(r.output.split())
+    assert "Checked at install, not here: the rules that depend on the install" in out
+    for rule in ("namespace reservations", "from_component target is enabled",
+                 "auth mode oidc or hybrid", "privileged_key"):
+        assert rule in out
