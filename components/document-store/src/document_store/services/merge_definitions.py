@@ -514,7 +514,8 @@ def _name_additions(
     """Per target terminology id, the (bearer, text) pairs this merge adds:
     every text of each active term it adds (bearer ``new:<value>``), and
     each name it adds to an existing term (bearer: that term's id). A term
-    the archive retired bears no name def-store resolves, so it adds none."""
+    the archive retired bears no name def-store resolves, so it adds none,
+    to a new term or an existing one (_extend_names)."""
     additions: dict[str, list[tuple[str, str]]] = {}  # terminology -> (bearer, text)
     for row in plan.to_add["terms"]:
         if not _is_active(row):
@@ -591,9 +592,9 @@ def _unique_names_broken(terminology_value: str, clashes: list[str]) -> Incompat
         entity_type="terminologies",
         name=terminology_value,
         reason=(
-            "the target's terminology has unique_names, and the terms "
-            "and names this merge adds would give a name to more than "
-            f"one term ({', '.join(clashes[:10])}"
+            f"the terminology these terms land in ({terminology_value}) has "
+            "unique_names, and the terms and names this merge adds would "
+            f"give a name to more than one term ({', '.join(clashes[:10])}"
             f"{' …' if len(clashes) > 10 else ''})"
         ),
         detail={"unique_names": {"name_collisions": clashes}},
@@ -944,14 +945,20 @@ class DefinitionsPlanner:
 
         An added name loses ``preferred`` where the target already prefers a
         name of the same type and language, since a group has at most one.
-        A target term that is not active gains none: its names resolve
-        nowhere, and added they would clash under unique_names the day it is
-        revived. Its names stand and the difference is reported, as without
+        Only an active term on both sides adds names. A target term that is
+        not active gains none: its names resolve nowhere, and added they
+        would clash under unique_names the day it is revived. A term the
+        archive retired gives none: the source no longer resolves them, and
+        the target's live term would gain a retired name. Either way the
+        target's names stand and the difference is reported, as without
         extend_terminologies.
         """
         held = _name_keys(target)
         missing = [n for n in _names(archive) if _name_key(n) not in held]
-        if not missing or not self._extend_terminologies or not _is_active(target):
+        if (
+            not missing or not self._extend_terminologies
+            or not _is_active(target) or not _is_active(archive)
+        ):
             return cosmetic, []
         added = _names_to_add(missing, target)
         plan.extend_names.append({
@@ -1003,9 +1010,10 @@ class DefinitionsPlanner:
         self, plan: DefinitionsPlan, terminology_ids: list[str]
     ) -> dict[str, dict[str, Any]]:
         """The unique_names / case_sensitive settings of these terminologies,
-        by id: the archive's for one this merge adds, else the target's. The
-        target's are read by id alone: an externally mapped terminology can
-        live outside the namespace merged into."""
+        by id: the archive's for one this merge adds, else the target's. Read
+        in the namespace merged into first, which the (namespace,
+        terminology_id) index serves; only ids not found there (an externally
+        mapped terminology in another namespace) are read by id alone."""
         settings = {
             str(row.get("terminology_id")): row
             for row in plan.to_add["terminologies"]
@@ -1014,12 +1022,17 @@ class DefinitionsPlanner:
         if not stored:
             return settings
         db_name, coll_name = self._collection_map["terminologies"]
-        async for row in self._mongo[db_name][coll_name].find(
-            {"terminology_id": {"$in": stored}},
-            {"terminology_id": 1, "namespace": 1, "value": 1, "unique_names": 1,
-             "case_sensitive": 1},
+        coll = self._mongo[db_name][coll_name]
+        fields = {"terminology_id": 1, "namespace": 1, "value": 1, "unique_names": 1,
+                  "case_sensitive": 1}
+        async for row in coll.find(
+            {"namespace": self._namespace, "terminology_id": {"$in": stored}}, fields,
         ):
             settings[str(row["terminology_id"])] = row
+        elsewhere = [t for t in stored if t not in settings]
+        if elsewhere:
+            async for row in coll.find({"terminology_id": {"$in": elsewhere}}, fields):
+                settings[str(row["terminology_id"])] = row
         return settings
 
     async def _active_terms(
