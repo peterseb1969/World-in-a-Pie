@@ -30,10 +30,12 @@ same three values, computed by reporting-sync and recorded as given:
 
 - `verified` — every check ran and found nothing missing.
 - `failed` — a check proved rows or tables missing. `reasons` names each one.
-- `unverified` — nothing could be settled: reporting-sync or template-store did
-  not answer, the wait gave out while the sync was still running, there was
-  nothing to check (documents skipped), or the run did not verify at all (a
-  fresh restore, whose sync starts when the job completes).
+- `unverified` — nothing could be settled: reporting-sync, template-store or
+  document-store did not answer (a namespace whose shared templates were never
+  swept says so as `shared_templates_unchecked`), the wait gave out while the
+  sync was still running, there was nothing to check (documents skipped), or the
+  run did not verify at all (a fresh restore, whose sync starts when the job
+  completes).
 
 `incomplete`, `unavailable` and `not_checked` are gone, and the per-namespace
 `gaps` list is now `reasons`, carrying reporting-sync's findings with a

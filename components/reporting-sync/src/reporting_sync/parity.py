@@ -46,7 +46,7 @@ Honest limits, by design:
 """
 
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 import asyncpg
 import httpx
@@ -536,33 +536,47 @@ async def _derived_table_parity(
     return rows
 
 
+class _Sweep(NamedTuple):
+    """What the template listing reached: the templates to check, and why the
+    shared ones were not.
+
+    ``templates`` is None when the namespace's own listing failed — nothing
+    could be checked. ``shared_sweep_error`` names why the shared-template
+    sweep did not run while the namespace's own templates still were: a
+    sweep that did not run is a check that could not run, never an answer of
+    "this namespace uses no shared templates"."""
+
+    templates: list[dict[str, Any]] | None
+    shared_sweep_error: str | None = None
+
+
 async def _templates_to_check(
     namespace: str, result: NamespaceParityResult,
-) -> list[dict[str, Any]] | None:
+) -> _Sweep:
     """The namespace's own templates and the shared ones its documents use;
-    None when its own cannot be listed (recorded on ``result``).
+    no templates when its own cannot be listed (recorded on ``result``).
 
     The shared templates' sweep can fail on its own: the namespace's own
-    templates are still checked, and the failure is reported on ``result``,
-    never read as "no shared templates". A shared template that cannot be
-    read is a row with the reason."""
+    templates are still checked, and the failure is reported on ``result`` and
+    in the sweep, never read as "no shared templates". A shared template that
+    cannot be read is a row with the reason."""
     try:
         templates = await _fetch_namespace_templates(namespace)
     except httpx.HTTPError as e:
         result.bookkeeping_error = (result.bookkeeping_error or "") + (
             f" template-store unavailable: {e}"
         )
-        return None
+        return _Sweep(None)
     try:
         foreign, unreadable = await _fetch_foreign_templates(namespace, templates)
     except httpx.HTTPError as e:
         result.bookkeeping_error = (result.bookkeeping_error or "") + (
             f" shared templates not checked (document-store unavailable: {e})"
         )
-        return templates
+        return _Sweep(templates, shared_sweep_error=str(e))
     result.templates.extend(unreadable)
     result.structural_issues += len(unreadable)
-    return templates + foreign
+    return _Sweep(templates + foreign)
 
 
 async def check_namespace_parity(
@@ -583,14 +597,14 @@ async def check_namespace_parity(
     result = await _schema_presence(pool, namespace, schema)
     await _check_bookkeeping(pool, namespace, result)
 
-    templates = await _templates_to_check(namespace, result)
-    if templates is None:
+    sweep = await _templates_to_check(namespace, result)
+    if sweep.templates is None:
         result.ok = False
         return _set_verdict(
             result, sync_running=sync_running, templates_unreadable=True,
         )
 
-    for template in templates:
+    for template in sweep.templates:
         config = ReportingConfig(**(template.get("reporting") or {}))
         if not config.syncs:
             result.templates_skipped_sync_disabled += 1
@@ -609,7 +623,9 @@ async def check_namespace_parity(
     await _derived_parity(pool, sm, schema, namespace, result, include_counts=include_counts)
     result.derived_issues += sum(1 for t in result.templates if not t.derived_ok)
     result.ok = _all_clear(result)
-    return _set_verdict(result, sync_running=sync_running)
+    return _set_verdict(
+        result, sync_running=sync_running, shared_sweep_error=sweep.shared_sweep_error,
+    )
 
 
 def _set_verdict(
@@ -617,20 +633,22 @@ def _set_verdict(
     *,
     sync_running: bool,
     templates_unreadable: bool = False,
+    shared_sweep_error: str | None = None,
 ) -> NamespaceParityResult:
     """The one verdict, with every finding that stands behind it.
 
     ``failed`` only when a check PROVED something missing, and only once the
     check can be trusted: a namespace whose sync has not landed, whose template
-    list could not be read, or whose bookkeeping is unusable is
-    ``unverified`` — a gap seen mid-sync is provisional, and one read through
-    unusable bookkeeping proves nothing. A check that could not run is
-    ``unverified`` too, and so is a namespace with nothing to check: a caller
-    must never read "nobody looked" as clean. Under whatever verdict, every
-    finding is listed, so none is hidden by its neighbour.
+    list could not be read, whose shared templates were never swept, or whose
+    bookkeeping is unusable is ``unverified`` — a gap seen mid-sync is
+    provisional, and one read through unusable bookkeeping proves nothing. A
+    check that could not run is ``unverified`` too, and so is a namespace with
+    nothing to check: a caller must never read "nobody looked" as clean. Under
+    whatever verdict, every finding is listed, so none is hidden by its
+    neighbour.
     """
     proven, blocked = _findings(result)
-    blockers = _blockers(result, sync_running, templates_unreadable)
+    blockers = _blockers(result, sync_running, templates_unreadable, shared_sweep_error)
     if blockers:
         result.verdict, result.reasons = UNVERIFIED, blockers + proven + blocked
     elif proven:
@@ -671,7 +689,10 @@ def _view_findings(result: NamespaceParityResult) -> list[ParityReason]:
 
 
 def _blockers(
-    result: NamespaceParityResult, sync_running: bool, templates_unreadable: bool,
+    result: NamespaceParityResult,
+    sync_running: bool,
+    templates_unreadable: bool,
+    shared_sweep_error: str | None = None,
 ) -> list[ParityReason]:
     """Why no verdict is possible here: a store did not answer, the sync has
     not landed, or there was nothing to check."""
@@ -683,6 +704,18 @@ def _blockers(
                 f"the namespace's templates could not be listed"
                 f"{result.bookkeeping_error or ' — the template store did not answer'}"
                 ", so none of its tables were checked"
+            ),
+        ))
+    if shared_sweep_error:
+        # The namespace's own tables were checked and look fine; what is
+        # unknown is the shared templates its documents use, whose tables live
+        # in this schema and were never looked at.
+        blockers.append(ParityReason(
+            kind="namespace", name=result.namespace, issue="shared_templates_unchecked",
+            detail=(
+                "the shared templates its documents use could not be listed "
+                f"(document-store unavailable: {shared_sweep_error}), so their tables "
+                "in this namespace were not checked"
             ),
         ))
     if not result.bookkeeping_tables_ok:

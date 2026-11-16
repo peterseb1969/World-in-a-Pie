@@ -202,6 +202,25 @@ class TestUnverified:
         assert [r.issue for r in reasons] == ["check_failed"]
         assert reasons[0].name == "T2"
 
+    def test_a_shared_sweep_that_did_not_run_is_unverified(self):
+        """The namespace's own rows came back complete and the counters are
+        zero, because the shared templates were never listed at all — which is
+        not the same as the namespace using none."""
+        result = _result()
+        result.bookkeeping_error = (
+            " shared templates not checked (document-store unavailable: 503)"
+        )
+        verdict, reasons = _verdict(result, shared_sweep_error="503 Service Unavailable")
+        assert verdict == UNVERIFIED
+        assert reasons[0].issue == "shared_templates_unchecked"
+        assert reasons[0].name == NS
+        assert "shared templates" in reasons[0].detail
+        assert "503" in reasons[0].detail
+
+    def test_a_shared_sweep_that_ran_leaves_a_clean_namespace_verified(self):
+        verdict, reasons = _verdict(_result(), shared_sweep_error=None)
+        assert (verdict, reasons) == (VERIFIED, [])
+
 
 class TestFailedWinsOverUnverified:
     def test_a_proven_gap_is_reported_even_when_another_check_could_not_run(self):
@@ -310,6 +329,33 @@ async def test_a_sync_still_running_holds_the_verdict_open(pg_pool):
         )
     assert result.verdict == UNVERIFIED
     assert "sync_running" in [r.issue for r in result.reasons]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_shared_sweep_that_never_ran_is_not_a_verified_verdict(pg_pool):
+    """The namespace's own table is built and its rows complete; only the
+    facet listing of the shared templates fails. Every counter reads clean, so
+    only the verdict can say that part was never looked at."""
+    from reporting_sync.main import init_postgres_schema
+    from reporting_sync.schema_manager import SchemaManager
+
+    await init_postgres_schema(pg_pool)
+    refused = httpx.HTTPStatusError(
+        "503", request=httpx.Request("GET", "http://x"), response=httpx.Response(503),
+    )
+    with _patch_http([TEMPLATE], doc_total=0) as stack:
+        await SchemaManager(pg_pool).ensure_table_for_template(NS, TEMPLATE)
+        stack.enter_context(patch(
+            "reporting_sync.parity._fetch_foreign_templates",
+            new=AsyncMock(side_effect=refused),
+        ))
+        result = await check_namespace_parity(pg_pool, NS, include_counts=True)
+    assert [t.template_value for t in result.templates] == ["VERDICT_T"]
+    assert result.structural_issues == 0 and result.count_mismatches == 0
+    assert result.ok is False
+    assert result.verdict == UNVERIFIED
+    assert [r.issue for r in result.reasons] == ["shared_templates_unchecked"]
 
 
 # ---------------------------------------------------------------------------
