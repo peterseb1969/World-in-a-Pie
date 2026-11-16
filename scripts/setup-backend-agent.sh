@@ -365,8 +365,10 @@ if ! "$VENV_PYTHON" -c "import pytest, ruff, mypy, build, radon" 2>/dev/null \
     else
         echo ""
         echo "   WARNING: test tool install failed — scripts/wip-test.sh will not run,"
-        echo "   and step 4b leaves the pre-commit complexity ratchet disabled (it"
-        echo "   needs radon; enabling it without radon would refuse every commit)."
+        echo "   and step 4b does not switch on the pre-commit complexity ratchet (it"
+        echo "   needs radon; enabling it without radon would refuse every commit). If an"
+        echo "   earlier run switched it on, every commit is refused until radon is"
+        echo "   installed; step 4b says which of the two it found."
         echo "   Fix manually: .venv/bin/pip install pytest ruff mypy build radon==6.0.1"
         echo ""
     fi
@@ -651,25 +653,39 @@ echo "   Written: CLAUDE.md (tier $($TIER3 && echo 3 || echo 2))"
 #
 # Three things keep it from being switched on blindly. radon: the hook needs it
 # in .venv and refuses every commit without it, so a run that skipped the
-# install above (WIP_SKIP_VENV_INSTALL=1) or saw it fail leaves the hook off —
-# enabling it there would block every commit for the rest of this clone's life.
-# The hook file: nothing to enable if it is absent or not executable. And the
-# operator's own hooks: a hooks path someone else set is left alone and
-# reported, and so are hooks sitting in .git/hooks, whether a regular file or a
-# link to a script elsewhere — setting core.hooksPath stops git looking there at
-# all, which would quietly retire them.
+# install above (WIP_SKIP_VENV_INSTALL=1) or saw it fail does not switch it on —
+# enabling it there would block every commit for the rest of this clone's life —
+# and says so in stronger words when an earlier run already set the key and the
+# hook is refusing commits right now. The hook file: nothing to enable if it is
+# absent or not executable. And the operator's own hooks: a hooks path someone
+# else set is left alone and reported, and so are the hooks sitting in .git/hooks
+# that git would run — one of git's hook names, executable, whether a regular
+# file or a link to a script elsewhere — because setting core.hooksPath stops git
+# looking there at all, which would quietly retire them. A re-run with the key
+# already set warns of such hooks added since, which git no longer runs.
 if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     RATCHET_HOOK="$WIP_ROOT/scripts/git-hooks/pre-commit"
+    HOOKS_PATH="$(git -C "$WIP_ROOT" config --get core.hooksPath || true)"
     if ! "$VENV_PYTHON" -c "import radon" >/dev/null 2>&1; then
-        echo "4b. Git hooks: radon is not in .venv — the complexity ratchet hook is"
-        echo "    NOT enabled (enabling it would refuse every commit). Install it with"
-        echo "    .venv/bin/pip install radon==6.0.1 and re-run, or set"
-        echo "    core.hooksPath yourself; CI's lint job runs the same check anyway."
+        if [ "$HOOKS_PATH" = "scripts/git-hooks" ]; then
+            # An earlier run set the key; the hook is installed and refuses every
+            # commit on a radon-less interpreter, so this is the blocked state,
+            # not the disabled one.
+            echo "4b. Git hooks: radon is not in .venv, but core.hooksPath is already at"
+            echo "    scripts/git-hooks — an earlier run set it, so the complexity ratchet"
+            echo "    hook IS active and refuses every commit until radon is back. Install"
+            echo "    it with .venv/bin/pip install radon==6.0.1, or turn the hook off with"
+            echo "    git config --unset core.hooksPath."
+        else
+            echo "4b. Git hooks: radon is not in .venv — the complexity ratchet hook is"
+            echo "    NOT enabled (enabling it would refuse every commit). Install it with"
+            echo "    .venv/bin/pip install radon==6.0.1 and re-run, or set"
+            echo "    core.hooksPath yourself; CI's lint job runs the same check anyway."
+        fi
     elif [ ! -f "$RATCHET_HOOK" ] || [ ! -x "$RATCHET_HOOK" ]; then
         echo "4b. Git hooks: scripts/git-hooks/pre-commit is missing or not"
         echo "    executable — core.hooksPath left unset."
     else
-        HOOKS_PATH="$(git -C "$WIP_ROOT" config --get core.hooksPath || true)"
         # The repository's own hooks directory, not --git-path hooks: that one
         # follows core.hooksPath once it is set, and would list the ratchet
         # hook instead of what sits in .git/hooks.
@@ -680,12 +696,30 @@ if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         esac
         # -H follows the hooks directory itself when that is a link; -type l
         # catches a hook that links to a script elsewhere, which git runs the
-        # same as a file sitting there. Git runs only an executable hook, so a
-        # file that is not (a copied backup, a README) is no hook; [ -x ]
+        # same as a file sitting there. Git runs a hook only under one of its own
+        # names and only when it is executable, so a backup left next to the real
+        # hooks (pre-commit.disabled, commit-msg.bak — mv and cp -p keep the mode
+        # bit) or a non-executable file is no hook git would retire. [ -x ]
         # follows a link to its target's mode.
         OWN_HOOKS=""
         while IFS= read -r own; do
-            [ -n "$own" ] && [ -x "$own" ] && OWN_HOOKS="${OWN_HOOKS:+$OWN_HOOKS
+            [ -n "$own" ] || continue
+            # The names githooks(5) lists as of git 2.47: git runs a file in the
+            # hooks directory only under one of them. A hook git introduces later
+            # reads as no hook here until the list grows, so keep it in step with
+            # the man page.
+            case "${own##*/}" in
+                applypatch-msg|pre-applypatch|post-applypatch|pre-commit|\
+                pre-merge-commit|prepare-commit-msg|commit-msg|post-commit|\
+                pre-rebase|post-checkout|post-merge|pre-push|pre-receive|\
+                update|proc-receive|post-receive|post-update|\
+                reference-transaction|push-to-checkout|pre-auto-gc|\
+                post-rewrite|sendemail-validate|fsmonitor-watchman|\
+                p4-changelist|p4-prepare-changelist|p4-post-changelist|\
+                p4-pre-submit|post-index-change) ;;
+                *) continue ;;
+            esac
+            [ -x "$own" ] && OWN_HOOKS="${OWN_HOOKS:+$OWN_HOOKS
 }$own"
         done <<< "$(find -H "$GIT_HOOKS_DIR" -maxdepth 1 \
             \( -type f -o -type l \) ! -name '*.sample' 2>/dev/null | sort || true)"
