@@ -535,8 +535,7 @@ curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
       "name": "Acme Corp",
       "email": "billing@acme.com",
       "country": "Germany"
-    },
-    "created_by": "admin"
+    }
   }]' | jq .
 
 # Response:

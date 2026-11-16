@@ -63,6 +63,7 @@ function refuseErrorBody<T>(body: T): T {
 
 /** Options of deleteDocument: `version` and `force` only with `hardDelete: true`. */
 export type DeleteDocumentOptions = {
+  /** A note on who deleted it, kept as the retired row's `actor_note`; `updated_by` is the authenticated caller. */
   updatedBy?: string
   /** Resolves a synonym id; required for a key that can read several namespaces. */
   namespace?: string

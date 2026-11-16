@@ -130,14 +130,23 @@ class Document(BeanieDocument):
     )
     created_by: str | None = Field(
         default=None,
-        description="User or system that created this document"
+        description="The authenticated caller who wrote this version"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
         default=None,
-        description="User or system that last updated this document"
+        description="The authenticated caller who last changed this row"
+    )
+    actor_note: str | None = Field(
+        default=None,
+        description=(
+            "The caller's own text on who acted, as sent with the write that "
+            "made this version (created_by) or the delete that retired it "
+            "(updated_by); none when that write sent none. Never the actor: "
+            "created_by and updated_by are the authenticated caller"
+        ),
     )
 
     # Metadata

@@ -1676,6 +1676,7 @@ class DocumentService:
                 actor=actor,
                 now=now,
                 pinned=version_override is not None,
+                actor_note=request.created_by,
             )
         except DocumentStoreError as e:
             return None, error_fields(e)
@@ -1811,8 +1812,11 @@ class DocumentService:
         actor: str,
         now: datetime,
         entity_created_at: datetime | None = None,
+        actor_note: str | None = None,
     ) -> "Document":
-        """A new active document row, as every write path builds it."""
+        """A new active document row, as every write path builds it.
+        ``actor_note`` is the text the caller sent with the write (a create's
+        created_by); a write that sends none leaves none."""
         return Document(
             namespace=namespace,
             document_id=document_id,
@@ -1830,6 +1834,7 @@ class DocumentService:
             created_by=actor,
             updated_at=now,
             updated_by=actor,
+            actor_note=actor_note,
             metadata=metadata,
         )
 
@@ -1987,6 +1992,7 @@ class DocumentService:
         max_retries: int = 3,
         entity_created_at: datetime | None = None,
         pinned: bool = False,
+        actor_note: str | None = None,
         retired: dict[Any, tuple[datetime | None, str | None]] | None = None,
     ) -> "Document":
         """Insert a document, retrying on duplicate key errors.
@@ -2036,6 +2042,7 @@ class DocumentService:
                 actor=actor,
                 now=now,
                 entity_created_at=entity_created_at,
+                actor_note=actor_note,
             )
             try:
                 await document.insert()
@@ -2340,6 +2347,7 @@ class DocumentService:
             existing.status = DocumentStatus.ACTIVE
             existing.updated_at = now
             existing.updated_by = actor
+            existing.actor_note = request.created_by
             if await self._write_in_place(existing, read_revision, read_status):
                 break
         else:
@@ -2487,6 +2495,7 @@ class DocumentService:
             # Successor version: keep the entity's original creation time
             # rather than stamping this write as a new creation (CASE-802).
             entity_created_at=existing.created_at,
+            actor_note=request.created_by,
         )
 
     @staticmethod
@@ -3211,7 +3220,7 @@ class DocumentService:
     async def delete_document(
         self,
         document_id: str,
-        deleted_by: str | None = None,  # Deprecated: uses authenticated identity
+        actor_note: str | None = None,
         hard_delete: bool = False,
         version: int | None = None,
         warnings: list[str] | None = None,
@@ -3228,7 +3237,9 @@ class DocumentService:
 
         Args:
             document_id: Document to delete
-            deleted_by: Deprecated - uses authenticated identity
+            actor_note: The caller's text on who deleted it, kept as the
+                retired row's actor_note (none clears it). The actor is the
+                authenticated caller, never this text.
             hard_delete: Permanently remove (requires namespace deletion_mode='full')
             version: Specific version to hard-delete (None = all). Ignored for soft-delete.
             warnings: When given, receives the warnings of a forced hard
@@ -3252,10 +3263,11 @@ class DocumentService:
                 document_id, actor, version=version, warnings=warnings, force=force,
                 deleted_with=deleted_with, broken_references=broken_references,
             )
-        return await self._soft_delete_document(document_id, actor, warnings)
+        return await self._soft_delete_document(document_id, actor, warnings, actor_note)
 
     async def _soft_delete_document(
         self, document_id: str, actor: str, warnings: list[str] | None,
+        actor_note: str | None = None,
     ) -> bool:
         """Retire the document's active version. Idempotent: a document with
         no active version is already deleted, and answers True like the
@@ -3272,7 +3284,7 @@ class DocumentService:
         # record is not written.
         lifecycle_warnings = await self._record_lifecycle(document_id, retired=True, actor=actor)
         try:
-            retired = await self._retire_latest(document, document_id, actor)
+            retired = await self._retire_latest(document, document_id, actor, actor_note)
         except BaseException:
             await undo_entry_lifecycle(
                 get_registry_client(), [document_id], retired=True, actor=actor,
@@ -3301,7 +3313,8 @@ class DocumentService:
         return True
 
     async def _retire_latest(
-        self, document: Document, document_id: str, actor: str, attempts: int = 3,
+        self, document: Document, document_id: str, actor: str,
+        actor_note: str | None = None, attempts: int = 3,
     ) -> Document | None:
         """Retire the document's active version, starting from the one read.
         A successor version written meanwhile leaves that row inactive and a
@@ -3312,7 +3325,7 @@ class DocumentService:
         for _ in range(attempts):
             if current is None:
                 return None
-            retired = await self._retire_row(current, actor)
+            retired = await self._retire_row(current, actor, actor_note)
             if retired is not None:
                 return retired
             current = await Document.find_one(
@@ -3324,7 +3337,9 @@ class DocumentService:
         raise DocumentStoreError(_RETIRED_MEANWHILE, "concurrency_conflict")
 
     @staticmethod
-    async def _retire_row(document: Document, actor: str) -> Document | None:
+    async def _retire_row(
+        document: Document, actor: str, actor_note: str | None = None,
+    ) -> Document | None:
         """Set the row inactive as it is now, not as it was read: only the
         status fields are written, so an in-place write that landed after the
         read keeps its data, and the row returned (what the event and the
@@ -3335,7 +3350,8 @@ class DocumentService:
         raw = await Document.get_motor_collection().find_one_and_update(
             {"_id": document.id, "status": DocumentStatus.ACTIVE.value},
             {"$set": {"status": DocumentStatus.INACTIVE.value,
-                      "updated_at": datetime.now(UTC), "updated_by": actor}},
+                      "updated_at": datetime.now(UTC), "updated_by": actor,
+                      "actor_note": actor_note}},
             return_document=ReturnDocument.AFTER,
         )
         return None if raw is None else Document.model_validate(raw)
@@ -4106,6 +4122,7 @@ class DocumentService:
             actor=actor,
             now=now,
             entity_created_at=existing.created_at if existing is not None else None,
+            actor_note=item.created_by,
         )
         document.id = PydanticObjectId()
         existing_by_doc_id[document_id] = document
@@ -4266,6 +4283,7 @@ class DocumentService:
                     entity_created_at=document.created_at,
                     files_counted=True,
                     retired=retried,
+                    actor_note=document.actor_note,
                 )
             except Exception as exc:
                 fields = error_fields(exc)
@@ -4616,6 +4634,7 @@ class DocumentService:
             # An update carries the entity's creation time forward; a brand-new
             # document (existing is None) gets `now` (CASE-802).
             entity_created_at=existing.created_at if existing is not None else None,
+            actor_note=item.created_by,
             pinned=version_override is not None,
         )
         is_new = document.version == 1
@@ -5511,6 +5530,7 @@ class DocumentService:
                 created_by=doc.created_by,
                 updated_at=doc.updated_at,
                 updated_by=doc.updated_by,
+                actor_note=doc.actor_note,
                 metadata=doc.metadata,
                 is_latest_version=is_latest,
                 latest_version=latest_version,
@@ -5549,6 +5569,7 @@ class DocumentService:
             created_by=document.created_by,
             updated_at=document.updated_at,
             updated_by=document.updated_by,
+            actor_note=document.actor_note,
             metadata=document.metadata,
             is_latest_version=is_latest,
             latest_version=latest_version,
@@ -6295,6 +6316,7 @@ class DocumentService:
         )
         current.updated_at = now
         current.updated_by = actor
+        current.actor_note = None  # a PATCH carries no text on who acted
         if not await self._write_in_place(current, read_revision, read_status):
             if item.if_match is not None:
                 # The caller's token was current at step 3 and is not

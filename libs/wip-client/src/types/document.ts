@@ -53,9 +53,14 @@ export interface Document {
   file_references: Array<Record<string, unknown>>
   status: DocumentStatus
   created_at: string
+  /** The authenticated caller who wrote this version. */
   created_by: string | null
   updated_at: string
+  /** The authenticated caller who last changed this row. */
   updated_by: string | null
+  /** The caller's own note on who acted, sent as `created_by` with the write
+   * that made this version or as `updatedBy` with the delete that retired it. */
+  actor_note?: string | null
   metadata: DocumentMetadata
   is_latest_version?: boolean
   latest_version?: number
@@ -85,6 +90,7 @@ export interface CreateDocumentRequest {
   version?: number
   namespace: string
   data: Record<string, unknown>
+  /** A note on who acted, kept as the version's `actor_note`; `created_by` is the authenticated caller. */
   created_by?: string
   metadata?: Record<string, unknown>
   synonyms?: Array<Record<string, unknown>>

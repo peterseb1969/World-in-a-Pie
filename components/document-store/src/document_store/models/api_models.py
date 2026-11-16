@@ -63,7 +63,7 @@ class DocumentCreateRequest(StrictModel):
     )
     created_by: str | None = Field(
         default=None,
-        description="User or system creating this document"
+        description="A free-text note on who created it, kept as actor_note; created_by is the authenticated caller"
     )
     metadata: dict[str, Any] | None = Field(
         default=None,
@@ -134,6 +134,10 @@ class DocumentResponse(BaseModel):
     created_by: str | None
     updated_at: datetime
     updated_by: str | None
+    actor_note: str | None = Field(
+        default=None,
+        description="The caller's own text on who acted, sent with the write that made this version or the delete that retired it",
+    )
     metadata: DocumentMetadata
 
     # Latest version info - populated when returning document
@@ -559,7 +563,10 @@ class DeleteItem(StrictModel):
     version: int | None = Field(default=None, description="Specific version to hard-delete (default: all versions). Ignored for soft-delete.")
     force: bool = Field(default=False, description="Delete even if referenced: on file deletion, and on document deletion with hard_delete=true (without hard_delete, rejected with error_code=force_unsupported)")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
-    updated_by: str | None = Field(default=None, description="User performing deletion")
+    updated_by: str | None = Field(
+        default=None,
+        description="A free-text note on who deleted it, kept as the retired row's actor_note; updated_by is the authenticated caller",
+    )
 
 
 class ReactivateFileItem(StrictModel):
