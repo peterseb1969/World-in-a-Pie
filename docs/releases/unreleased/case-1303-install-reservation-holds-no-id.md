@@ -26,12 +26,16 @@ and the 409.
   reservation whose namespace does not exist. The next key-file import
   (within seconds of the upgrade) clears the ids such reservations were given
   before.
-- A system backup leaves such a reservation out: it carries no id, and the
-  target's own deployer reserves its names. The archive's shape is
-  unchanged, so a Registry from before this change reads it. An archive that
-  does carry one (`namespace_id: null`, written by develop builds between
-  this change and its fix) is read, and the reservation is skipped
-  (`managed_on_source`).
+- A system backup carries such a reservation with `namespace_id: null`: the name
+  is reserved, and no namespace identity goes with it. A restore skips it
+  (`managed_on_source`): the install that deploys the app reserves its own
+  names, as it re-creates an attachment the source's deployer managed. The
+  prefix is still named in the archive, which is what a mirror reads when it
+  decides what to release; dropping the record instead made a mirror release
+  the target's own reservation of that name. The archive version stays 2:
+  such an archive is read by this version and by the develop builds of
+  2026-11-13, and a Registry older than those requires the field and answers
+  422, so restore one onto a Registry of this change or later.
 - A grant archived without a namespace id (given while no namespace of its
   name existed on the source: a key-file grant, or a key created listing a
   namespace not yet created) is written effective for the namespace that
@@ -49,7 +53,8 @@ the same name does not receive the archive's grants holds, now also for
 grants archived without an id.
 
 **Action:** if you branch on a system restore's skip reasons, handle
-`unrelated_namespace_here`. To restore an app's namespace: delete it, then restore; the
-app can stay installed. Restore before the app re-creates the namespace (its
-bootstrap does on start): a plain restore refuses a namespace that is not
-empty.
+`unrelated_namespace_here` (grants) and `managed_on_source` (reservations an
+app's own install made on the source). To restore an app's namespace: delete it,
+then restore; the app can stay installed. Restore before the app re-creates the
+namespace (its bootstrap does on start): a plain restore refuses a namespace that
+is not empty.
