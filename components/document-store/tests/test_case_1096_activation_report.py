@@ -77,12 +77,15 @@ async def test_a_failing_later_batch_reports_the_earlier_batch_as_live():
 @pytest.mark.asyncio
 async def test_a_duplicate_in_a_batch_counts_the_ones_that_did_activate():
     engine = _engine()
-    body = {"errors": 1, "results": [{"status": "activated"}] * 2 + [{"status": "error", "error": "dup"}]}
+    # An error item carries its code, as the Registry's answer always does.
+    dup = {"status": "error", "error": "dup", "error_code": "already_exists"}
+    body = {"errors": 1, "results": [{"status": "activated"}] * 2 + [dup]}
     client = _client_answering(_Response(200, body))
     with patch("httpx.AsyncClient", client), pytest.raises(RestoreEngineError) as refused:
         await engine._activate_entries("kb-copy", _items(3))
 
     assert "'kb-copy': 2 of 3 active, 1 failed" in str(refused.value)
+    assert "(1 already_exists); 1 could not claim their composite key" in str(refused.value)
     assert refused.value.details["activation"]["kb-copy"] == {"total": 3, "active": 2, "failed": 1}
 
 
