@@ -160,6 +160,50 @@ def test_gate_in_a_short_circuited_assignment_is_reported():
     assert [v["function"] for v in violations] == ["get_children"]
 
 
+@pytest.mark.parametrize("body", [
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def get_thing(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing is None and not await can_read(identity, existing.namespace):
+                raise HTTPException(404, "Thing not found")
+            return await ThingService.export(thing_id)
+    """, id="and-operand"),
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def get_thing(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing is None or not await can_read(identity, existing.namespace):
+                if strict:
+                    raise HTTPException(404, "Thing not found")
+            return await ThingService.export(thing_id)
+    """, id="or-operand-body-falls-through"),
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def get_thing(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing is None or not await can_read(identity, existing.namespace):
+                return await ThingService.export(thing_id)
+            return []
+    """, id="or-operand-body-answers-data"),
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def get_thing(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if not (existing is not None or await can_read(identity, existing.namespace)):
+                raise HTTPException(404, "Thing not found")
+            return await ThingService.export(thing_id)
+    """, id="not-of-or-operand"),
+])
+def test_gate_in_a_later_operand_without_a_certain_exit_is_reported(body: str) -> None:
+    """A gate after the first operand counts only when the test cannot come out
+    false without it and the body always ends the call: with `and`, a falsy
+    first operand skips the gate; a body that can fall through, or that
+    answers data, reaches the answer without it."""
+    violations = _permission_violations(body)
+    assert [v["function"] for v in violations] == ["get_thing"]
+
+
 def test_method_call_returned_before_the_gate_is_reported():
     """`cached.model_dump()` takes no arguments, but emptiness is what a
     constructor is given, not what a method happens to be called on."""
@@ -365,6 +409,41 @@ def test_parent_lookup_that_gates_only_when_it_finds_a_row_is_reported():
                 raise HTTPException(404, "Thing not found")
             return await ThingService.export(thing_id)
     """.replace("{GATE}", GATE), id="miss-answered-then-gate-in-the-test"),
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def ok_or_gate_raises(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing is None or not await can_read(identity, existing.namespace):
+                raise HTTPException(404, "Thing not found")
+            return await ThingService.export(thing_id)
+    """, id="gate-in-or-operand-body-raises"),
+    pytest.param("""
+        @router.get("/{thing_id}/children")
+        async def ok_or_gate_returns_empty(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing is None or not await can_read(identity, existing.namespace):
+                if (miss := await resolution_miss(thing_id)) is not None:
+                    raise miss
+                return []
+            return await ThingService.children_of(thing_id)
+    """, id="gate-in-or-operand-body-returns-empty"),
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def ok_or_gate_else(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if existing is None or not await can_read(identity, existing.namespace):
+                raise HTTPException(404, "Thing not found")
+            else:
+                return await ThingService.export(thing_id)
+    """, id="gate-in-or-operand-answer-in-else"),
+    pytest.param("""
+        @router.get("/{thing_id}")
+        async def ok_not_of_and(thing_id: str, identity: str = Depends(require_api_key)):
+            existing = await Thing.find_one({"thing_id": thing_id})
+            if not (existing is not None and await can_read(identity, existing.namespace)):
+                raise HTTPException(404, "Thing not found")
+            return await ThingService.export(thing_id)
+    """, id="gate-in-not-of-and-operand"),
     pytest.param("""
         @router.post("/{template_id}/validate")
         async def ok_named_miss_answer(template_id: str, identity: str = Depends(require_api_key)):

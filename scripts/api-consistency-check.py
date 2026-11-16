@@ -388,6 +388,47 @@ def _gate_in_expr(expr: ast.expr | None) -> bool:
     return any(_gate_in_expr(child) for child in ast.iter_child_nodes(expr))
 
 
+def _gate_when_false(expr: ast.expr) -> bool:
+    """Whether a test that came out false certainly called a gate on the way.
+
+    `X1 or … or Xn` is false only once every operand ran and was false, so a
+    gate in any of them counts. `X1 and …` may be false through any operand,
+    so only X1 certainly ran. `not X` is false when X is true."""
+    if isinstance(expr, ast.BoolOp):
+        if isinstance(expr.op, ast.Or):
+            return any(_gate_when_false(value) for value in expr.values)
+        return _gate_in_expr(expr.values[0])
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+        return _gate_when_true(expr.operand)
+    return _gate_in_expr(expr)
+
+
+def _gate_when_true(expr: ast.expr) -> bool:
+    """The mirror of `_gate_when_false`: `X1 and … and Xn` is true only once
+    every operand ran, while `X1 or …` may be true through X1 alone."""
+    if isinstance(expr, ast.BoolOp):
+        if isinstance(expr.op, ast.And):
+            return any(_gate_when_true(value) for value in expr.values)
+        return _gate_in_expr(expr.values[0])
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+        return _gate_when_false(expr.operand)
+    return _gate_in_expr(expr)
+
+
+def _never_falls_through(stmts: list) -> bool:
+    """Whether running these statements always ends the call: some statement
+    in them is a `raise`, a `return`, or an `if` whose body and `else` both end
+    it. Unlike `_aborts`, an `if` with no `else` does not count here — its
+    false path goes on to the statements after it."""
+    for st in stmts:
+        if isinstance(st, (ast.Raise, ast.Return)):
+            return True
+        if (isinstance(st, ast.If) and st.orelse
+                and _never_falls_through(st.body) and _never_falls_through(st.orelse)):
+            return True
+    return False
+
+
 def _calls_a_gate(node: ast.AST) -> bool:
     """Whether this subtree calls a recognised gate, looking past the endpoint's
     own statements but not into a helper defined inside it — one of those runs
@@ -549,7 +590,14 @@ def _scan_stmt(st: ast.stmt) -> str:
     if isinstance(st, ast.If):
         if _gate_in_expr(st.test):
             return _GATE
-        return _combine(_scan_seq(st.body), _scan_seq(st.orelse))
+        body = _scan_seq(st.body)
+        # A body that always ends the call leaves only the false path to go
+        # on: if the test cannot come out false without calling a gate, the
+        # `else` and everything after the statement run with it passed.
+        if (body != _ESCAPE and _never_falls_through(st.body)
+                and _gate_when_false(st.test)):
+            return _GATE
+        return _combine(body, _scan_seq(st.orelse))
     if isinstance(st, ast.While):
         if _gate_in_expr(st.test):
             return _GATE

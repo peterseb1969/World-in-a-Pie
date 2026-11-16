@@ -774,11 +774,7 @@ async def validate_template(
     # entry, are treated alike.
     # Both are answered as for an id that names nothing: the resolution 404
     # of this request when ids resolve, else the not_found validation.
-    if existing is None:
-        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
-            raise miss
-        return TemplateService.template_not_found_validation(template_id)
-    if not await can_read(identity, existing.namespace):
+    if existing is None or not await can_read(identity, existing.namespace):
         if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
             raise miss
         return TemplateService.template_not_found_validation(template_id)
@@ -969,16 +965,9 @@ async def get_template_children(template_id: str, namespace: str | None = Query(
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
     # One the caller cannot see, and one with no template behind its Registry
-    # entry, answers as an id that names nothing: the resolution 404 of this
+    # entry, answer as an id that names nothing: the resolution 404 of this
     # request when ids resolve, else an empty list.
-    # One with no template behind its Registry entry, and one the caller
-    # cannot see, answer alike: the resolution 404 of this request when ids
-    # resolve, else an empty list.
-    if existing is None:
-        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
-            raise miss
-        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
-    if not await can_read(identity, existing.namespace):
+    if existing is None or not await can_read(identity, existing.namespace):
         if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
             raise miss
         return TemplateListResponse(items=[], total=0, page=1, page_size=0)
@@ -1003,16 +992,9 @@ async def get_template_descendants(template_id: str, namespace: str | None = Que
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
     # One the caller cannot see, and one with no template behind its Registry
-    # entry, answers as an id that names nothing: the resolution 404 of this
+    # entry, answer as an id that names nothing: the resolution 404 of this
     # request when ids resolve, else an empty list.
-    # One with no template behind its Registry entry, and one the caller
-    # cannot see, answer alike: the resolution 404 of this request when ids
-    # resolve, else an empty list.
-    if existing is None:
-        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
-            raise miss
-        return TemplateListResponse(items=[], total=0, page=1, page_size=0)
-    if not await can_read(identity, existing.namespace):
+    if existing is None or not await can_read(identity, existing.namespace):
         if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
             raise miss
         return TemplateListResponse(items=[], total=0, page=1, page_size=0)

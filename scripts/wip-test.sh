@@ -144,7 +144,7 @@ _component_deps() {
             # there; without it an absent server hung the suite).
             echo "mongo nats"
             ;;
-        mcp-server|wip-archive|deployer|agent-scripts|scaffold|auth-gateway)
+        mcp-server|wip-archive|deployer|agent-scripts|scripts|scaffold|auth-gateway)
             echo ""
             ;;
         *)
@@ -326,7 +326,7 @@ if [[ $# -lt 1 ]]; then
     echo "Components: registry, def-store, template-store, document-store," >&2
     echo "            reporting-sync, ingest-gateway, mcp-server" >&2
     echo "Libraries:  wip-auth, wip-archive" >&2
-    echo "Tools:      deployer, agent-scripts, scaffold, wip-toolkit (or WIP-Toolkit)" >&2
+    echo "Tools:      deployer, agent-scripts, scripts, scaffold, wip-toolkit (or WIP-Toolkit)" >&2
     echo "Special:    all (run everything)" >&2
     exit 1
 fi
@@ -351,7 +351,7 @@ fi
 
 PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway app-edge)
 PYTHON_LIBS=(wip-auth wip-archive)
-PYTHON_TOOLS=(deployer agent-scripts scaffold wip-toolkit)
+PYTHON_TOOLS=(deployer agent-scripts scripts scaffold wip-toolkit)
 
 # One-time-per-component test-dep provisioning, mirroring the CI recipe
 # (.gitea/workflows/test.yaml: component requirements + registry's for
@@ -444,8 +444,12 @@ run_python_tests() {
     # (e.g., deployer/) with the standard src/ + tests/ shape. The toolkit is
     # named explicitly: its directory's case differs from its name, which
     # only a case-insensitive filesystem would let the lookup below find.
+    # scripts/ is named too: it has tests/ (the repo checkers' own tests) but
+    # no src/, since its modules sit at its top level.
     if [[ "$name" == "wip-toolkit" ]]; then
         dir="$REPO_ROOT/WIP-Toolkit"
+    elif [[ "$name" == "scripts" ]]; then
+        dir="$REPO_ROOT/scripts"
     elif [[ -d "$REPO_ROOT/components/$name" ]]; then
         dir="$REPO_ROOT/components/$name"
     elif [[ -d "$REPO_ROOT/libs/$name" ]]; then
@@ -636,7 +640,7 @@ _run_watched() {
 # is per clone, like the containers — other clones have their own of both.
 #
 # Scoped, not global: components whose _component_deps is empty (deployer,
-# scaffold, agent-scripts, mcp-server, wip-archive, auth-gateway) never touch
+# scaffold, agent-scripts, scripts, mcp-server, wip-archive, auth-gateway) never touch
 # the containers and are not serialized. `all` locks once up front (it
 # includes mongo components; the loop runs inline in this process). --down
 # locks so it cannot remove containers from under a running suite.

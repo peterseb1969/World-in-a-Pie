@@ -500,6 +500,33 @@ jobs:
           . .venv/bin/activate
           cd scaffold && PYTHONPATH=src pytest tests/ -v --tb=short
 
+  # The repo's own tooling: the checkers' tests (scripts/tests — e.g. the
+  # permission rule's gate-reachability walk) and the agent scripts' tests
+  # (agent-scripts/tests — the session rollover, the pre-commit hook and its
+  # gating). radon is pinned like the lint job's: the ratchet and hook tests
+  # import it, and a job without it fails at collection, which is the right
+  # failure. The shell tests in scripts/tests are not pytest files and do not
+  # run here.
+  test-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install pytest and radon
+        run: |
+          . .venv/bin/activate
+          pip install pytest radon==6.0.1
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          pytest scripts/tests agent-scripts/tests -v --tb=short
+
   # WIP-Toolkit
   test-wip-toolkit:
     runs-on: ubuntu-latest
