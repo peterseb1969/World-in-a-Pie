@@ -7516,7 +7516,10 @@ class DirectRestoreEngine:
         self._emit(
             "warning",
             f"[{namespace}] reporting-sync unreachable during {what} — "
-            "reporting verification skipped for this restore",
+            "reporting verification skipped for this restore. The restore's data "
+            "is complete in MongoDB; once reporting-sync is back, re-run the batch "
+            f"sync ({_resync_command(namespace, _UNVERIFIED)}) and check "
+            f"GET /api/reporting-sync/parity?namespace={namespace}",
         )
         self._set_reporting_verdict(
             namespace, _UNVERIFIED, f"reporting-sync unreachable during {what}"
