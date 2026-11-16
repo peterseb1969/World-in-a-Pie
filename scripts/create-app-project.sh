@@ -759,10 +759,12 @@ WRITE_ENV_FLAG="${WRITE_ENV_FLAG:-}"
 # existing → CLAUDE.md.refresh unless --force-claude-md, CASE-418) run
 # through wip_scaffold's surface matrix — one implementation shared with
 # the backend scaffold, CASE-604 discipline (atomic writes, idempotent,
-# --dry-run). Placed here because the CLAUDE.md render needs the resolved
-# WIP_API_KEY_FILE. bash retains: guards, arg parsing, enable_kb,
-# .mcp.json, libs/toolkit, bootstrap templates, query preset, namespace,
-# .env, git init (they migrate in later step-3 phases).
+# --dry-run). .mcp.json, the libraries and toolkit, the bootstrap
+# templates, the query preset and .env are engine surfaces too, fed by the
+# flags below. Placed here because the CLAUDE.md render needs the resolved
+# WIP_API_KEY_FILE. bash retains: guards, arg parsing, enable_kb, namespace
+# resolution, the library builds, git init, and deciding when each engine
+# flag is passed.
 if ! $REFRESH_MODE; then
 STEP_NUM=$((7 + STEP_OFFSET))
 echo "$STEP_NUM. Rendering content surfaces (engine)..."
@@ -830,6 +832,13 @@ ENGINE_FLAGS=""
 if $TIER3; then ENGINE_FLAGS="$ENGINE_FLAGS --tier3"; fi
 if $REFRESH_MODE; then ENGINE_FLAGS="$ENGINE_FLAGS --refresh"; fi
 if $FORCE_CLAUDE_MD; then ENGINE_FLAGS="$ENGINE_FLAGS --force-claude-md"; fi
+# The engine keeps an .mcp.json it cannot read or parse and writes its own
+# version to .mcp.json.refresh. Every write it makes is an atomic replace,
+# which gives the file a new inode, so an unchanged inode means it was kept.
+# An absent file prints nothing; `|| true` keeps pipefail from ending the
+# script there.
+mcp_inode() { { ls -i "$APP_DIR/.mcp.json" 2>/dev/null || true; } | awk '{print $1}'; }
+MCP_INODE_BEFORE="$(mcp_inode)"
 # shellcheck disable=SC2086  # ENGINE_FLAGS is deliberately word-split (0..3 flags)
 PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     "$MCP_PYTHON" -m wip_scaffold app \
@@ -840,6 +849,10 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
     --mcp-key-file "$WIP_API_KEY_FILE" \
     $LIB_FLAGS $LOCK_FLAG $TOOLKIT_FLAG $ARCHIVE_FLAG $QUERY_FLAG $SEED_BOOTSTRAP_FLAG $WRITE_ENV_FLAG $ENGINE_FLAGS
+MCP_KEPT=false
+if [ -n "$MCP_INODE_BEFORE" ] && [ "$(mcp_inode)" = "$MCP_INODE_BEFORE" ]; then
+    MCP_KEPT=true
+fi
 
 # Host node_modules (refresh only, best effort). package.json and the
 # lockfile were already re-pointed by the engine's lockfile surface, so the
@@ -950,6 +963,11 @@ echo "Verify MCP connection:"
 echo "  In Claude Code, run /mcp — you should see 108 tools and 5 resources."
 if $REFRESH_MODE; then
     echo ""
-    echo "Note: .mcp.json has been regenerated with paths for this machine."
-    echo "      Add it to .gitignore if you don't want to commit machine-specific paths."
+    if $MCP_KEPT; then
+        echo "Note: .mcp.json was kept as it was: the scaffold could not read or parse it"
+        echo "      (the NOTICE above says why). This machine's version is in .mcp.json.refresh."
+        echo "      Fix .mcp.json from it, delete the sidecar, then re-run."
+    else
+        echo "Note: .mcp.json has been regenerated with paths for this machine."
+    fi
 fi

@@ -123,6 +123,31 @@ def test_app_refresh_keeps_recorded_preset(tmp: Path):
     assert _app_meta_preset(app_dir) == "standard"
 
 
+def test_app_refresh_summary_names_a_kept_mcp_json(tmp: Path):
+    """A refresh that keeps an .mcp.json it cannot parse says so at the end,
+    instead of claiming the file was regenerated; a refresh that rewrites
+    it still says regenerated."""
+    app_dir = tmp / "mcp-kept"
+    script = str(G.REPO_ROOT / "scripts/create-app-project.sh")
+    cmd = ["bash", script, str(app_dir), "--name", "Golden mcp-kept", "--prefix", "APP-GLD"]
+    r = G._run(cmd, cwd=G.REPO_ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    r = G._run(cmd, cwd=G.REPO_ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert ".mcp.json has been regenerated" in r.stdout
+    assert ".mcp.json was kept" not in r.stdout
+
+    (app_dir / ".mcp.json").write_text('{"mcpServers": {},}')
+    r = G._run(cmd, cwd=G.REPO_ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (app_dir / ".mcp.json").read_text() == '{"mcpServers": {},}'
+    assert (app_dir / ".mcp.json.refresh").exists()
+    assert ".mcp.json was kept" in r.stdout
+    assert "has been regenerated" not in r.stdout
+    assert "Add it to .gitignore" not in r.stdout
+
+
 def _app_meta_value(app_dir: Path, key: str) -> str:
     for line in (app_dir / ".claude" / ".app-meta").read_text().splitlines():
         if line.startswith(f"{key}="):

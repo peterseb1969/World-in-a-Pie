@@ -10,10 +10,13 @@ lockfile sync, git init) — stay in the bash
 wrappers permanently; the boundary rule is in the design doc §3b: if it
 can't be expressed as "write these bytes under this policy", it's an
 action. Create-only surfaces (bootstrap, query preset, .env) are
-CREATE_ONLY: on a refresh the engine writes only the targets that do not
-exist yet, so it never overwrites app code whatever flags a caller passes.
-The wrappers also pass their flags only on create, or on a refresh that
-retrofits a missing file (.env, an absent templates/bootstrap/).
+CREATE_ONLY: on a refresh run (--refresh) the engine writes only the
+targets that do not exist yet, so a refresh never overwrites app code. The
+guard keys on the declared refresh, not on what exists: a create may
+merge into a file already there (the query preset's .gitignore). The
+app wrapper declares the refresh for any populated directory, and passes
+these flags only on create, or on a refresh that retrofits a missing file
+(.env, an absent templates/bootstrap/).
 
 Every entry carries a substantive rationale — the incident lesson written
 out, not a ticket number — and the unit tests pin each policy's behavior
@@ -26,7 +29,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .engine import Context, Policy, Surface
+from .engine import Context, Policy, Surface, written
 from .render import render
 
 # --- shared producers --------------------------------------------------------
@@ -143,7 +146,8 @@ def _pre_commit_gate(ctx: Context) -> dict[str, bytes]:
     superseded = SUPERSEDED_PRE_COMMIT_GATES.get(hashlib.sha256(existing).hexdigest())
     if superseded:
         ctx.notes.append(
-            f"Replaced: .githooks/pre-commit was an earlier shipped gate, unmodified; {superseded}"
+            f"{written(ctx, 'Replaced', 'Would replace')}: .githooks/pre-commit was an "
+            f"earlier shipped gate, unmodified; {superseded}"
         )
         return {".githooks/pre-commit": current}
     ctx.notes.append(
@@ -210,13 +214,18 @@ def mcp_json_surface(python_path: str, base_url: str, key_file: str) -> Surface:
         existing_path = ctx.target_root / ".mcp.json"
         if not existing_path.is_file():
             return {".mcp.json": body.encode()}
-        # An unreadable file raises (OSError) and stops the run: its content
-        # is unknown, and the atomic replace would succeed anyway, since it
-        # needs the directory's permissions, not the file's. The file is
-        # gitignored, so nothing could restore what a rewrite destroyed.
+        # A file that cannot be read is kept like one that cannot be parsed:
+        # its content is unknown, and a rewrite would succeed anyway (the
+        # atomic replace needs the directory's permissions, not the file's).
+        # The file is gitignored, so nothing could restore what a rewrite
+        # destroyed.
+        fix = "Fix .mcp.json"
         try:
             existing = json.loads(existing_path.read_text(encoding="utf-8"))
             problem = None
+        except OSError as e:
+            existing, problem = None, f"could not be read ({e.strerror or e})"
+            fix = "Make .mcp.json readable"
         except (ValueError, UnicodeDecodeError) as e:
             existing, problem = None, f"is not valid JSON ({e})"
         if problem is None and not isinstance(existing, dict):
@@ -228,7 +237,8 @@ def mcp_json_surface(python_path: str, base_url: str, key_file: str) -> Surface:
             # fail the parse. Keep the file, as settings files are kept.
             ctx.notes.append(
                 f"NOTICE: .mcp.json {problem} — left untouched; the scaffold's version "
-                f"was written to .mcp.json.refresh. Fix .mcp.json, then re-run."
+                f"{written(ctx, 'was written', 'would be written')} to .mcp.json.refresh. "
+                f"{fix}, then re-run."
             )
             return {".mcp.json.refresh": body.encode()}
         servers = existing.get("mcpServers", {})

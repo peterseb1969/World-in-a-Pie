@@ -7,8 +7,7 @@ cases: [1249]
 
 - An `.mcp.json` that is not valid JSON or not the expected shape is left
   untouched. The scaffold's version goes to `.mcp.json.refresh`, which is
-  gitignored. An unreadable `.mcp.json` stops the run instead of being
-  overwritten.
+  gitignored.
 - A commands directory whose source is missing or empty stops the run. It
   no longer deletes every installed command.
 - The bootstrap templates, the query preset and `.env` are create-only in

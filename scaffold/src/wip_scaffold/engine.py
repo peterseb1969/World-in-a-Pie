@@ -18,15 +18,18 @@ policy — the per-surface policy matrix from the design doc, as code:
                   (unless force) — app CLAUDE.md is generated-then-customised;
                   a silent overwrite would destroy app-authored content
 - CREATE_ONLY     a starting point the app then owns (bootstrap templates,
-                  the query preset, .env): on a refresh only targets that
-                  do not exist yet are written, so a refresh never
-                  overwrites app code, whatever flags the caller passed
+                  the query preset, .env): on a refresh run (--refresh) only
+                  targets that do not exist yet are written, so a refresh
+                  never overwrites app code. A run without --refresh treats
+                  every target as new: a direct engine call against a
+                  populated directory must declare the refresh itself
 - MERGE_JSON_BASELINE  a scaffold-owned JSON baseline in an app-extended file:
                   three-way merge (last applied baseline, new baseline, the
                   file) keeps app entries, adds and retires baseline entries,
                   records the applied baseline beside the file, and notes
-                  every change; an unparseable file is left untouched and the
-                  baseline goes to a `.refresh` sidecar (json_merge.py)
+                  every change; a file it cannot read or parse is left
+                  untouched and the baseline goes to a `.refresh` sidecar
+                  (json_merge.py)
 
 Stdlib only — zero third-party deps, so the engine can never be blocked
 by venv drift or a dependency pin.
@@ -118,6 +121,13 @@ def _atomic_write(dest: Path, data: bytes, executable: bool) -> None:
         raise
 
 
+def written(ctx: Context, done: str, would: str) -> str:
+    """The verb an operator note uses for a write. Notes are composed in the
+    plan phase, which a dry run runs too, so a note about a file the run
+    writes must say "would" when the run writes nothing."""
+    return would if ctx.dry_run else done
+
+
 def run_surfaces(surfaces: list[Surface], ctx: Context) -> list[str]:
     """Execute (or dry-run) the surface list in order; returns action log.
 
@@ -167,7 +177,8 @@ def _plan_surface(s: Surface, ctx: Context) -> tuple[dict[str, bytes], list[Path
                 redirected[rel + ".refresh"] = data
                 ctx.notes.append(
                     f"NOTICE: existing {rel} left untouched (app-authored content) — fresh "
-                    f"render written to {rel}.refresh; merge then delete it, or "
+                    f"render {written(ctx, 'written', 'would be written')} to {rel}.refresh; "
+                    f"merge then delete it, or "
                     f"re-run with --force-claude-md to overwrite."
                 )
             else:
@@ -211,13 +222,22 @@ def _merge_json_baselines(name: str, files: dict[str, bytes], ctx: Context) -> d
             out[rel] = data
             out[record_rel] = data
             continue
+        # A file that cannot be read is kept like one that cannot be parsed:
+        # its content is unknown, and a rewrite would succeed anyway (the
+        # atomic replace needs the directory's permissions, not the file's).
         try:
             cur = json.loads(target.read_text(encoding="utf-8"))
+            problem, fix = None, ""
+        except OSError as e:
+            problem, fix = f"could not be read ({e.strerror or e})", "Make it readable"
         except (ValueError, UnicodeDecodeError) as e:
+            problem, fix = f"is not valid JSON ({e})", "Fix it"
+        if problem is not None:
             out[rel + ".refresh"] = data
             ctx.notes.append(
-                f"NOTICE: {rel} is not valid JSON ({e}) — left untouched; the scaffold "
-                f"baseline was written to {rel}.refresh. Fix {rel}, then re-run."
+                f"NOTICE: {rel} {problem} — left untouched; the scaffold baseline "
+                f"{written(ctx, 'was written', 'would be written')} to {rel}.refresh. "
+                f"{fix}, then re-run."
             )
             continue
         old = MISSING
@@ -225,16 +245,18 @@ def _merge_json_baselines(name: str, files: dict[str, bytes], ctx: Context) -> d
         if record.exists():
             try:
                 old = json.loads(record.read_text(encoding="utf-8"))
-            except (ValueError, UnicodeDecodeError):
+            except (OSError, ValueError, UnicodeDecodeError):
                 ctx.notes.append(
-                    f"Warning: {record_rel} is not valid JSON — merged {rel} without it "
+                    f"Warning: {record_rel} could not be read as JSON — "
+                    f"{written(ctx, 'merged', 'would merge')} {rel} without it "
                     f"(baseline entries added, none retired)."
                 )
         merged, changes = three_way(old, json.loads(data), cur)
         if merged != cur:
             out[rel] = (json.dumps(merged, indent=2, ensure_ascii=False) + "\n").encode()
             ctx.notes.append(
-                f"NOTICE: {name}: merged the scaffold baseline into {rel}; app entries kept. "
+                f"NOTICE: {name}: {written(ctx, 'merged', 'would merge')} the scaffold "
+                f"baseline into {rel}; app entries kept. "
                 + "; ".join(changes)
             )
         out[record_rel] = data

@@ -228,6 +228,15 @@ def test_render_refresh_existing_writes_sidecar(tmp_path):
     assert any(".refresh" in n for n in ctx.notes)
 
 
+def test_render_refresh_note_in_a_dry_run_says_would(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("app-authored")
+    s = _surface(policy=Policy.RENDER_REFRESH, files={"CLAUDE.md": b"gen"})
+    ctx = _ctx(tmp_path, refresh=True, dry_run=True)
+    run_surfaces([s], ctx)
+    assert not (tmp_path / "CLAUDE.md.refresh").exists()
+    assert any("would be written to CLAUDE.md.refresh" in n for n in ctx.notes)
+
+
 def test_render_refresh_force_overwrites(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("app-authored")
     s = _surface(policy=Policy.RENDER_REFRESH, files={"CLAUDE.md": b"gen"})
@@ -934,6 +943,40 @@ def test_settings_unparseable_file_gets_sidecar(tmp_path):
     assert any("not valid JSON" in n for n in ctx.notes)
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_settings_unreadable_file_gets_sidecar(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    target = tmp_path / SETTINGS
+    target.write_text('{"permissions":{"allow":["Mine"]}}')
+    target.chmod(0)
+    ctx = _ctx(tmp_path, refresh=True)
+    try:
+        run_surfaces([_merge_surface(_baseline()), _surface(files={"after.txt": b"x"})], ctx)
+    finally:
+        target.chmod(0o600)
+    assert target.read_text() == '{"permissions":{"allow":["Mine"]}}'
+    assert (tmp_path / (SETTINGS + ".refresh")).read_bytes() == _baseline()
+    assert not (tmp_path / RECORD).exists()
+    assert (tmp_path / "after.txt").exists(), "the surfaces after it were skipped"
+    assert any("could not be read" in n for n in ctx.notes)
+
+
+def test_settings_notes_in_a_dry_run_say_would(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / SETTINGS).write_text("{ not json")
+    ctx = _ctx(tmp_path, refresh=True, dry_run=True)
+    run_surfaces([_merge_surface(_baseline())], ctx)
+    assert not (tmp_path / (SETTINGS + ".refresh")).exists()
+    assert any("would be written" in n for n in ctx.notes)
+    assert not any("was written" in n for n in ctx.notes)
+
+    (tmp_path / SETTINGS).write_text('{"permissions":{"allow":["Mine"]},"hooks":{}}')
+    ctx = _ctx(tmp_path, refresh=True, dry_run=True)
+    run_surfaces([_merge_surface(_baseline(["A"]))], ctx)
+    assert any("would merge the scaffold baseline" in n for n in ctx.notes)
+    assert not any(": merged" in n for n in ctx.notes)
+
+
 def test_settings_merge_dry_run_touches_nothing(tmp_path):
     run_surfaces([_merge_surface(_baseline(["A"]))], _ctx(tmp_path))
     before = (tmp_path / SETTINGS).read_bytes()
@@ -1106,20 +1149,35 @@ def test_mcp_json_it_cannot_merge_is_left_untouched_with_a_sidecar(tmp_path, exi
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
-def test_mcp_json_unreadable_stops_the_run_and_keeps_the_file(tmp_path):
+def test_mcp_json_unreadable_is_left_untouched_with_a_sidecar(tmp_path):
     # The atomic replace needs the directory's permissions, not the file's,
-    # so a rewrite would succeed over content nobody read. Raise instead.
+    # so a rewrite would succeed over content nobody read. Keep the file,
+    # put the scaffold's version beside it, and let the run go on.
     from wip_scaffold.surfaces import mcp_json_surface
     target = tmp_path / ".mcp.json"
     target.write_text('{"mcpServers": {"mine": {}}}')
     target.chmod(0)
+    ctx = _ctx(tmp_path)
     try:
-        with pytest.raises(OSError):
-            run_surfaces([mcp_json_surface("/p", "https://h", key_file="/k")], _ctx(tmp_path))
+        run_surfaces([mcp_json_surface("/p", "https://h", key_file="/k"),
+                      _surface(files={"after.txt": b"x"})], ctx)
     finally:
         target.chmod(0o600)
     assert target.read_text() == '{"mcpServers": {"mine": {}}}'
+    sidecar = _json.loads((tmp_path / ".mcp.json.refresh").read_text())
+    assert list(sidecar["mcpServers"]) == ["wip"]
+    assert (tmp_path / "after.txt").exists(), "the surfaces after it were skipped"
+    assert any("could not be read" in n and "Make .mcp.json readable" in n for n in ctx.notes)
+
+
+def test_mcp_json_sidecar_note_in_a_dry_run_says_would(tmp_path):
+    from wip_scaffold.surfaces import mcp_json_surface
+    (tmp_path / ".mcp.json").write_text("{ not json")
+    ctx = _ctx(tmp_path, dry_run=True)
+    run_surfaces([mcp_json_surface("/p", "https://h", key_file="/k")], ctx)
     assert not (tmp_path / ".mcp.json.refresh").exists()
+    note = next(n for n in ctx.notes if ".mcp.json.refresh" in n)
+    assert "would be written" in note and "was written" not in note
 
 
 # --- slim re-anchor hook ---------------------------------------------------------
