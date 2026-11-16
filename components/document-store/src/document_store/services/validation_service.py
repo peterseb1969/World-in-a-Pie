@@ -2257,9 +2257,13 @@ class ValidationService:
     @staticmethod
     async def _descendant_refs(client: Any, tpl_id: str, version_strategy: str) -> list[str]:
         """The templates inheriting from ``tpl_id``: their ids (pinned) or
-        values (latest). A template the store does not serve has none; an
-        outage is refused, never read as "no subtypes" (which would refuse
-        every legal subtype reference, and be cached for the batch)."""
+        values (latest). A template the store does not serve has none: one
+        it does not hold (404, read as None) and one it declines to serve
+        (a 409 with a reason such as ``inheritance_unresolved``, the only
+        TemplateStoreError not marked ``unavailable``). An outage, which is
+        every other failure to answer, is refused, never read as "no
+        subtypes" (which would refuse every legal subtype reference, and be
+        cached for the batch)."""
         try:
             template = await client.get_template(template_id=tpl_id)
             if not template:

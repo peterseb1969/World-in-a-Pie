@@ -276,9 +276,10 @@ class PatchError(Exception):
     BulkResultItem.error_code per design doc §"Per-item error codes".
     """
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, rule: str | None = None):
         self.code = code
         self.message = message
+        self.details: dict[str, Any] | None = {"rule": rule} if rule else None
         super().__init__(f"{code}: {message}")
 
 
@@ -811,6 +812,7 @@ async def _check_patch_permission(namespace: str) -> None:
         raise PatchError(
             "registry_error",
             "Could not check write access: the Registry is unreachable",
+            rule="registry_unavailable",
         )
     if permission == "none":
         # Invisible namespace: answer as an id that names nothing, so
@@ -1438,7 +1440,9 @@ class DocumentService:
                 ),
             )
         except RegistryError as e:
-            return None, {"error": f"Failed to generate document ID: {e!s}", "error_code": "registry_error"}
+            # error_fields: an unreachable Registry carries details.rule
+            # registry_unavailable, so the outage reads as one.
+            return None, {**error_fields(e), "error": f"Failed to generate document ID: {e!s}"}
         timing["2_registry"] = (time.perf_counter() - start) * 1000
 
         mismatch = _document_id_mismatch(request, document_id, is_new)
@@ -1526,15 +1530,17 @@ class DocumentService:
         synonyms: list[dict],
         on_synonym_conflict: str,
         is_new_entry: bool,
-    ) -> tuple[list[str], str | None, str | None]:
+    ) -> tuple[list[str], dict[str, Any] | None]:
         """Register inline synonyms for a document's registry entry (CASE-434/436).
 
-        Returns (warnings, error_code, error_message):
-          - all added / already-owned     -> ([], None, None)
-          - on_synonym_conflict == "warn"  -> (warnings, None, None) when the
+        Returns (warnings, error fields), the fields being the error,
+        error_code and details of the item's result:
+          - all added / already-owned     -> ([], None)
+          - on_synonym_conflict == "warn"  -> (warnings, None) when the
             Registry refused some synonyms; caller proceeds. A Registry that
-            could not answer refuses in either mode.
-          - on_synonym_conflict == "fail"  -> ([], code, msg) AFTER rolling back
+            could not answer refuses in either mode, its fields marked
+            details.rule registry_unavailable when it was unreachable.
+          - on_synonym_conflict == "fail"  -> ([], fields) AFTER rolling back
             the synonyms added in this call (and, if is_new_entry, releasing the
             document's own entry). The caller must then abort without persisting.
 
@@ -1552,7 +1558,7 @@ class DocumentService:
             # an outage, refused in either mode. "warn" covers only the
             # synonyms it answers it refuses, below.
             await self._rollback_synonym_allocation(document_id, namespace, [], is_new_entry)
-            return [], "registry_error", f"Synonym registration failed: {e}"
+            return [], {**error_fields(e), "error": f"Synonym registration failed: {e}"}
 
         added: list[dict] = []
         failures: list[str] = []
@@ -1570,14 +1576,14 @@ class DocumentService:
                 failures.append(res.get("error") or f"synonym {syn} rejected ({status})")
 
         if not failures:
-            return [], None, None
+            return [], None
 
         if on_synonym_conflict == "warn":
-            return [f"Synonym not registered: {m}" for m in failures], None, None
+            return [f"Synonym not registered: {m}" for m in failures], None
 
         # strict — roll back what landed and abort.
         await self._rollback_synonym_allocation(document_id, namespace, added, is_new_entry)
-        return [], "synonym_conflict", "; ".join(failures)
+        return [], {"error": "; ".join(failures), "error_code": "synonym_conflict"}
 
     async def _rollback_synonym_allocation(
         self,
@@ -1638,12 +1644,12 @@ class DocumentService:
         # the create; "warn" creates the doc and surfaces the refusal.
         synonym_warnings: list[str] = []
         if synonyms:
-            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+            synonym_warnings, syn_error = await self._register_inline_synonyms(
                 document_id=document_id, namespace=namespace, synonyms=synonyms,
                 on_synonym_conflict=request.on_synonym_conflict, is_new_entry=is_new_entry,
             )
-            if err_code:
-                return None, {"error": f"{err_code}: {err_msg}", "error_code": err_code}
+            if syn_error:
+                return None, {**syn_error, "error": f"{syn_error['error_code']}: {syn_error['error']}"}
 
         # Create document
         now = datetime.now(UTC)
@@ -1679,6 +1685,11 @@ class DocumentService:
                 actor_note=request.created_by,
             )
         except DocumentStoreError as e:
+            # Refused (a pinned version's slot taken, a concurrent writer):
+            # nothing was written, so the entry this request minted, with the
+            # inline synonyms it carries, is released as the other refusals
+            # of a new document release it.
+            await self._release_entry_if_minted(document_id, minted=is_new_entry)
             return None, error_fields(e)
 
         # Register auto-synonym for migration portability (version 1 only).
@@ -2126,12 +2137,12 @@ class DocumentService:
         # rollback removes only the synonyms added in this call).
         synonym_warnings: list[str] = []
         if request.synonyms:
-            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
+            synonym_warnings, syn_error = await self._register_inline_synonyms(
                 document_id=document_id, namespace=namespace, synonyms=request.synonyms,
                 on_synonym_conflict=request.on_synonym_conflict, is_new_entry=False,
             )
-            if err_code:
-                return None, {"error": f"{err_code}: {err_msg}", "error_code": err_code}
+            if syn_error:
+                return None, {**syn_error, "error": f"{syn_error['error_code']}: {syn_error['error']}"}
 
         # Check if the document has actually changed. The migrate path
         # (force_new_version) skips this gate: re-pinning to a new
@@ -4512,14 +4523,17 @@ class DocumentService:
         """
         if not item.synonyms:
             return [], None
-        warnings, err_code, err_msg = await self._register_inline_synonyms(
+        warnings, syn_error = await self._register_inline_synonyms(
             document_id=document_id, namespace=namespace, synonyms=item.synonyms,
             on_synonym_conflict=item.on_synonym_conflict,
             is_new_entry=is_new_entry,
         )
-        if err_code:
+        if syn_error:
             return warnings, _ItemOutcome(
-                BulkResultItem(index=i, status="error", error_code=err_code, error=err_msg),
+                BulkResultItem(
+                    index=i, status="error", error_code=syn_error["error_code"],
+                    error=syn_error["error"], details=syn_error.get("details"),
+                ),
                 None,
                 "failed",
             )
@@ -5431,13 +5445,24 @@ class DocumentService:
         responses: list[ValidationResponse] = []
         with term_resolution_batch(), placement_batch():
             for data in items:
-                result = await self._validate_as_writer(
-                    template_id,
-                    data,
-                    namespace,
-                    template_version=template_version,
-                    doc_ref_cache=doc_ref_cache,
-                )
+                try:
+                    result = await self._validate_as_writer(
+                        template_id,
+                        data,
+                        namespace,
+                        template_version=template_version,
+                        doc_ref_cache=doc_ref_cache,
+                    )
+                except DependencyUnavailableError as e:
+                    # One item's outage is that item's answer, as every bulk
+                    # surface reports it: never read as valid, and never a
+                    # 503 that discards the other items' results.
+                    fields = error_fields(e)
+                    responses.append(ValidationResponse(
+                        valid=False,
+                        errors=[ValidationError(code=fields["error_code"], message=fields["error"])],
+                    ))
+                    continue
                 responses.append(self._result_to_validation_response(result))
         return responses
 
@@ -6061,6 +6086,7 @@ class DocumentService:
                     document_id=item.document_id,
                     error=exc.message,
                     error_code=exc.code,
+                    details=exc.details,
                 ))
             except (DependencyUnavailableError, DocumentStoreError, FileServiceError) as exc:
                 # A service the validation needed did not answer (an outage
@@ -6312,7 +6338,7 @@ class DocumentService:
                 f"Cross-namespace reference violation: {exc.violations}",
             ) from exc
         except RegistryUnavailableError as exc:
-            raise PatchError("registry_error", str(exc)) from exc
+            raise PatchError("registry_error", str(exc), rule="registry_unavailable") from exc
 
     async def _patch_in_place(
         self,

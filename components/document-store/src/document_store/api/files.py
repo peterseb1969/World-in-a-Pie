@@ -348,11 +348,12 @@ async def download_file_content(
         # names nothing.
         raise HTTPException(status_code=404, detail=missing)
 
+    # Readability first: a caller who cannot read the namespace gets the
+    # same answer as for an id that names nothing, whatever the file's state.
+    await check_readable(identity, file_doc.namespace, missing)
+
     if file_doc.status == FileStatus.INACTIVE:
         raise HTTPException(status_code=409, detail="File has been deleted")
-
-    # Check namespace permission
-    await check_readable(identity, file_doc.namespace, missing)
 
     # Stream chunks directly from the object store → browser (no full buffering).
     # The first chunk is read before the response starts: once the status line

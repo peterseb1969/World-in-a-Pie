@@ -17,8 +17,10 @@ from wip_auth import (
     resolve_namespace_filter,
     resolve_or_404,
 )
-from wip_auth.fastapi_helpers import miss_detail
+from wip_auth.fastapi_helpers import miss_detail, unresolved_detail
+from wip_auth.permissions import can_read
 from wip_auth.registry_client import RegistryUnavailableError
+from wip_auth.resolve import split_qualified_value
 
 from ..models.api_models import (
     MAX_BULK_ITEMS,
@@ -759,20 +761,32 @@ def _relationship_refusal(e: ValueError) -> HTTPException:
 
 
 async def _resolve_edge_type_filter(
-    raw: str | None, namespace: str, param_name: str,
+    raw: str | None, namespace: str, param_name: str, identity: UserIdentity,
 ) -> list[str] | None:
     """Resolve a comma-separated edge-type filter to template IDs via the
     Registry. A bare value names the edge type in `namespace` (never one that
     merely shares the value elsewhere), `NS:VALUE` names another namespace,
     and a UUID passes through. A value that resolves to nothing is a 404 —
-    an empty page would read as "no edges" (strict filter-context mode)."""
+    an empty page would read as "no edges" (strict filter-context mode).
+
+    The Registry answers with the service's access, so an `NS:VALUE` naming
+    a namespace the caller cannot read gets the same 404 as a value that
+    names nothing, before it is resolved: a 200 there would tell the caller
+    the template exists."""
     if not raw:
         return None
-    return [
-        await resolve_or_404(value, "template", namespace, param_name=param_name, strict=True)
-        for value in (v.strip() for v in raw.split(","))
-        if value
-    ]
+    ids = []
+    for value in (v.strip() for v in raw.split(",")):
+        if not value:
+            continue
+        prefix, _ = split_qualified_value(value)
+        if prefix and prefix != namespace and not await can_read(identity, prefix):
+            raise HTTPException(
+                status_code=404,
+                detail=await unresolved_detail(value, "template", namespace, param_name),
+            )
+        ids.append(await resolve_or_404(value, "template", namespace, param_name=param_name, strict=True))
+    return ids
 
 
 @router.get(
@@ -835,7 +849,7 @@ async def get_document_relationships(
         await check_namespace_permission(identity, namespace, "read")
 
     ns = namespace or seed.namespace
-    template_ids = await _resolve_edge_type_filter(template, ns, "template")
+    template_ids = await _resolve_edge_type_filter(template, ns, "template", identity)
     allowed = None if namespace else await resolve_accessible_namespaces(identity)
     include_set = (
         {tok.strip() for tok in include.split(",") if tok.strip()} if include else set()
@@ -904,7 +918,7 @@ async def traverse_document_relationships(
         await check_namespace_permission(identity, namespace, "read")
 
     ns = namespace or seed.namespace
-    type_ids = await _resolve_edge_type_filter(types, ns, "types")
+    type_ids = await _resolve_edge_type_filter(types, ns, "types", identity)
     try:
         return await service.traverse_relationships(
             document_id=document_id,

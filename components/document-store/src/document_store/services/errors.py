@@ -51,7 +51,7 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
     if isinstance(exc, DocumentStoreError):
         return {"error": message, "error_code": exc.code, "details": exc.details}
     if isinstance(exc, PatchError):
-        return {"error": exc.message, "error_code": exc.code}
+        return {"error": exc.message, "error_code": exc.code, "details": exc.details}
     if isinstance(exc, FileServiceError):
         return {"error": message, "error_code": exc.code, "details": exc.details}
     if isinstance(exc, ReferenceValidationError):
