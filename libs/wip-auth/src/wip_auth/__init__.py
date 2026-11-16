@@ -72,6 +72,7 @@ from .identity import (
 from .key_file_watch import APIKeysFileWatcher, ConfigFileWatcher, content_hash
 from .key_sync import KeySyncService
 from .liveness import install_liveness
+from .logging_setup import configure_logging
 from .middleware import AuthMiddleware, create_auth_middleware, public_path_set
 from .models import APIKeyRecord, AuthResult, UserIdentity
 from .openapi import declare_api_key_security
@@ -192,6 +193,8 @@ __all__ = [
     "clear_current_identity",
     "clear_permission_cache",
     "clear_resolution_cache",
+    # Process logging
+    "configure_logging",
     "create_auth_middleware",
     "create_providers_from_config",
     "declare_api_key_security",

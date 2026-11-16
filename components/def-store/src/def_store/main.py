@@ -26,6 +26,7 @@ from wip_auth import (
     RejectUnknownQueryParamsMiddleware,
     build_metadata,
     check_production_security,
+    configure_logging,
     declare_api_key_security,
     init_beanie_with_retry,
     install_liveness,
@@ -50,6 +51,9 @@ from .services.nats_client import close_nats_client, configure_nats_client, nats
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.system_terminologies import ensure_system_terminologies
 from .services.term_names import drop_retired_terminology_fields, migrate_legacy_term_names
+
+# Before anything logs: uvicorn configures only its own loggers.
+configure_logging()
 
 
 # Application configuration

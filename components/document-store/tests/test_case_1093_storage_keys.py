@@ -10,6 +10,7 @@ TestRestoredFilesOwnTheirBytes). This covers rows written before that.
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
@@ -133,15 +134,16 @@ async def test_a_second_run_finds_nothing(files):
 
 
 @pytest.mark.asyncio
-async def test_a_skipped_scan_is_announced_with_the_marker_to_delete(files, capsys):
+async def test_a_skipped_scan_is_announced_with_the_marker_to_delete(files, caplog):
     """Once the marker is set the scan never runs again, so a skip must be
-    visible in the startup output: it names the marker an operator deletes
-    to re-run it."""
+    visible in the startup log at INFO: it names the marker an operator
+    deletes to re-run it."""
     await files.insert_one({"file_id": "NEW", "storage_key": "OLD"})
     await repair_storage_keys(files, _Storage({"OLD"}))
-    capsys.readouterr()
-    assert await repair_storage_keys(files, _Storage({"OLD"})) == (0, 0, [])
-    out = capsys.readouterr().out
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="document_store.file_storage_keys"):
+        assert await repair_storage_keys(files, _Storage({"OLD"})) == (0, 0, [])
+    out = caplog.text
     assert "skipped" in out and f"storage_keys_v1:{files.name}" in out
     assert "Delete that document" in out
 

@@ -58,6 +58,10 @@ _SLOW_PATH_WAITERS = 8
 # dozens), so this is about one scan: a caller either gets a thread soon or is
 # told to come back.
 _SLOW_PATH_WAIT_SECONDS = 5.0
+# A key's use is logged at INFO the first time a process sees it and then at
+# most once per this interval: enough to tell which keys are in use before a
+# rotation, without a log line for every request.
+_USAGE_LOG_INTERVAL_SECONDS = 3600.0
 
 
 def _release_after(semaphore: asyncio.Semaphore, done: "asyncio.Future[Any]") -> None:
@@ -271,6 +275,8 @@ class APIKeyProvider:
         self._lock = threading.Lock()
         # Set by create_providers_from_config when the key file is watched.
         self.file_watcher: Any = None
+        # Key name -> when its use was last logged (monotonic seconds).
+        self._usage_logged: dict[str, float] = {}
 
         # Cache: SHA-256(plaintext_key) → APIKeyRecord after first bcrypt verify.
         # Avoids re-running bcrypt (~170 ms per stored hash) on every request.
@@ -716,14 +722,7 @@ class APIKeyProvider:
         # Update last used timestamp (in-memory only)
         key_record.last_used_at = datetime.now(UTC)
 
-        # Structured key usage log (M5 — audit trail for key rotation decisions)
-        logger.info(
-            "API key used: name=%s owner=%s endpoint=%s %s",
-            key_record.name,
-            key_record.owner or "unknown",
-            request.method,
-            request.url.path,
-        )
+        self._log_usage(key_record, request)
 
         return self._identity(key_record)
 
@@ -760,6 +759,26 @@ class APIKeyProvider:
         bcrypt checks run off the loop, as in authentication."""
         record = await self.lookup_async(api_key, raise_unverifiable=raise_unverifiable)
         return None if record is None else self._identity(record)
+
+    def _log_usage(self, key_record: APIKeyRecord, request: Request) -> None:
+        """Which keys are in use, for deciding whether one can be rotated or
+        revoked: logged at INFO the first time this process sees a key, then
+        at most once per _USAGE_LOG_INTERVAL_SECONDS, with the request that
+        used it. Every use is logged at DEBUG."""
+        now = _monotonic()
+        last = self._usage_logged.get(key_record.name)
+        level = logging.DEBUG
+        if last is None or now - last >= _USAGE_LOG_INTERVAL_SECONDS:
+            self._usage_logged[key_record.name] = now
+            level = logging.INFO
+        logger.log(
+            level,
+            "API key used: name=%s owner=%s endpoint=%s %s",
+            key_record.name,
+            key_record.owner or "unknown",
+            request.method,
+            request.url.path,
+        )
 
     def _identity(self, key_record: APIKeyRecord) -> UserIdentity:
         """The identity an API key authenticates as."""

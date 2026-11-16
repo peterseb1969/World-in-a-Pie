@@ -31,6 +31,7 @@ from wip_auth import (
     UserIdentity,
     build_metadata,
     check_namespace_permission,
+    configure_logging,
     declare_api_key_security,
     get_identity_string,
     implied_namespace,
@@ -92,11 +93,7 @@ from .search_service import (
 )
 from .worker import run_sync_worker
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+configure_logging(logging.DEBUG if settings.debug else logging.INFO)
 logger = logging.getLogger(__name__)
 
 

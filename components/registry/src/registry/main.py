@@ -18,6 +18,7 @@ from wip_auth import (
     APIKeyProvider,
     build_metadata,
     check_production_security,
+    configure_logging,
     declare_api_key_security,
     get_auth_config,
     init_beanie_with_retry,
@@ -49,6 +50,9 @@ from .services import key_import, key_shadowing
 from .services.event_bus import start_event_bus, stop_event_bus
 from .services.managed import ManagedRecordRefused, managed_record_refused_handler
 from .services.namespace_deletion import SERVICE_KEY_VARS
+
+# Before anything logs: uvicorn configures only its own loggers.
+configure_logging()
 
 
 # Application configuration

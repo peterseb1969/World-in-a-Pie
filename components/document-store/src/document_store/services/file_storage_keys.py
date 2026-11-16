@@ -76,12 +76,10 @@ async def repair_storage_keys(
     markers = collection.database[_MIGRATIONS_COLLECTION]
     marker = await markers.find_one({"_id": _marker_id(collection)})
     if marker:
-        # Printed, as the service's other startup lines are: it configures no
-        # log level, so an INFO record would never reach the container log.
-        print(
-            f"File storage-key repair skipped: a clean pass was recorded at "
-            f"{marker.get('completed_at')} ({_MIGRATIONS_COLLECTION}.{marker['_id']}). "
-            "Delete that document to scan again at the next start."
+        logger.info(
+            "File storage-key repair skipped: a clean pass was recorded at %s (%s.%s). "
+            "Delete that document to scan again at the next start.",
+            marker.get("completed_at"), _MIGRATIONS_COLLECTION, marker["_id"],
         )
         return StorageKeyRepair(0, 0, [])
     result = await _repair_pass(collection, storage)

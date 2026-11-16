@@ -20,6 +20,7 @@ from wip_auth import (
     APIKeyProvider,
     UserIdentity,
     build_metadata,
+    configure_logging,
     get_auth_config,
     install_liveness,
     require_api_key,
@@ -47,11 +48,7 @@ from .models import (
 from .result_publisher import ResultPublisher, results_subject
 from .worker import IngestWorker
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+configure_logging(logging.DEBUG if settings.debug else logging.INFO)
 logger = logging.getLogger(__name__)
 
 

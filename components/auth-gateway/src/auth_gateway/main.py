@@ -33,6 +33,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
+from wip_auth import configure_logging
 from wip_auth.ratelimit import setup_rate_limiting
 
 from . import __version__, app_origins
@@ -42,7 +43,7 @@ from .config import (
     settings,
 )
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger("auth_gateway")
 
 # Refuse to start in prod with the forgeable default session secret —
