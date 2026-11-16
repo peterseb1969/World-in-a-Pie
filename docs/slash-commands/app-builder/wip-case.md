@@ -5,12 +5,15 @@ description: Cross-agent case management — file/list/read/respond/comment/clos
 Cross-agent case workflow (tier 3). Subcommands: `file`, `list`, `read`, `respond`, `comment`, `close`, `implement`.
 
 This stub is deliberately thin: it carries only the tier
-check, the cache-ensure, the cheap read paths, and the claim step. Every
-verb procedure, gateway endpoint, and format rule lives in the SERVED
-playbook (`~/.cache/wip-kb-client/case-workflow.md`), which version-matches
-the backend by construction — do not reproduce its content here. The claim
-step (write verbs, step 0) is the one deliberate exception: it is the gate at
-the moment of acting, so it is stated here as well as in the playbook.
+check, the cache-ensure, the cheap read paths, and two write-flow steps. Every
+verb procedure, gateway endpoint, and format rule lives in the SERVED playbook
+(`~/.cache/wip-kb-client/case-workflow.md`), which version-matches the
+backend by construction — do not reproduce its content here. Those two steps
+are the deliberate exceptions: the claim step (write verbs, step 0) and the
+attribution line (step 1) both apply at the moment of acting, so they are
+stated here as well as in the playbook. Change either one in every copy — the
+served bundle, this stub, and the repo's playbook copy
+(`docs/playbooks/case-workflow.md`).
 
 **Pre-flight (do this first, every time):**
 
