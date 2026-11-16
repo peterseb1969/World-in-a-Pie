@@ -83,6 +83,7 @@ spec:
   # create/delete of replay streams (WIP_REPLAY_<session>). NATS wildcards match
   # whole tokens only and a stream name is one token, so replay needs stream
   # create/delete in general; the platform streams are denied explicitly.
+  # STREAM.LIST lets the startup sweep find replay streams an earlier run left.
   # CONSUMER.INFO on reporting-sync's durable feeds the write backpressure.
   nats_client:
     publish:
@@ -94,6 +95,7 @@ spec:
       - "$JS.API.STREAM.UPDATE.WIP_EVENTS"
       - "$JS.API.STREAM.CREATE.*"
       - "$JS.API.STREAM.DELETE.*"
+      - "$JS.API.STREAM.LIST"
       - "$JS.API.CONSUMER.INFO.WIP_EVENTS.reporting-sync-durable"
     publish_deny:
       - "$JS.API.STREAM.DELETE.WIP_EVENTS"

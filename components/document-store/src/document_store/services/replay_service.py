@@ -19,6 +19,18 @@ REPLAY_STREAM_PREFIX = "WIP_REPLAY_"
 KEEP_FINISHED_SESSIONS = 50
 
 
+async def _stream_names(js: Any) -> list[str]:
+    """Every stream name NATS holds. ``streams_info`` answers one page (a
+    list, not an iterator), so the offset walks until a page comes back
+    empty."""
+    names: list[str] = []
+    while True:
+        page = await js.streams_info(offset=len(names))
+        if not page:
+            return names
+        names.extend(info.config.name for info in page)
+
+
 class ReplayService:
     """Manages replay sessions that publish stored documents as NATS events."""
 
@@ -219,7 +231,11 @@ class ReplayService:
         sweep those streams accumulate for the whole age-out window. Streams of
         sessions this process still knows are left alone. Returns how many were
         deleted; a NATS that cannot be asked is reported and skipped — startup
-        does not fail on it."""
+        does not fail on it.
+
+        One process owns every replay stream: document-store runs as a single
+        replica on every target, and the sessions live in its memory. A second
+        replica would sweep the first one's live streams."""
         from .nats_client import get_jetstream
 
         js = get_jetstream()
@@ -227,7 +243,7 @@ class ReplayService:
             return 0
         live = {session.stream_name for session in self._sessions.values()}
         try:
-            names = [info.config.name async for info in js.streams_info()]
+            names = await _stream_names(js)
         except Exception as e:
             logger.warning(f"Replay stream sweep could not list NATS streams: {e}")
             return 0

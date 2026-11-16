@@ -156,21 +156,35 @@ async def stored_allowed_templates(file_doc: File) -> list[str] | None:
     wanted = [e.strip() for e in entries or [] if e and e.strip()]
     if not wanted:
         return None
-    try:
-        resolved = await resolve_entity_ids(
-            wanted, "template", file_doc.namespace, strict=False,
-        )
-    except RegistryUnavailableError as e:
-        raise dependency_unavailable(
-            "registry", f"allowed_templates of file {file_doc.file_id}", e,
-        ) from e
-    ids = list(dict.fromkeys(resolved.get(e, e) for e in wanted))
+    ids = await _allowed_template_ids(file_doc, wanted, bypass_cache=False)
+    if ids != entries:
+        # The list is about to be persisted, and a write never takes its ids
+        # from the cache: a stale entry would pin a dead id into the row. A
+        # row that already holds ids matches its cached answer and skips this.
+        ids = await _allowed_template_ids(file_doc, wanted, bypass_cache=True)
     if ids != entries:
         await File.find(
             {"file_id": file_doc.file_id, "allowed_templates": entries}
         ).set({"allowed_templates": ids})
         file_doc.allowed_templates = ids
     return ids
+
+
+async def _allowed_template_ids(
+    file_doc: File, wanted: list[str], *, bypass_cache: bool,
+) -> list[str]:
+    """``wanted`` as canonical template ids in the file's namespace; an entry
+    that resolves to nothing keeps its spelling."""
+    try:
+        resolved = await resolve_entity_ids(
+            wanted, "template", file_doc.namespace,
+            bypass_cache=bypass_cache, strict=False,
+        )
+    except RegistryUnavailableError as e:
+        raise dependency_unavailable(
+            "registry", f"allowed_templates of file {file_doc.file_id}", e,
+        ) from e
+    return list(dict.fromkeys(resolved.get(e, e) for e in wanted))
 
 
 class FileServiceError(Exception):

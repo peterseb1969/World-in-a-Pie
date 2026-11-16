@@ -44,11 +44,11 @@ class _FakeJetStream:
         self.created: list = []
         self.fail_add_with = fail_add_with
 
-    def streams_info(self):
-        async def gen():
-            for name in self.stream_names:
-                yield SimpleNamespace(config=SimpleNamespace(name=name))
-        return gen()
+    async def streams_info(self, offset=0):
+        # nats-py's shape: a coroutine answering one page as a list. Pages of
+        # two, so a sweep over more streams than one page must walk the offset.
+        page = self.stream_names[offset:offset + 2]
+        return [SimpleNamespace(config=SimpleNamespace(name=name)) for name in page]
 
     async def delete_stream(self, name):
         self.deleted.append(name)
@@ -93,7 +93,7 @@ async def test_the_startup_sweep_deletes_streams_no_session_owns():
 @pytest.mark.asyncio
 async def test_the_sweep_reports_a_nats_it_cannot_ask_rather_than_failing():
     class Broken(_FakeJetStream):
-        def streams_info(self):
+        async def streams_info(self, offset=0):
             raise RuntimeError("nats down")
 
     service = ReplayService()

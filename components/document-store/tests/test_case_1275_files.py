@@ -136,3 +136,48 @@ async def test_an_entry_naming_several_templates_is_reported_as_ambiguous(auth_h
     message = str(refused.value)
     assert "ambiguous" in message and "PERSON" in message
     assert "name no template" not in message
+
+
+@pytest.mark.asyncio
+async def test_the_repaired_list_is_written_from_the_registry_not_the_cache(
+    file_client  # noqa: F811
+):
+    """The read may answer from the cache; the write-back may not. A cached
+    answer that has gone stale (the name now belongs to another template)
+    must not be pinned into the row."""
+    from unittest.mock import AsyncMock
+
+    import document_store.services.file_service as mod
+
+    legacy = await _insert_file(allowed_templates=["PERSON"])
+    calls: list[bool] = []
+
+    async def fake_resolve(wanted, entity_type, namespace, *, bypass_cache=False, strict=True):
+        calls.append(bypass_cache)
+        return {"PERSON": "fresh-id" if bypass_cache else "stale-cached-id"}
+
+    with patch.object(mod, "resolve_entity_ids", new=AsyncMock(side_effect=fake_resolve)):
+        ids = await mod.stored_allowed_templates(legacy)
+
+    assert calls == [False, True]
+    assert ids == ["fresh-id"]
+    stored = await File.find_one({"file_id": legacy.file_id})
+    assert stored.allowed_templates == ["fresh-id"]
+
+
+@pytest.mark.asyncio
+async def test_a_row_already_holding_ids_is_not_resolved_again(file_client):  # noqa: F811
+    from unittest.mock import AsyncMock
+
+    import document_store.services.file_service as mod
+
+    current = await _insert_file(allowed_templates=[_person_id()])
+
+    async def fake_resolve(wanted, entity_type, namespace, *, bypass_cache=False, strict=True):
+        return {e: e for e in wanted}
+
+    resolver = AsyncMock(side_effect=fake_resolve)
+    with patch.object(mod, "resolve_entity_ids", new=resolver):
+        assert await mod.stored_allowed_templates(current) == [_person_id()]
+
+    assert resolver.await_count == 1
