@@ -4,9 +4,9 @@ MongoDB hands datetimes back without a timezone, and NamespaceGrant.is_expired
 compared them with an aware now(UTC), which raised TypeError: a permission
 resolution that reached the caller's grants failed (a 500) when one carried
 expires_at, instead of honouring or ignoring it. Resolutions answered before
-the grants are read (superadmin, reservation owner, config-key declaration,
-scope miss) were unaffected. A stored expiry is UTC; a naive one is read as
-such.
+the grants are read (a namespace locked for deletion, superadmin, reservation
+owner, config-key declaration, scope miss) were unaffected. A stored expiry is
+UTC; a naive one is read as such.
 
 CASE-1268: an expiry already past is refused at grant create, per item,
 instead of being stored and answered "created" while it gives nothing.

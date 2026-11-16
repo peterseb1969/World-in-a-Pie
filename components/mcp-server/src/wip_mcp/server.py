@@ -533,11 +533,11 @@ Services cache what the Registry resolved for up to 30 seconds (names to ids,
 grants). Reads may answer from that cache; writes never do. When a namespace is
 deleted, or an entity is deleted, retired (its synonyms released), loses a
 synonym or is merged into another, the Registry tells every service over NATS
-and they drop what they cached for it at once: a namespace or entity re-created
-under the same name, or a name now held by another entity, is read correctly
-right away. A deployment without NATS has no such message: for up to 30 seconds
-a read by name may still find the old id (and answer "not found", or return the
-merged-away entity). Wait 30 seconds, or read by canonical id.
+and they drop what they cached for it: within a few seconds a namespace or
+entity re-created under the same name, or a name now held by another entity, is
+read correctly. A deployment without NATS has no such message: for up to 30
+seconds a read by name may still find the old id (and answer "not found", or
+return the merged-away entity). Wait 30 seconds, or read by canonical id.
 
 ## Pagination
 Uniform across list endpoints: default page_size 50, maximum 1000. Two
