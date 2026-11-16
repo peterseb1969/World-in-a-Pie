@@ -72,3 +72,36 @@ async def test_an_administrators_namespaces_are_the_live_ones(client, auth_heade
     listed = set(await grants._unlocked_namespaces())
     assert {active, archived} <= listed
     assert not {locked, deleted} & listed
+
+
+@pytest.mark.asyncio
+async def test_an_item_naming_its_namespace_is_not_asked_again(
+    client, auth_headers, monkeypatch,
+):
+    """CASE-1334 (review of 6126de3b, R3): an item that names its namespace
+    has had read on it decided already, and allows() repeats that answer for
+    the rest of the request, so the late re-check of the matches' namespaces
+    could drop nothing and cost a query per item. It runs only for items
+    scoped to the readable list."""
+    import registry.api.entries as entries
+
+    ns = await _namespace(client, auth_headers)
+    value = f"v1334-{uuid.uuid4().hex[:8]}"
+    entry_id = await _register(client, auth_headers, ns, value)
+    calls: list[dict] = []
+    real = entries._drop_unreadable
+
+    async def counted(by_value, access):
+        calls.append(by_value)
+        await real(by_value, access)
+
+    monkeypatch.setattr(entries, "_drop_unreadable", counted)
+
+    named = [{"value": value, "namespace": ns} for _ in range(5)]
+    r = await client.post(CANDIDATES, json=[*named, {"value": value}], headers=auth_headers)
+
+    assert r.status_code == 200, r.text
+    assert len(calls) == 1  # only the item without a namespace
+    results = sorted(r.json()["results"], key=lambda x: x["index"])
+    assert all(x["status"] == "found" and x["total"] == 1 for x in results)
+    assert all(x["candidates"][0]["entry_id"] == entry_id for x in results)

@@ -2326,7 +2326,11 @@ async def lookup_candidates(
                 continue
 
             by_value = {**query, "search_values": item.value}
-            await _drop_unreadable(by_value, access)
+            if not item.namespace:
+                # A named namespace was decided above, and allows() answers
+                # it from the same per-request record: asking again could
+                # only repeat that answer, at the cost of a query per item.
+                await _drop_unreadable(by_value, access)
             total = await RegistryEntry.find(by_value).count()
             entries = await RegistryEntry.find(by_value).sort("+created_at").limit(item.limit).to_list()
             results.append(LookupCandidatesResponse(
@@ -2348,18 +2352,16 @@ async def lookup_candidates(
 
 
 async def _drop_unreadable(by_value: dict, access: NamespaceAccess) -> None:
-    """Narrow ``by_value`` to the namespaces of its matches the caller may
-    still read. The readable list was read before the query: a namespace
-    locked since then is asked again (allows() reads it at decision time)
-    and dropped, so neither the candidates nor `total` include it."""
+    """Narrow ``by_value``, scoped to the caller's readable list
+    (``{"$in": [...]}``), to the namespaces of its matches the caller may
+    still read. The list was read before the query: a namespace locked since
+    then is asked again (allows() reads it at decision time, once per
+    request) and dropped, so neither the candidates nor `total` include it."""
     found = await RegistryEntry.get_motor_collection().distinct("namespace", by_value)
     closed = [ns for ns in found if not await access.allows(ns, "read")]
     if closed:
-        scope = by_value.get("namespace")
-        if isinstance(scope, dict) and "$in" in scope:
-            by_value["namespace"] = {"$in": [ns for ns in scope["$in"] if ns not in closed]}
-        else:
-            by_value["namespace"] = {"$nin": closed}
+        scope = by_value["namespace"]["$in"]
+        by_value["namespace"] = {"$in": [ns for ns in scope if ns not in closed]}
 
 
 @router.post(
