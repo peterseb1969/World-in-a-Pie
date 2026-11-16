@@ -23,8 +23,9 @@ app that holds it (`privileged_key`, React Console) has no key of its own.
 On k8s an apply cannot drop a value from the live `wip-secrets` Secret, so
 `remove-app` also removes the removed app's value from it (a JSON patch on that
 one key). When the cluster refuses the patch, the removal still completes with a
-warning naming the `kubectl patch` to run; the value left there names a revoked
-key, and `add-app` replaces it rather than stopping as secret drift.
+warning naming the `kubectl patch` to run; the value left there names a key the
+Registry revokes at its next import of the key file, and `add-app` replaces it
+rather than stopping as secret drift.
 
 **Action:** none. A holder of a removed app's key outside the install (a script,
 another machine) must be handed the new key after the app is added again.

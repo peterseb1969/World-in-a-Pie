@@ -33,6 +33,7 @@ from wip_auth import (
     check_namespace_permission,
     declare_api_key_security,
     get_identity_string,
+    implied_namespace,
     install_liveness,
     is_superadmin,
     require_api_key,
@@ -932,9 +933,12 @@ async def _effective_namespace(
       listing answers only from the namespaces of the second value (some,
       like /tables, read the whole catalog and drop the rest before
       answering);
-    - a key that can read exactly one namespace gets it implicitly;
-    - a key that can read several must say which (400), and one that
-      can read none is refused (403).
+    - a key that can read exactly one namespace gets it implicitly, and
+      so does a key whose scope implies one (its own namespace beside a
+      read-only ``wip``, as wip-deploy derives an app's key), when it can
+      read that one;
+    - any other key that can read several must say which (400), and one
+      that can read none is refused (403).
     """
     if requested:
         await check_namespace_permission(identity, requested, "read")
@@ -946,6 +950,10 @@ async def _effective_namespace(
         return accessible[0], accessible
     if not accessible:
         raise HTTPException(status_code=403, detail="No accessible namespaces")
+    # A key scoped to its own namespace beside a read-only wip implies its
+    # own; one whose grant there was revoked implies nothing it can read.
+    if (implied := await implied_namespace(identity)) in accessible:
+        return implied, [implied]
     raise HTTPException(
         status_code=400,
         detail=(

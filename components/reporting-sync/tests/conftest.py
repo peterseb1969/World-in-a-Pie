@@ -52,6 +52,13 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
     {"name": "rs-nsadmin-xread", "key": "rs_nsadmin_xread_key", "owner": "rs-nsadmin-xread",
      "groups": [], "namespaces": ["ns-a", "ns-other"],
      "grants": {"ns-a": "admin", "ns-other": "read"}},
+    # An app key as wip-deploy derives it: its own namespace, wip read-only.
+    {"name": "rs-app", "key": "rs_app_key", "owner": "rs-app",
+     "groups": [], "namespaces": ["ns-a", "wip"],
+     "grants": {"ns-a": "admin", "wip": "read"}},
+    {"name": "rs-app-wipwrite", "key": "rs_app_wipwrite_key", "owner": "rs-app-wipwrite",
+     "groups": [], "namespaces": ["ns-a", "wip"],
+     "grants": {"ns-a": "admin", "wip": "write"}},
     {"name": "rs-xreader", "key": "rs_xreader_key", "owner": "rs-xreader",
      "groups": [], "namespaces": ["ns-a", "ns-other"],
      "grants": {"ns-a": "read", "ns-other": "read"}},

@@ -19,8 +19,10 @@ that holds write or admin on `wip` derives nothing, so omitting `namespace` neve
 picks between two namespaces it can write. Scopes of any other shape behave as
 before. The same rule decides every door that takes an omittable `namespace`:
 identifier resolution in all stores, the terminology import's target, term
-search, and document-store's template facets, impact stats and migrate (where,
-as before, a platform administrator always names the namespace).
+search, document-store's template facets, impact stats and migrate, and
+reporting-sync's search, activity, term documents, referenced-by and tables (where, as
+before, a platform administrator always names the namespace or, on
+reporting-sync, lists every namespace).
 
 **Action:** for such a key, a bare value now resolves in its own namespace, as
 for a single-namespace key. An app that names a `wip` terminology or template by

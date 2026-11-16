@@ -222,7 +222,8 @@ def test_k8s_a_stale_live_value_is_replaced_not_drift(
     harness.patch_effect = cli.LiveSecretReadUnavailable("forbidden")
     removed = harness.run("remove-app", "wip-aa")
     assert removed.exit_code == 0, removed.output
-    assert "is still in the live wip-secrets" in removed.output
+    assert "may still be in the live wip-secrets" in removed.output
+    assert "revokes the key at its next import" in removed.output
     assert harness.value(AA_KEY) is None
     # The live Secret still carries the old value (and every other one).
     assert harness.live[AA_KEY] == old

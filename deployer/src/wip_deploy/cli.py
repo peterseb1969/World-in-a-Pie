@@ -3374,9 +3374,10 @@ def _after_app_removal(
 
 def _forget_live_secret(deployment: Deployment, secret_name: str) -> None:
     """On k8s, take a removed app's key value out of the live `wip-secrets`,
-    which an apply leaves holding it. The key is already revoked, so a
-    cluster that cannot be patched only warns: the value stays until the
-    next add-app of the app replaces it."""
+    which an apply leaves holding it. The key is out of the key file, so the
+    Registry revokes it at its next import; a cluster that cannot be read or
+    patched only warns: the value may stay until the next add-app of the app
+    replaces it."""
     k8s = deployment.spec.platform.k8s
     if deployment.spec.target != "k8s" or k8s is None:
         return
@@ -3384,8 +3385,9 @@ def _forget_live_secret(deployment: Deployment, secret_name: str) -> None:
         removed = remove_live_secret_value(k8s.namespace, secret_name)
     except LiveSecretReadUnavailable as e:
         typer.echo(
-            f"warning: {secret_name} is still in the live wip-secrets ({e}). The "
-            "Registry has revoked the key; remove the value with `kubectl patch "
+            f"warning: {secret_name} may still be in the live wip-secrets ({e}). The "
+            "Registry revokes the key at its next import of the key file; remove "
+            "the value with `kubectl patch "
             f"secret wip-secrets -n {k8s.namespace} --type=json -p "
             f"'[{{\"op\":\"remove\",\"path\":\"/data/{secret_name}\"}}]'`.",
             err=True,
