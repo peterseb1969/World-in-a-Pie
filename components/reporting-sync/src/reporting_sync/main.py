@@ -1827,7 +1827,7 @@ async def _ask_store_integrity(
 
     Unreachable, or any status but 200: the store could not check, so the
     aggregator names it as unavailable. It never raises — one dead store does
-    not fail the aggregate the other two answered.
+    not cost the other store's verdict.
     """
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
