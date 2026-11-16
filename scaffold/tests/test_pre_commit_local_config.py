@@ -157,9 +157,10 @@ def test_each_file_is_its_own_value_when_read_in_one_pass(repo, value):
 
 
 def test_a_secret_file_with_a_nul_byte_is_read_up_to_the_nul(repo):
-    # Pinned, not chosen: the awk that reads every secret file in one pass
-    # stops each line at a NUL byte (BSD awk), where the per-file subshell it
-    # replaced dropped the NULs. wip-deploy writes its secrets as text; a
+    # The awk that reads every secret file in one pass cuts each line at its
+    # first NUL byte. BSD awk does so by itself; gawk and mawk (Linux, CI)
+    # kept the NUL and the rest in the value, which then matched nothing, so
+    # the hook cuts it explicitly. wip-deploy writes its secrets as text; a
     # binary file's value is what precedes its first NUL, or nothing when that
     # is under 12 characters.
     root, env = repo

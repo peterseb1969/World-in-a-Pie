@@ -73,10 +73,16 @@ fi
 # holds hundreds of secret files, and forking per file cost over a second on
 # every commit. The count guard matters twice: awk with no file reads stdin,
 # and bash 3.2 calls an empty "${key_files[@]}" unbound under set -u.
+# A line is cut at its first NUL byte. BSD awk (macOS) stops a line there by
+# itself; gawk and mawk keep the NUL and the rest inside the value, which then
+# never matches a staged line, so a binary secret file went unchecked on Linux.
+# Cutting it here makes the value the same on every awk.
 if [ "${#key_files[@]}" -gt 0 ]; then
-  awk 'function flush() { if (length(v) >= 12) print v; v = "" }
+  awk 'BEGIN { nul = sprintf("%c", 0) }
+       function flush() { if (length(v) >= 12) print v; v = "" }
        FNR == 1 && NR > 1 { flush() }
-       { gsub(/\r/, ""); v = v $0 }
+       { if (nul != "" && (i = index($0, nul)) > 0) $0 = substr($0, 1, i - 1)
+         gsub(/\r/, ""); v = v $0 }
        END { flush() }' "${key_files[@]}" >> "$vals"
 fi
 
