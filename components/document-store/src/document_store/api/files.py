@@ -713,41 +713,53 @@ class StorageDeleteRequest(StrictModel):
 
 
 async def _recorded_step_keys(
-    registry: Any, namespace: str, journal_id: str, step_order: int
+    registry: Any, journal: dict[str, Any], request: StorageDeleteRequest
 ) -> set[str]:
-    """The keys the deletion journal recorded for the step that sent a delete.
+    """The keys the running deletion's journal recorded for the step that sent
+    a delete.
 
-    A delete is bound to its deletion: the step must belong to the journal named
-    in the request, and its recorded key set must still be readable. Anything
-    else refuses the request outright rather than deleting on an authority the
-    journal does not give — a key list from elsewhere, or one replayed against a
-    later deletion of a namespace re-created under the same name.
+    A delete is bound to its deletion: the journal named in the request must be
+    the running one, the step must belong to it, and the step's recorded key set
+    must still be readable. Anything else refuses the request outright rather
+    than deleting on an authority the journal does not give — a key list from
+    elsewhere, or one replayed against a later deletion of a namespace
+    re-created under the same name.
     """
+    if journal.get("journal_id") != request.journal_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Namespace {request.namespace!r} is being deleted as "
+            f"{journal.get('journal_id')!r}, not {request.journal_id!r}; nothing is deleted.",
+        )
     try:
-        step = await registry.get_namespace_deletion_step_keys(namespace, step_order)
+        step = await registry.get_namespace_deletion_step_keys(
+            request.namespace, request.step_order
+        )
     except Exception as e:
         raise HTTPException(
             status_code=503,
-            detail=f"Registry could not confirm step {step_order} of the deletion of "
-            f"namespace {namespace!r}: {e}",
+            detail=f"Registry could not confirm step {request.step_order} of the deletion "
+            f"of namespace {request.namespace!r}: {e}",
         ) from e
     if step is None:
         raise HTTPException(
             status_code=409,
-            detail=f"The deletion journal of namespace {namespace!r} has no file-storage "
-            f"step {step_order}; nothing is deleted.",
+            detail=f"The deletion journal of namespace {request.namespace!r} has no "
+            f"file-storage step {request.step_order}; nothing is deleted.",
         )
-    if step.get("journal_id") != journal_id:
+    if step.get("journal_id") != request.journal_id:
         raise HTTPException(
             status_code=409,
-            detail=f"Step {step_order} of namespace {namespace!r} belongs to deletion "
-            f"{step.get('journal_id')!r}, not to {journal_id!r}; nothing is deleted.",
+            detail=f"Step {request.step_order} of namespace {request.namespace!r} belongs "
+            f"to deletion {step.get('journal_id')!r}, not to {request.journal_id!r}; "
+            "nothing is deleted.",
         )
     if not step.get("keys_available"):
         raise HTTPException(
             status_code=409,
-            detail=f"Step {step_order} of the deletion of namespace {namespace!r} no "
-            f"longer has its recorded keys ({step.get('reason')}); nothing is deleted.",
+            detail=f"Step {request.step_order} of the deletion of namespace "
+            f"{request.namespace!r} no longer has its recorded keys ({step.get('reason')}); "
+            "nothing is deleted.",
         )
     return {str(k) for k in (step.get("keys") or [])}
 
@@ -828,15 +840,7 @@ async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dic
     keys = list(dict.fromkeys(request.storage_keys))
     # The keys are only the deletion's if its journal says so: a list that
     # arrives while some deletion runs under the name is not authority.
-    if journal.get("journal_id") != request.journal_id:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Namespace {request.namespace!r} is being deleted as "
-            f"{journal.get('journal_id')!r}, not {request.journal_id!r}; nothing is deleted.",
-        )
-    recorded = await _recorded_step_keys(
-        registry, request.namespace, request.journal_id, request.step_order
-    )
+    recorded = await _recorded_step_keys(registry, journal, request)
 
     owners: dict[str, set[str]] = {}
     for file_doc in await FileModel.find({"storage_key": {"$in": keys}}).to_list():
