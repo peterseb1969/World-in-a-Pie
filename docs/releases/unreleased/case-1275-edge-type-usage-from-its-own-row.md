@@ -11,3 +11,8 @@ template's inheritance (409 `inheritance_unresolved`: a missing parent, a
 cycle, a chain too deep), that edge type dropped out. A `types` filter naming
 it answered an empty page, and an unfiltered listing lost its edges. `usage`
 is stored on the template itself, so its unresolved row now answers instead.
+
+An edge type named in a `template` / `types` filter whose documents are
+there but which template-store does not hold at all, not even unresolved,
+now answers 404 instead of an empty page, which read as "no edges of this
+type".

@@ -193,3 +193,37 @@ async def test_an_unresolvable_entity_template_is_still_no_edge_type(clean):
         listed = await DocumentService().find_relationships("A")
 
     assert listed.items == []
+
+
+@pytest.mark.asyncio
+async def test_a_named_edge_type_the_store_does_not_hold_is_not_found(clean):
+    """Edges of a type are here, but the template store holds no row for it at
+    all, not even unresolved. Naming it answered an empty page, as if no edge
+    of that type reached here; it is refused as not found instead. Unnamed, it
+    is still left out of the edge set."""
+    from document_store.services.errors import DocumentStoreError
+
+    await _doc("A")
+    await _doc("B")
+    await _edge("E-AB", "A", "B")
+
+    with _store({}), pytest.raises(DocumentStoreError) as listed:
+        await DocumentService().find_relationships("A", template_ids=[EDGE])
+    assert (listed.value.code, listed.value.details) == ("not_found", {"rule": "edge_type_unreadable"})
+
+    with _store({}), pytest.raises(DocumentStoreError) as walked:
+        await DocumentService().traverse_relationships("A", type_ids=[EDGE])
+    assert walked.value.code == "not_found"
+
+    with _store({}):
+        unnamed = await DocumentService().find_relationships("A")
+    assert unnamed.items == []
+
+
+def test_only_a_not_found_refusal_answers_404():
+    from document_store.api.documents import _relationship_refusal
+    from document_store.services.errors import DocumentStoreError
+
+    assert _relationship_refusal(DocumentStoreError("gone", "not_found")).status_code == 404
+    assert _relationship_refusal(DocumentStoreError("bad", "validation_failed")).status_code == 400
+    assert _relationship_refusal(ValueError("bad depth")).status_code == 400

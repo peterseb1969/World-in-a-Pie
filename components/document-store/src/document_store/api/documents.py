@@ -750,6 +750,14 @@ _EDGE_TYPE_FILTER_RESOLUTION = (
 )
 
 
+def _relationship_refusal(e: ValueError) -> HTTPException:
+    """A refused relationship listing or walk: a named edge type the template
+    store does not hold is not found (404); every other refusal is a bad
+    request (400)."""
+    not_found = isinstance(e, DocumentStoreError) and e.code == "not_found"
+    return HTTPException(status_code=404 if not_found else 400, detail=str(e))
+
+
 async def _resolve_edge_type_filter(
     raw: str | None, namespace: str, param_name: str,
 ) -> list[str] | None:
@@ -846,7 +854,7 @@ async def get_document_relationships(
             allowed_namespaces=allowed,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise _relationship_refusal(e) from e
 
 
 @router.get(
@@ -910,7 +918,7 @@ async def traverse_document_relationships(
             ),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise _relationship_refusal(e) from e
 
 
 async def _hard_delete_exemptions(service, items: list[DeleteItem], identity: UserIdentity) -> frozenset[str]:

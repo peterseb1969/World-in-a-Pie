@@ -2718,7 +2718,9 @@ class DocumentService:
     # PHASE 4 — RELATIONSHIP QUERY APIS
     # =========================================================================
 
-    async def _edge_type_ids(self, query: dict[str, Any]) -> list[str]:
+    async def _edge_type_ids(
+        self, query: dict[str, Any], named: list[str] | None = None,
+    ) -> list[str]:
         """The edge types (usage='relationship') among the templates of the
         documents ``query`` matches.
 
@@ -2729,12 +2731,23 @@ class DocumentService:
         composed (a deleted parent, a cycle: the store refuses the resolved
         read) is still asked through its unresolved row; only a template the
         store does not hold at all is not counted.
+
+        ``named`` is the caller's type filter. A named type whose documents
+        are here but which the store does not hold at all is refused
+        (not_found): leaving it out would answer an empty page, as if no edge
+        of that type reached here.
         """
         candidate_ids = await Document.get_motor_collection().distinct("template_id", query)
         client = get_template_store_client()
         edge_ids: list[str] = []
         for template_id in candidate_ids:
             template = await self._edge_usage_source(client, template_id)
+            if template is None and named and template_id in named:
+                raise DocumentStoreError(
+                    f"Edge type {template_id!r} has documents here but no template "
+                    "the template store holds, so its edges cannot be listed",
+                    "not_found", rule="edge_type_unreadable",
+                )
             if template and template.get("usage") == "relationship":
                 edge_ids.append(template_id)
         return edge_ids
@@ -2831,7 +2844,7 @@ class DocumentService:
                 {"data.target_ref": document_id},
             ]
 
-        candidate_edge_ids = await self._edge_type_ids(query)
+        candidate_edge_ids = await self._edge_type_ids(query, named=template_ids)
         query["template_id"] = {"$in": _narrow_to_edge_types(template_ids, candidate_edge_ids)}
 
         total = await Document.find(query).count()
@@ -3034,7 +3047,7 @@ class DocumentService:
                 break
             hop_query = _hop_query(frontier, direction, namespace, allowed_namespaces)
             hop_query["template_id"] = {
-                "$in": _narrow_to_edge_types(type_ids, await self._edge_type_ids(hop_query)),
+                "$in": _narrow_to_edge_types(type_ids, await self._edge_type_ids(hop_query, named=type_ids)),
             }
             frontier, truncated = await self._walk_hop(
                 hop_query, frontier, direction, visited, path_by_id, nodes,
