@@ -285,8 +285,9 @@ export interface RestoreOptions {
    * archive version maps onto the target version whose schema can take its
    * documents, and documents are re-pinned to it. Documents no target version
    * can take are listed on the job (`result.namespaces[ns].template_alignment
-   * .unplaceable_documents`) and not merged. Refused for a template both
-   * sides share. Dry-run first.
+   * .unplaceable_documents`) and not merged. A template that is the same on
+   * both sides (one install minted it) is matched by version number, as
+   * without the option. Dry-run first.
    */
   align_templates?: boolean
   /**

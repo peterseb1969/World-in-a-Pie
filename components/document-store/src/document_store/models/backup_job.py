@@ -427,8 +427,9 @@ class RestoreFromJobRequest(StrictModel):
             "version whose schema can take its documents, documents are "
             "re-pinned to it, and documents no target version can take are "
             "listed and not merged. For an archive from another install, "
-            "whose version numbers do not line up with the target's; "
-            "refused for a template both sides share."
+            "whose version numbers do not line up with the target's. A "
+            "template that is the same on both sides (one install minted it) "
+            "is matched by version number, as without the option."
         ),
     )
     carry_retirements: bool = Field(
