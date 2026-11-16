@@ -42,7 +42,11 @@ async def test_a_key_created_already_expired_is_refused(client: AsyncClient, aut
     await StoredAPIKey.find(StoredAPIKey.name == name).delete()
     response = await client.post(BASE, json={"name": name, "expires_at": expires_at}, headers=auth_headers)
     assert response.status_code == 422, response.text
-    assert "already passed" in response.json()["detail"]
+    body = response.json()
+    assert "already passed" in body["detail"]
+    # The grants door's code and rule for the same refusal (CASE-1336).
+    assert body["error_code"] == "validation_failed"
+    assert body["details"] == {"rule": "expired", "field": "expires_at"}
     assert await StoredAPIKey.find_one(StoredAPIKey.name == name) is None
 
 
@@ -60,6 +64,8 @@ async def test_renewing_with_a_past_date_leaves_the_key_as_it_was(client: AsyncC
         f"{BASE}/{name}", json={"expires_at": PAST, "description": "after"}, headers=auth_headers,
     )
     assert response.status_code == 422, response.text
+    assert response.json()["error_code"] == "validation_failed"
+    assert response.json()["details"]["rule"] == "expired"
     doc = await _stored(name)
     assert doc.description == "before" and not expiry_passed(doc.expires_at)
 

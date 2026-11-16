@@ -405,7 +405,10 @@ curl -k -H "X-API-Key: <admin-key>" https://<host>:8443/api/registry/api-keys
 # Get a single key
 curl -k -H "X-API-Key: <admin-key>" https://<host>:8443/api/registry/api-keys/my-app
 
-# Update metadata (PATCH; only fields you include change)
+# Update metadata (PATCH). A field left out, or sent as null, is unchanged —
+# except expires_at: null removes the expiry (the key never expires). An
+# expiry already past is refused (422, error_code validation_failed) and the
+# key is left as it was.
 curl -k -X PATCH https://<host>:8443/api/registry/api-keys/my-app \
   -H "X-API-Key: <admin-key>" \
   -H "Content-Type: application/json" \

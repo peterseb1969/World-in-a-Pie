@@ -20,10 +20,13 @@ EXPIRES_AT_DESCRIPTION = (
 
 
 def expiry_passed(expires_at: datetime | None) -> bool:
-    """Whether a grant expiry has passed. An expiry is UTC: MongoDB hands
-    datetimes back without a timezone, and a request may send one without an
-    offset, so a naive value is read as UTC (comparing it with an aware now
-    would raise TypeError)."""
+    """Whether an expiry has passed — a grant's, and a runtime key's on the
+    key routes, which refuse one already past. It must stay the rule the key
+    check applies (wip_auth APIKeyRecord.is_expired), or the key routes
+    would accept an expiry the check already treats as past. An expiry is
+    UTC: MongoDB hands datetimes back without a timezone, and a request may
+    send one without an offset, so a naive value is read as UTC (comparing it
+    with an aware now would raise TypeError)."""
     if expires_at is None:
         return False
     if expires_at.tzinfo is None:

@@ -147,7 +147,8 @@ class APIKeyCreateRequest(BaseModel):
     description: str | None = Field(default=None, description="What this key is for")
     expires_at: datetime | None = Field(
         default=None,
-        description=KEY_EXPIRES_AT_DESCRIPTION + " An expiry already past is refused (422).",
+        description=KEY_EXPIRES_AT_DESCRIPTION + " An expiry already past is refused "
+        "(422, error_code validation_failed, details.rule expired).",
     )
     namespaces: list[str] | None = Field(default=None, description=KEY_NAMESPACES_DESCRIPTION)
     grant_permission: Literal["read", "write", "admin"] | None = Field(
@@ -282,7 +283,8 @@ class APIKeyUpdateRequest(BaseModel):
         description=(
             "When the key stops authenticating, in UTC; a value without an offset "
             "is read as UTC. Sent as null, the key never expires; left out, the "
-            "expiry is unchanged; an expiry already past is refused (422) and the "
+            "expiry is unchanged; an expiry already past is refused (422, "
+            "error_code validation_failed, details.rule expired) and the "
             "key is left as it was. The other fields are unchanged when null or "
             "left out."
         ),

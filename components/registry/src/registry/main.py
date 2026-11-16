@@ -31,7 +31,11 @@ from wip_auth.mongo import mongo_client_options, mongo_identity, mongo_ping
 
 from . import __version__
 from .api import api_router
-from .api.api_keys import configure_api_key_management
+from .api.api_keys import (
+    ExpiryPassedRefused,
+    configure_api_key_management,
+    expiry_passed_refused_handler,
+)
 from .models.api_key import StoredAPIKey
 from .models.attachment import AppAttachment
 from .models.composite_key_claim import CompositeKeyClaim
@@ -400,6 +404,8 @@ app.add_middleware(
 app.include_router(api_router)
 # A write to a record wip-deploy owns: 409 with error_code managed_by_deployer.
 app.add_exception_handler(ManagedRecordRefused, managed_record_refused_handler)
+# A key expiry already past: 422 with the grants door's code and rule.
+app.add_exception_handler(ExpiryPassedRefused, expiry_passed_refused_handler)
 
 # Declare the X-API-Key requirement in the OpenAPI contract — runtime
 # Depends() enforcement emits nothing into the schema, and a client

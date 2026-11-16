@@ -9,7 +9,8 @@ import math
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pymongo.errors import DuplicateKeyError
 
 from wip_auth import (
@@ -617,6 +618,34 @@ async def _follow_scope_with_grants(name: str, added: list[str], dropped: list[s
         await NamespaceGrant.find(_grant_query(name, prefix)).delete()
 
 
+class ExpiryPassedRefused(Exception):
+    """A key create or update choosing an expiry that has already passed.
+    Answers 422 with `{"detail": <message>, "error_code": "validation_failed",
+    "details": {"rule": "expired", "field": "expires_at"}}` — the code and
+    rule the grants door gives the same refusal, so a caller provisioning
+    both branches on one code instead of the message. `detail` stays a
+    string, as every other refusal's does."""
+
+    def __init__(self, expires_at: datetime) -> None:
+        self.detail = (
+            f"expires_at {expires_at.isoformat()} has already passed "
+            "(an expiry without an offset is read as UTC)"
+        )
+        super().__init__(self.detail)
+
+
+async def expiry_passed_refused_handler(_: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, ExpiryPassedRefused)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": exc.detail,
+            "error_code": "validation_failed",
+            "details": {"rule": "expired", "field": "expires_at"},
+        },
+    )
+
+
 def _refuse_past_expiry(expires_at: datetime | None) -> None:
     """Refuse an expiry that has already passed (read as UTC without an
     offset, the rule the key check applies): such a key would never
@@ -624,11 +653,7 @@ def _refuse_past_expiry(expires_at: datetime | None) -> None:
     A restore or key-file import carries its expiry as it is; only a request
     choosing one is checked."""
     if expires_at is not None and expiry_passed(expires_at):
-        raise HTTPException(
-            status_code=422,
-            detail=f"expires_at {expires_at.isoformat()} has already passed "
-            "(an expiry without an offset is read as UTC)",
-        )
+        raise ExpiryPassedRefused(expires_at)
 
 
 def _refuse_scoped_privileged(groups: list[str] | None, namespaces: list[str] | None) -> None:
