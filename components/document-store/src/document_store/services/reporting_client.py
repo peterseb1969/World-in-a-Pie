@@ -8,11 +8,11 @@ it), trigger (kick a namespace batch sync), and drop (clear a stale reporting
 schema, gated by the caller's explicit opt-in).
 
 Reporting-sync is an optional module (the core preset deploys without it), so
-every method degrades to None/False on unreachability instead of raising — the
-engine turns that into an unverified verdict and a logged warning. A restore
-never fails because the convenience layer is absent, and never fails on the
-state of the reporting layer either: what the tables look like is reported, not
-acted on.
+every method degrades to None/False on unreachability, on a refused request
+and on an answer it cannot read, instead of raising — the engine turns that into
+an unverified verdict and a logged warning. A restore never fails because the
+convenience layer is absent, and never fails on the state of the reporting
+layer either: what the tables look like is reported, not acted on.
 """
 
 import logging
@@ -47,7 +47,13 @@ class ReportingSyncClient:
     async def parity(
         self, namespace: str, include_counts: bool = False
     ) -> dict[str, Any] | None:
-        """Namespace parity result as a dict, or None when unreachable."""
+        """Namespace parity result as a dict, or None when unreachable.
+
+        An answer that is not the expected JSON (a proxy's error page, a
+        mispointed REPORTING_SYNC_URL, a truncated body) is None too: this
+        verb runs after the documents are written, and a reporting answer that
+        cannot be read is recorded as unverified, never raised into a failed
+        restore."""
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(
@@ -59,7 +65,14 @@ class ReportingSyncClient:
                     headers=self._headers(),
                 )
                 if resp.status_code == 200:
-                    return cast(dict[str, Any], resp.json())
+                    try:
+                        return cast(dict[str, Any], resp.json())
+                    except ValueError:
+                        logger.warning(
+                            "reporting parity for %s: unreadable answer %s",
+                            namespace, resp.text[:200],
+                        )
+                        return None
                 logger.warning(
                     "reporting parity for %s returned HTTP %s",
                     namespace, resp.status_code,

@@ -1154,9 +1154,13 @@ def _print_reporting_verdict(result: dict) -> None:
         console.print(
             f"  {namespace}: {verdict.get('status')} — {verdict.get('reason') or ''}"
         )
+        # Only a proven gap earns the rebuild: force drops the namespace's
+        # tables before recreating them, which SQL readers feel as missing
+        # relations, and an unverified verdict proved nothing was missing.
+        force = "&force=true" if verdict.get("status") == "failed" else ""
         console.print(
             "[dim]  re-sync: POST "
-            f"/api/reporting-sync/sync/batch?namespace={namespace}&force=true, "
+            f"/api/reporting-sync/sync/batch?namespace={namespace}{force}, "
             "then GET /api/reporting-sync/parity[/dim]"
         )
 

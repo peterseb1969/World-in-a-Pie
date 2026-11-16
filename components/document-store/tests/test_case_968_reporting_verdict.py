@@ -14,22 +14,26 @@ there is no second copy of the verdict to drift from the first.
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from document_store.services import reporting_client
 from document_store.services.backup_engine import (
     _DB_REGISTRY,
     COLLECTION_MAP,
     PROVENANCE_COLLECTION,
     DirectRestoreEngine,
 )
+from document_store.services.reporting_client import ReportingSyncClient
 from tests.test_case_689_restore_phases import (
     BROKEN,
     CLEAN,
     _engine,
     _reason,
     _reporting_stub,
+    _still_running,
 )
 from tests.test_case_942_restore_provenance import (
     NAMESPACE,
@@ -197,6 +201,67 @@ class TestVerdicts:
         eng = DirectRestoreEngine(MagicMock(), None, lambda _e: None)
         eng._set_reporting_verdict("probed-only", "unverified", "precondition")
         assert list(_verdict(eng, ["written"])["namespaces"]) == ["written"]
+
+
+# ---------------------------------------------------------------------------
+# The advice that goes with the verdict, and an answer that cannot be used
+# ---------------------------------------------------------------------------
+
+
+class TestResyncAdvice:
+    """``force=true`` drops every in-scope template's tables before rebuilding
+    them, and SQL readers see relation-does-not-exist while that runs. So it is
+    the remedy for a proven gap, never for a check that could not run."""
+
+    @pytest.mark.asyncio
+    async def test_a_proven_gap_names_the_rebuild_from_source(self):
+        events = []
+        eng = _engine(_reporting_stub(GAPPED), events)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        warning = [e for e in events if e.phase == "warning"][-1].message
+        assert "sync/batch?namespace=ns1&force=true" in warning
+
+    @pytest.mark.asyncio
+    async def test_a_sync_still_running_names_the_plain_re_trigger(self):
+        events = []
+        eng = _engine(_reporting_stub(_still_running(rows=3, expected=10)), events)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        warning = [e for e in events if e.phase == "warning"][-1].message
+        assert "sync/batch?namespace=ns1)" in warning
+        assert "force=true" not in warning
+
+    @pytest.mark.asyncio
+    async def test_a_check_that_could_not_run_names_the_plain_re_trigger(self):
+        events = []
+        eng = _engine(_reporting_stub(dict(
+            CLEAN, ok=False, verdict="unverified",
+            reasons=[_reason("ns1", "nothing_checked", "nothing to check", kind="namespace")],
+        )), events)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        warning = [e for e in events if e.phase == "warning"][-1].message
+        assert "force=true" not in warning
+
+
+class TestAnUnusableAnswer:
+    """An answer this engine cannot read is reported, never raised: the phase
+    runs after the namespace's documents and Registry entries were written, and
+    nothing rolls them back."""
+
+    @pytest.mark.asyncio
+    async def test_a_parity_answer_that_is_not_json_degrades_to_none(self, monkeypatch):
+        """A proxy's error page or a mispointed REPORTING_SYNC_URL answers 200
+        with HTML; resp.json() raises ValueError, which is not an HTTPError."""
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, text="<html>502 bad gateway</html>")
+        )
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            reporting_client.httpx, "AsyncClient",
+            lambda *a, **kw: real(
+                transport=transport, **{k: v for k, v in kw.items() if k != "transport"}
+            ),
+        )
+        assert await ReportingSyncClient().parity("ns1", include_counts=True) is None
 
 
 # ---------------------------------------------------------------------------

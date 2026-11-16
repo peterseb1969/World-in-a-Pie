@@ -342,6 +342,10 @@ class TestReportingVerdictLine:
         out = _invoke(tmp_path, client).output
         assert "reporting: unverified" in out
         assert "reporting-sync not reachable" in out
+        # Nothing was proved missing, so the rebuild that drops the namespace's
+        # tables is not what to run — the plain re-trigger is.
+        assert "sync/batch?namespace=kb," in out
+        assert "force=true" not in out
 
     def test_a_verified_run_adds_no_line(self, tmp_path):
         client = _mock_client(result={"reporting_verification": {

@@ -1961,6 +1961,20 @@ def _reason_line(reasons: list[dict[str, Any]], limit: int = 3) -> str:
     return "; ".join(details)
 
 
+def _resync_command(namespace: str, verdict: str) -> str:
+    """The batch sync to run for this verdict.
+
+    ``failed`` proved tables or rows missing, and one cause of that is a table
+    already in the way — so it names the rebuild from source. ``unverified``
+    proved nothing: its gap is that no one could look (a store did not answer,
+    the sync is still running), which the plain namespace re-trigger closes.
+    ``force=true`` drops every in-scope template's tables before rebuilding
+    them, and SQL readers see relation-does-not-exist while that runs, so it is
+    never the advice for a verdict that found no gap."""
+    force = "&force=true" if verdict == _FAILED else ""
+    return f"POST /api/reporting-sync/sync/batch?namespace={namespace}{force}"
+
+
 def _parity_rows(parity: dict[str, Any]) -> int:
     """The rows the namespace's reporting tables hold: the signal that a sync
     landing its pages is making progress."""
@@ -2303,7 +2317,7 @@ def _served_on_archived_keys(
     }
 
 
-# The types a merge writes ahead of every namespace's reporting gate.
+# The types a merge writes ahead of its documents (and their verification).
 _MERGE_DEFINITION_TYPES = frozenset({"terminologies", "terms", "term_relations", "templates"})
 
 
@@ -2506,26 +2520,28 @@ class DirectRestoreEngine:
         # active so far: what a failed activation reports as live.
         self._activation: dict[str, dict[str, int]] = {}
         # Namespaces whose reporting batch sync this run has already
-        # triggered (the count phase). Reported on the complete event so the
-        # job's completion does not trigger a second, full re-sync of them.
+        # triggered (the verification phase after the documents). Reported on
+        # the complete event so the job's completion does not trigger a
+        # second, full re-sync of them.
         self._reporting_synced: list[str] = []
         # Per namespace, the key claims of the definitions' registry entries
         # (claimed, owned by another), written in a pass ahead of the rest and
         # reported together with them (_restore_entity_type).
         self._held_claims: dict[str, tuple[int, int]] = {}
-        # Per-namespace reporting verdicts (verified / incomplete /
-        # unavailable / not_checked), put on the result at completion.
+        # Per-namespace reporting verdicts (verified / failed / unverified,
+        # as reporting-sync computed them), put on the result at completion.
         self._reporting_verdicts: dict[str, dict[str, Any]] = {}
         self._registry_url = registry_base_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
         self._registry_api_key = registry_api_key or service_api_key(*REGISTRY_KEY)
-        # Reporting verification phases (restore-verification design): when a
-        # client is injected AND reporting-sync answers, the restore verifies
-        # the reporting layer at phase boundaries. When reporting-sync is
-        # unreachable (core preset deploys without it), the phases degrade to
-        # a logged warning — a restore never fails because the convenience
-        # layer is absent, only on positive verification failures.
+        # Reporting verification (restore-verification design): when a client
+        # is injected AND reporting-sync answers, the restore verifies the
+        # reporting layer once, after the documents. When reporting-sync is
+        # unreachable (core preset deploys without it), that degrades to a
+        # logged warning and an unverified verdict — a restore never fails
+        # because the convenience layer is absent, nor on what it says about
+        # the tables.
         self._reporting = reporting_client
 
     async def run_restore(
@@ -4847,12 +4863,13 @@ class DirectRestoreEngine:
         Both passes, and the reference check, run for every namespace in the
         archive before anything is written to any of them, so ``dry_run`` is
         exact rather than indicative: it fails on everything those checks
-        would refuse in a real run. One check needs writes first: the
-        reporting structure gate, which needs the merged templates written so
-        their tables can be built. So the write runs in three steps across
-        all namespaces: every namespace's definitions, then every gate, then
-        every namespace's documents, files and remaining entries. A gate that
-        refuses does so before any document is written anywhere. Any failure
+        would refuse in a real run. Reporting is not one of those checks: its
+        tables are derived from the documents, so nothing about them stands
+        between the definitions and the documents — they are verified after the
+        documents instead. So the write runs in two steps across all
+        namespaces: every namespace's definitions, then every namespace's
+        documents, files and remaining entries. The refusals that remain are
+        the preconditions, which run before anything is written. Any failure
         after the first write names what each target received
         (``details.written``), since nothing written is undone.
         """
@@ -6905,9 +6922,9 @@ class DirectRestoreEngine:
     ) -> None:
         """The plan's definition rows (terminologies, terms, term relations,
         templates) and the definitions' Registry entries, ahead of every
-        namespace's reporting gate and documents: every service resolves a
-        template or terminology id through the Registry, so the entries go in
-        with the definitions."""
+        namespace's documents: every service resolves a template or
+        terminology id through the Registry, so the entries go in with the
+        definitions."""
         for entity_type in MERGE_ENTITY_ORDER:
             plan = plans.get(entity_type)
             if plan is None or entity_type not in _MERGE_DEFINITION_TYPES:
@@ -7713,8 +7730,7 @@ class DirectRestoreEngine:
             "warning",
             f"[{namespace}] reporting {verdict}: {reason} — the restore's data is "
             "complete in MongoDB, and the reporting layer is derived from it. "
-            f"Re-run the batch sync (POST /api/reporting-sync/sync/batch?"
-            f"namespace={namespace}&force=true) and check "
+            f"Re-run the batch sync ({_resync_command(namespace, verdict)}) and check "
             f"GET /api/reporting-sync/parity?namespace={namespace}; the standing "
             "parity check may already be repairing it (GET "
             "/api/reporting-sync/parity/status).",
