@@ -110,7 +110,7 @@ async def test_a_run_that_lost_its_claim_stops_without_writing(client, monkeypat
     await journal.insert()
     svc = _svc(monkeypatch)
 
-    async def taken_over_meanwhile(step, namespace):
+    async def taken_over_meanwhile(step, namespace, journal_id=None):
         # Another run takes the journal over while this step runs.
         await DeletionJournal.get_motor_collection().update_one(
             {"_id": journal.id},
@@ -134,7 +134,7 @@ async def test_writes_set_only_the_fields_of_the_step_they_record(client, monkey
     await journal.insert()
     svc = _svc(monkeypatch)
 
-    async def note_meanwhile(step, namespace):
+    async def note_meanwhile(step, namespace, journal_id=None):
         # Another writer records something on the journal while the step runs
         # (the requester's note): the run's write must not erase it.
         await DeletionJournal.get_motor_collection().update_one(

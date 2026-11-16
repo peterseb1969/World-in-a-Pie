@@ -34,7 +34,7 @@ async def _journal_with_objects(client, monkeypatch, total: int):
         for i in range(total):
             yield f"k{i}"
 
-    async def execute(self, step, namespace):
+    async def execute(self, step, namespace, journal_id=None):
         return len(await step_storage_keys(step))
 
     monkeypatch.setattr(svc, "_iter_storage_keys", keys)
@@ -78,7 +78,7 @@ async def test_a_resumed_journal_counts_each_batch_once(client, monkeypatch):
     batches = [s for s in journal.steps if s.store == "file_storage"]
     down = {batches[-1].order}
 
-    async def execute(self, step, namespace):
+    async def execute(self, step, namespace, journal_id=None):
         if step.order in down:
             raise _Unreachable("object store down")
         return len(await step_storage_keys(step))

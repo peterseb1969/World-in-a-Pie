@@ -34,7 +34,7 @@ async def _journal(*steps: DeletionStep) -> DeletionJournal:
 async def test_a_resumed_journal_counts_completed_steps_of_every_store(client, monkeypatch):
     executed: list[int] = []
 
-    async def execute(self, step, namespace):
+    async def execute(self, step, namespace, journal_id=None):
         executed.append(step.order)
         if step.order == 5:
             step.error = "object store slow; 2 keys left"
@@ -61,7 +61,7 @@ async def test_a_resumed_journal_counts_completed_steps_of_every_store(client, m
 
 @pytest.mark.asyncio
 async def test_a_failing_step_fails_the_journal(client, monkeypatch):
-    async def execute(self, step, namespace):
+    async def execute(self, step, namespace, journal_id=None):
         raise RuntimeError("mongo gone")
 
     monkeypatch.setattr(NamespaceDeletionService, "_execute_step", execute)
@@ -75,7 +75,7 @@ async def test_a_failing_step_fails_the_journal(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_step_of_no_summary_kind_counts_nowhere(client, monkeypatch):
-    async def execute(self, step, namespace):
+    async def execute(self, step, namespace, journal_id=None):
         return 5
 
     monkeypatch.setattr(NamespaceDeletionService, "_execute_step", execute)

@@ -222,7 +222,7 @@ async def test_a_long_step_keeps_its_claim(client, monkeypatch):
     monkeypatch.setattr(mod, "_HEARTBEAT_INTERVAL", timedelta(milliseconds=40))
     seen: list[datetime] = []
 
-    async def long_step(step, namespace):
+    async def long_step(step, namespace, journal_id=None):
         for _ in range(2):
             await asyncio.sleep(0.15)
             stored = await DeletionJournal.get_motor_collection().find_one({"_id": journal.id})
@@ -286,7 +286,7 @@ async def test_a_heartbeat_that_fails_is_retried_and_the_run_still_cleans_up(
     announced = AsyncMock(return_value=True)
     monkeypatch.setattr(mod, "announce_namespace_deleted", announced)
 
-    async def long_step(step, namespace):
+    async def long_step(step, namespace, journal_id=None):
         # Bounded, so a run whose heartbeat died reports a failed assertion
         # here rather than waiting forever.
         for _ in range(50):

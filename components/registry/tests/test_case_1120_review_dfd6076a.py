@@ -206,7 +206,7 @@ async def test_the_sweep_drops_only_batches_no_step_needs(client):
 async def test_a_file_step_naming_no_keys_is_degraded(client, monkeypatch):
     svc = _svc(monkeypatch)
     step = DeletionStep(order=1, store="file_storage")
-    assert await svc._exec_file_storage_step(step, "any") == 0
+    assert await svc._exec_file_storage_step(step, "any", "journal-1") == 0
     assert step.error and "may remain" in step.error
 
 
@@ -222,7 +222,7 @@ async def test_counts_add_up_across_runs_and_include_steps_left_undone(client, m
     await journal.insert()
     svc = _svc(monkeypatch)
 
-    async def execute(step, namespace):
+    async def execute(step, namespace, journal_id=None):
         return 400 if step.store == "file_storage" else 5
 
     monkeypatch.setattr(svc, "_execute_step", execute)

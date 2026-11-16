@@ -498,7 +498,11 @@ class RegistryClient(RegistryClientBase):
     async def get_namespace_deletion_journal(self, namespace: str) -> dict[str, Any] | None:
         """The Registry's most recent deletion journal for the namespace, or
         None when it has none (404 — also what a key that is not a platform
-        admin gets). Raises RegistryError when the Registry cannot answer."""
+        admin gets). Raises RegistryError when the Registry cannot answer.
+
+        Among the journal's fields is ``journal_id``: the id the Registry names
+        on the storage deletes it sends for that deletion.
+        """
         async with _transport_errors("deletion journal"), self._make_client() as client:
             response = await client.get(
                 f"{self.base_url}/api/registry/namespaces/{namespace}/deletion-status",
@@ -509,6 +513,30 @@ class RegistryClient(RegistryClientBase):
         if response.status_code != 200:
             raise RegistryError(
                 f"Failed to fetch the deletion journal of {namespace}: "
+                f"{response.status_code} - {response.text}"
+            )
+        return cast(dict[str, Any], response.json())
+
+    async def get_namespace_deletion_step_keys(
+        self, namespace: str, step_order: int
+    ) -> dict[str, Any] | None:
+        """The stored-object keys the namespace's most recent deletion journal
+        recorded for one file-storage step, or None when it has no such step
+        (404). The body carries ``journal_id``, ``step_order``,
+        ``keys_available`` and, when available, ``keys``; when the step's key
+        batch no longer exists, ``keys_available`` is false with the reason.
+        Raises RegistryError when the Registry cannot answer."""
+        async with _transport_errors("deletion step keys"), self._make_client() as client:
+            response = await client.get(
+                f"{self.base_url}/api/registry/namespaces/{namespace}"
+                f"/deletion-steps/{step_order}/keys",
+                headers=self._get_headers(),
+            )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise RegistryError(
+                f"Failed to fetch step {step_order} of {namespace}'s deletion journal: "
                 f"{response.status_code} - {response.text}"
             )
         return cast(dict[str, Any], response.json())
