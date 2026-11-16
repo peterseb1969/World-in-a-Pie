@@ -5845,7 +5845,9 @@ class DirectRestoreEngine:
     def _rewrite_registry_entry(
         self, entry: dict[str, Any], remapper: IDRemapper
     ) -> dict[str, Any]:
-        """Rewrite the IDs embedded in an entry's composite keys, and rehash.
+        """Rewrite the IDs embedded in an entry's composite keys, and rehash;
+        and the entry ids its merge pointers name (merged_into, a synonym's
+        merged_from), through the same maps.
 
         A registry entry's key is what the uniqueness gate and every claim are
         built on, and for most entity types it embeds a parent's canonical ID
@@ -5859,6 +5861,10 @@ class DirectRestoreEngine:
         re-derived here.
         """
         result = dict(entry)
+        if isinstance(result.get("merged_into"), str):
+            result["merged_into"] = self._remap_key_values(
+                {"id": result["merged_into"]}, remapper
+            )["id"]
         key = result.get("primary_composite_key")
         if isinstance(key, dict):
             new_key = self._remap_key_values(key, remapper)
@@ -5876,6 +5882,10 @@ class DirectRestoreEngine:
                     new_synonyms.append(synonym)
                     continue
                 syn = dict(synonym)
+                if isinstance(syn.get("merged_from"), str):
+                    syn["merged_from"] = self._remap_key_values(
+                        {"id": syn["merged_from"]}, remapper
+                    )["id"]
                 syn_key = syn.get("composite_key")
                 if isinstance(syn_key, dict):
                     new_syn_key = self._remap_key_values(syn_key, remapper)

@@ -15,3 +15,14 @@ the fields derived from it or kept as bookkeeping (a file's `storage_key`,
 `search_values` and `revision`), no longer count; the id difference is
 reported as `remapped`. Lifecycle differences (`status`) still count. Nothing a
 merge writes changes: these types never overwrite on a clash.
+
+An entry copied from another install still counted as a clash on its
+synonyms (each carries its own `created_at`, `created_by` and a
+`composite_key_hash`, and the list may be in another order) and on
+`actor_note`. Synonyms are now compared by content, as a set, and
+`actor_note` goes with the audit fields. `merged_into` and a synonym's
+`merged_from`, which name entries by id, are rewritten through the merge's id
+mappings like the ids in the keys, so an entry the target holds merged into
+the same entry compares identical, and an inserted entry points at the
+target's id. A missing synonym, a synonym's status and a merge into another
+entry still count.

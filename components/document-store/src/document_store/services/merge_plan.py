@@ -38,6 +38,7 @@ rather than with the size of the namespace receiving it.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -105,15 +106,24 @@ MERGE_ENTITY_SPECS: dict[str, EntitySpec] = {
 
 # Bookkeeping that legitimately differs between two copies of the same entity
 # and must not read as a schema difference. ``_id`` is stripped on read;
-# the audit fields move whenever anything touches a row.
+# the audit fields move whenever anything touches a row, and actor_note is
+# the caller's text on who acted, written with them.
 _NON_SCHEMA_FIELDS = frozenset({
     "_id",
     "created_at",
     "created_by",
     "updated_at",
     "updated_by",
+    "actor_note",
     "last_synced_at",
 })
+
+# A registry entry's synonyms carry their own bookkeeping: the audit fields of
+# the write that added each one, and a composite_key_hash derived from its
+# key. Two copies of one entry list the same synonyms with other audit values
+# and possibly in another order, so synonyms are compared by content (key,
+# namespace, type, status, source), as a set.
+_SYNONYM_BOOKKEEPING = frozenset({"created_at", "created_by", "composite_key_hash"})
 
 # Per type, the fields in which two copies of the same content legitimately
 # differ: the entity's own canonical id (a copy from another install, or a
@@ -214,6 +224,26 @@ class EntityPlan:
         if self.mapping:
             counts["remapped"] = len(self.mapping)
         return counts
+
+
+def _synonym_content(synonyms: Any) -> Any:
+    """A synonym list as its content, in a stable order; anything that is not
+    a list of synonym dicts is compared as stored."""
+    if not isinstance(synonyms, list) or not all(isinstance(s, dict) for s in synonyms):
+        return synonyms
+    content = [
+        {k: v for k, v in s.items() if k not in _SYNONYM_BOOKKEEPING} for s in synonyms
+    ]
+    return sorted(content, key=lambda s: json.dumps(s, sort_keys=True, default=str))
+
+
+def comparable(entity_type: str, row: dict[str, Any]) -> dict[str, Any]:
+    """The row as two copies of the same entity are compared: a registry
+    entry's synonyms by content (_SYNONYM_BOOKKEEPING), every other field as
+    stored."""
+    if entity_type == "registry_entries" and "synonyms" in row:
+        return {**row, "synonyms": _synonym_content(row["synonyms"])}
+    return row
 
 
 def diff_entities(
@@ -342,7 +372,9 @@ class MergePlanner:
                         # the fields it omitted would all read as differences.
                         # Types that need diffing declare no projection.
                         diff={} if projection else diff_entities(
-                            entity, targets[0], ignore=_COPY_FIELDS.get(entity_type, ()),
+                            comparable(entity_type, entity),
+                            comparable(entity_type, targets[0]),
+                            ignore=_COPY_FIELDS.get(entity_type, ()),
                         ),
                     )
                 )
