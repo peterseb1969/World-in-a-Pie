@@ -16,6 +16,7 @@ never goes stale, and archives carry it with the version.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from wip_auth.document_identity import is_referent_field
 
@@ -151,6 +152,11 @@ async def backfill() -> int:
         if derived == stored:
             continue
         template.referent_identity_paths = derived
+        # The row changed, so the namespace's change stamp
+        # (count:max(updated_at)) must move: the document store caches a
+        # version until that stamp moves, and would go on hashing by the stamp
+        # it read before.
+        template.updated_at = datetime.now(UTC)
         await template.save()
         if derived is not None:
             stamped += 1

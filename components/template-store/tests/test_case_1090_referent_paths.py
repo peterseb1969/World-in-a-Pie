@@ -222,6 +222,32 @@ async def test_backfill_removes_a_stamp_that_can_no_longer_be_derived(
 
 
 @pytest.mark.asyncio
+async def test_a_restamp_moves_the_namespace_stamp(client: AsyncClient, auth_headers: dict):
+    """The document store caches a template version until the namespace's
+    change stamp (count:max updated_at) moves. A restamp that left it alone
+    would leave a running document store hashing by the stamp it read
+    before, so the restamped row's updated_at moves; a right stamp's does
+    not."""
+    address = await _address(client, auth_headers, "ADDR_1374_S")
+    person = await _create(client, auth_headers, _person(
+        "PERSON_1374_S", address, ["name", "address.country"],
+    ))
+    stored = await Template.find_one({"template_id": person["id"], "version": 1})
+    stored.referent_identity_paths = []
+    await stored.save()
+    before = stored.updated_at
+
+    await backfill()
+    restamped = await Template.find_one({"template_id": person["id"], "version": 1})
+    assert restamped.referent_identity_paths == ["address.country"]
+    assert restamped.updated_at > before
+
+    await backfill()
+    again = await Template.find_one({"template_id": person["id"], "version": 1})
+    assert again.updated_at == restamped.updated_at
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("inherited", [False, True])
 async def test_backfill_replaces_a_stamp_that_differs_from_the_derivation(
     client: AsyncClient, auth_headers: dict, inherited: bool,
