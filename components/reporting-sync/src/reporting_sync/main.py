@@ -2156,7 +2156,11 @@ async def get_recent_activity(
     )
 
 
-@router.get("/references/term/{term_id}/documents", response_model=TermDocumentsResponse)
+# A term value may contain '/', and Starlette routes on the decoded path, so a
+# '/' sent raw or as %2F is a path separator here. The term and entity routes
+# therefore take the rest of the path up to their fixed suffix as the
+# identifier; a one-segment parameter missed the route for such a value.
+@router.get("/references/term/{term_id:path}/documents", response_model=TermDocumentsResponse)
 async def get_term_documents(
     term_id: str,
     limit: int = 100,
@@ -2221,7 +2225,7 @@ async def _can_read_term(identity: UserIdentity, owner: str | None) -> bool:
     return True
 
 
-@router.get("/entity/{entity_type}/{entity_id}/references", response_model=EntityReferencesResponse)
+@router.get("/entity/{entity_type}/{entity_id:path}/references", response_model=EntityReferencesResponse)
 async def get_entity_references(
     entity_type: str,
     entity_id: str,
@@ -2314,7 +2318,7 @@ async def _hide_unreadable_targets(entity: Any, readable: set[str]) -> None:
         ref.error = f"{ref.ref_type.capitalize()} not found"
 
 
-@router.get("/entity/{entity_type}/{entity_id}/referenced-by", response_model=ReferencedByResponse)
+@router.get("/entity/{entity_type}/{entity_id:path}/referenced-by", response_model=ReferencedByResponse)
 async def get_referenced_by(
     entity_type: str,
     entity_id: str,
