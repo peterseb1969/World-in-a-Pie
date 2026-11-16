@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_archive.models import EntityCounts, Manifest, NamespaceConfig, NamespaceEntry
 
@@ -510,6 +511,59 @@ async def test_a_redirect_reaches_the_engine_exactly_as_it_was_sent(
     kwargs = await _run_merge_kwargs(runner)
     assert kwargs["target_namespace"] == want_target
     assert kwargs["namespace_map"] == want_map
+
+
+# --- authorization: a merge answers for the namespaces it reads AND writes ---
+
+_PERM_API = "document_store.api.backup.check_namespace_permission"
+
+
+@pytest.mark.asyncio
+async def test_a_mapped_merge_asks_admin_on_the_sources_and_on_every_target(
+    client, auth_headers: dict, tmp_path,
+):
+    """Fresh pins both directions of its target check (CASE-1194); a merge's
+    rule is both at once — admin on every namespace the archive carries, and on
+    every destination the map names. Dropping either half would let a key read
+    an archive, or land its content, somewhere it has no rights."""
+    asked: list[tuple[str, str]] = []
+
+    async def record(identity, namespace, required):
+        asked.append((namespace, required))
+
+    archive = _make_v3_archive(tmp_path, [SRC_A, SRC_B])
+    with patch(_PERM_API, side_effect=record):
+        resp = await _post_merge(
+            client, auth_headers, archive, {"namespace_map": json.dumps(MAP)}
+        )
+
+    assert resp.status_code == 202, resp.text
+    assert {
+        (SRC_A, "admin"), (SRC_B, "admin"), (TGT_A, "admin"), (TGT_B, "admin"),
+    } <= set(asked)
+
+
+@pytest.mark.asyncio
+async def test_a_target_the_caller_has_no_rights_on_refuses_the_mapped_merge(
+    client, auth_headers: dict, tmp_path,
+):
+    """The refusal is the point of the check: the sources alone being allowed
+    must not be enough to write into a namespace the caller does not own, and
+    nothing is taken down as a job when the answer is no."""
+    async def refuse_targets(identity, namespace, required):
+        if namespace in (TGT_A, TGT_B):
+            raise HTTPException(
+                status_code=403, detail=f"No '{required}' permission on '{namespace}'"
+            )
+
+    archive = _make_v3_archive(tmp_path, [SRC_A, SRC_B])
+    with patch(_PERM_API, side_effect=refuse_targets):
+        resp = await _post_merge(
+            client, auth_headers, archive, {"namespace_map": json.dumps(MAP)}
+        )
+
+    assert resp.status_code == 403, resp.text
+    assert await BackupJob.find_one() is None
 
 
 # --- restore-from-job: the same redirect, without re-uploading ---------------
