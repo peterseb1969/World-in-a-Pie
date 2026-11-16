@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from typing import Any
 
 from nats.js import JetStreamContext
 
@@ -41,6 +42,46 @@ def results_subject(submitted_by: str | None, correlation_id: str) -> str:
     return f"{RESULTS_SUBJECT_PREFIX}.{owner_token(submitted_by)}.{correlation}"
 
 
+# NATS's default max_payload, used when the connection does not report one.
+DEFAULT_MAX_PAYLOAD = 1024 * 1024
+_COUNT_FIELDS = ("total", "succeeded", "failed")
+
+
+def _max_payload(js: JetStreamContext | None) -> int:
+    """The largest message the connection behind ``js`` may publish, as the
+    server announced it."""
+    limit = getattr(getattr(js, "_nc", None), "max_payload", None)
+    if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+        return limit
+    return DEFAULT_MAX_PAYLOAD
+
+
+def _counts_only(response: dict[str, Any] | None) -> dict[str, Any]:
+    """An answer reduced to its counts: a bulk answer keeps total, succeeded
+    and failed with no items listed; any other answer is only marked
+    truncated."""
+    counts = {k: response[k] for k in _COUNT_FIELDS if response and k in response}
+    if not counts:
+        return {"truncated": True}
+    return {**counts, "results_truncated": True, "results": []}
+
+
+def _fitted_payload(result: IngestResult, limit: int) -> bytes:
+    """The outcome as published. One over the connection's limit can never be
+    published, and retrying it would only fail again while its producer never
+    learns the item's fate, so it goes out with its answer cut to counts."""
+    published = result.model_dump_json_safe()
+    payload = json.dumps(published).encode()
+    if len(payload) <= limit:
+        return payload
+    logger.warning(
+        f"Outcome of correlation_id={result.correlation_id} is {len(payload)} bytes, "
+        f"over the bus's limit of {limit}; published with its answer's counts only"
+    )
+    published["response"] = _counts_only(result.response)
+    return json.dumps(published).encode()
+
+
 class ResultPublisher:
     """Publishes ingest results to NATS results stream."""
 
@@ -74,7 +115,7 @@ class ResultPublisher:
             if self.js is None:
                 raise RuntimeError("NATS not connected")
             subject = results_subject(result.submitted_by, result.correlation_id)
-            payload = json.dumps(result.model_dump_json_safe()).encode()
+            payload = _fitted_payload(result, _max_payload(self.js))
 
             ack = await self.js.publish(subject, payload)
             logger.debug(

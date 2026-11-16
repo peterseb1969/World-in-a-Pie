@@ -38,6 +38,60 @@ def _bounded_body(body: Any) -> dict[str, Any] | None:
     return {"truncated": True, "raw": text[:ERROR_BODY_MAX]}
 
 
+# A target's 2xx answer is kept in the outcome whole up to this size of JSON,
+# half of NATS's default 1 MB payload so the rest of the outcome always fits.
+# A bulk answer over it keeps its counts exact and each item reduced to
+# KEPT_ITEM_FIELDS, listed in order while they fit.
+OUTCOME_BODY_MAX = 512 * 1024
+BULK_COUNT_FIELDS = ("total", "succeeded", "failed")
+KEPT_ITEM_FIELDS = ("index", "status", "id", "error_code", "document_id", "version")
+
+
+def _bounded_answer(body: Any) -> dict[str, Any] | None:
+    """A 2xx answer's body as the outcome keeps it: whole within
+    OUTCOME_BODY_MAX characters of JSON; beyond it a bulk answer is reduced
+    (see _reduced_bulk) and any other body keeps its start, marked truncated.
+    A body that is not a JSON object is kept under "body"."""
+    if body is None:
+        return None
+    kept = body if isinstance(body, dict) else {"body": body}
+    text = json.dumps(kept, default=str)
+    if len(text) <= OUTCOME_BODY_MAX:
+        return kept
+    results = kept.get("results")
+    if isinstance(results, list):
+        return _reduced_bulk(kept, results)
+    return {"truncated": True, "raw": text[:OUTCOME_BODY_MAX]}
+
+
+def _reduced_item(item: Any) -> Any:
+    """A bulk item cut to the fields a producer needs to tell what happened."""
+    if not isinstance(item, dict):
+        return item
+    return {k: item[k] for k in KEPT_ITEM_FIELDS if k in item}
+
+
+def _reduced_bulk(body: dict[str, Any], results: list[Any]) -> dict[str, Any]:
+    """A bulk answer over the bound: its counts whole, its items reduced and
+    listed in order until OUTCOME_BODY_MAX is reached. results_truncated says
+    whether items past the last listed one were left out."""
+    reduced: dict[str, Any] = {k: body[k] for k in BULK_COUNT_FIELDS if k in body}
+    reduced["results_truncated"] = False
+    listed: list[Any] = []
+    reduced["results"] = listed
+    used = len(json.dumps(reduced))
+    for item in results:
+        small = _reduced_item(item)
+        # Two more characters for the ", " that separates list items.
+        size = len(json.dumps(small, default=str)) + 2
+        if used + size > OUTCOME_BODY_MAX:
+            reduced["results_truncated"] = True
+            break
+        listed.append(small)
+        used += size
+    return reduced
+
+
 # Action to endpoint mapping
 ACTION_ENDPOINTS: dict[IngestAction, dict[str, Any]] = {
     IngestAction.TERMINOLOGIES_CREATE: {
@@ -187,7 +241,10 @@ class IngestHTTPClient:
             action=action,
             status=status,
             http_status_code=response.status_code,
-            response=response_data,
+            # Bounded for every 2xx, all-failed ones included: the outcome is
+            # one NATS message, and one too large to publish never reaches its
+            # producer although the items were written.
+            response=_bounded_answer(response_data),
         )
 
     async def forward_request(
