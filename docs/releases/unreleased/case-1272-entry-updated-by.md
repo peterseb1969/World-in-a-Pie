@@ -15,11 +15,12 @@ identity the request authenticated as, and the text a caller sends as
 `updated_by` is kept as the entry's new `actor_note`. Both are set on every
 such write, so a write without text clears the note. This covers entry
 update (`PUT /entries`), soft delete, `/entries/deactivate` and
-`/entries/reactivate`, synonym add and remove, merge, and activation
-(`/entries/activate`, keyed and keyless), which sends no text and so clears
-the note. When one synonym-add request adds several synonyms to an entry,
-the note is the text sent with the first addition that landed, never the
-text of an item that was refused.
+`/entries/reactivate`, synonym add and remove, merge, re-keying
+(`/entries/rekey-identity`), and activation (`/entries/activate`, keyed and
+keyless); re-keying and activation send no text and so clear the note. When
+one synonym request changes several of an entry's synonyms, the note is the
+text sent with the first change that landed, never the text of an item that
+was refused.
 
 Creation follows the same rule. An entry's `created_by` (register, reserve,
 provision) and a synonym's `created_by` (registered with the entry, added,
