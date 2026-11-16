@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "src" / "wake_rollover.py"
 
 PRIOR_ID = "BE-YAC-20260701-120000"
@@ -580,6 +582,11 @@ class TestErrors:
         assert "Traceback" not in res.stderr
         assert "Error:" in res.stderr and bad in res.stderr
 
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root writes through a read-only directory; the test below "
+        "covers the error line without relying on permissions",
+    )
     def test_unwritable_reports_dir_is_an_error_line(self, tmp_path):
         root = make_project(tmp_path)
         d = root / "reports" / PRIOR_ID
@@ -591,6 +598,19 @@ class TestErrors:
         assert res.returncode == 1
         assert "Traceback" not in res.stderr
         assert res.stderr.strip().splitlines()[-1].startswith("Error:")
+
+    def test_an_unusable_session_record_is_an_error_line(self, tmp_path):
+        # Independent of permissions, so it also holds when run as root (CI):
+        # a directory where the prior's session.md should be.
+        root = make_project(tmp_path)
+        record = root / "reports" / PRIOR_ID / "session.md"
+        record.unlink()
+        record.mkdir()
+        res = run(root)
+        assert res.returncode == 1
+        assert "Traceback" not in res.stderr
+        last = res.stderr.strip().splitlines()[-1]
+        assert last.startswith("Error:") and "session.md" in last, res.stderr
 
     def test_session_record_gets_umask_mode(self, tmp_path):
         root = make_project(tmp_path)

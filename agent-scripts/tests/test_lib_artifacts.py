@@ -49,7 +49,10 @@ def npm_manifest(version: str) -> str:
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     upstream = tmp_path / "upstream.git"
-    git(tmp_path, "init", "-q", "--bare", str(upstream))
+    # The fixture pushes to main, so the upstream's HEAD must name main
+    # whatever this git's init.defaultBranch is (CI's is master): a clone
+    # of an upstream whose HEAD names no branch checks nothing out.
+    git(tmp_path, "init", "-q", "--bare", "--initial-branch=main", str(upstream))
     root = tmp_path / "clone"
     git(tmp_path, "clone", "-q", str(upstream), str(root))
     git(root, "config", "user.email", "t@example.invalid")
