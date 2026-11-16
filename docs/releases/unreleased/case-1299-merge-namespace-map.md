@@ -22,12 +22,14 @@ wip-toolkit restore kb-library.zip --mode merge \
 Each target must already exist and the caller must be admin on it, as on every
 namespace the archive carries. One destination per source: folding two
 namespaces into one stays `mode=fresh`, which re-mints ids and can therefore
-check the folded sources against each other. A map that misses a namespace,
-names one the archive does not carry, shares a destination between two sources,
-or arrives alongside `target_namespace` is refused with a 400 before the job is
-created. Both restore doors take it — the upload and
-`POST /backup/jobs/{job_id}/restore`, which now also takes `target_namespace`,
-so a redirect no longer needs the archive re-uploaded.
+check the folded sources against each other. A single-namespace archive can use
+the map too — `{"kb": "kb2"}` places it exactly as `target_namespace` does.
+
+A map that misses a namespace, names one the archive does not carry, shares a
+destination between two sources, or arrives alongside `target_namespace` is
+refused with a 400 before the job is created. Both restore doors take the map —
+the upload and `POST /backup/jobs/{job_id}/restore`, which now also takes
+`target_namespace`, so a redirect no longer needs the archive re-uploaded.
 
 A redirect rewrites the arriving rows to carry the target's name: their
 namespace fields, their Registry composite keys and hashes, and the references
