@@ -164,6 +164,28 @@ class TestTermNames:
         assert any("names" in w.fields for w in plan.target_wins), plan.target_wins
 
     @pytest.mark.asyncio
+    async def test_an_inactive_target_term_gains_no_names(self, db):
+        """A soft-deleted term is the other status the guard skips: the target
+        indexes terms of every status, so a term retired by delete reaches
+        it the same way a deprecated one does and gains none of the names."""
+        await _seed(db, "terminologies", [_terminology("T-lov")])
+        await _seed(db, "terms", [_term(
+            "T-term", "T-lov", "AuthorAssist", [{"value": "wip-aa"}], status="inactive",
+        )])
+        plan = await _planner(db, extend_terminologies=True).plan(
+            {
+                "terminologies": [_terminology("A-lov")],
+                "terms": [_term("A-term", "A-lov", "AuthorAssist",
+                                [{"value": "authorassist"}, {"value": "wip-aa"}])],
+            },
+            NAMESPACE,
+        )
+
+        assert plan.compatible, plan.incompatibilities
+        assert plan.extend_names == []
+        assert any("names" in w.fields for w in plan.target_wins), plan.target_wins
+
+    @pytest.mark.asyncio
     async def test_the_targets_own_extra_names_are_reported_as_kept(self, db):
         plan = await self._plan(
             db, [{"value": "a"}], [{"value": "b"}], extend_terminologies=True,

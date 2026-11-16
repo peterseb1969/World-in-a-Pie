@@ -6301,8 +6301,9 @@ class DirectRestoreEngine:
     async def _extend_term_names(
         self, namespace: str, definitions: DefinitionsPlan,
     ) -> None:
-        """extend_terminologies: give the target's copy of each term the
-        names only the archive's copy had. The target's own names stay."""
+        """extend_terminologies: give the target's copy of each active term the
+        names only the archive's copy had. The target's own names stay; the
+        plan lists no entry for a term that is not active."""
         if not definitions.extend_names:
             return
         db_name, coll_name = COLLECTION_MAP["terms"]

@@ -20,7 +20,7 @@ strategies that would change them are opt-in:
 
 ``add_missing`` — insert terminologies and templates the target does not have.
 ``extend_terminologies`` — add terms the target's terminology is missing, and
-the names a term has only in the archive.
+give the target's copy of an active term the names only the archive has.
 ``carry_retirements`` — retire the target's active terms the archive retired.
 
 Without the first two, anything the target lacks is an incompatibility and the
@@ -121,12 +121,14 @@ _DEFINITION_LIFECYCLE_FIELDS = frozenset({"status"})
 
 # Vocabulary metadata. A difference here does not make two definitions
 # incompatible — it is cosmetic, the target's wins, and it gets reported so an
-# operator can see what their side kept. A term's names are compared as a
-# set (see _name_key); under extend_terminologies the target gains the names
-# only the archive has. unique_names is judged by its effect instead (see
-# DefinitionsPlanner._check_unique_names): a difference refuses only where
-# the names the merge adds would break the setting of the terminology the
-# terms land in (the target's, an externally mapped one, or one it adds).
+# operator can see what their side kept. A term's names are compared as a set
+# (see _name_key); under extend_terminologies the target's copy of an
+# active term gains the names only the archive has — a target term that is
+# not active (deprecated or inactive) gains none, see _extend_names.
+# unique_names is judged by its effect instead (see
+# DefinitionsPlanner._check_unique_names): a difference refuses only where the
+# names the merge adds would break the setting of the terminology the terms
+# land in (the target's, an externally mapped one, or one it adds).
 _COSMETIC_FIELDS = frozenset({
     "label", "description", "aliases", "names", "unique_names",
 })
@@ -220,7 +222,8 @@ class DefinitionsPlan:
     # carry_retirements is off: their names, for the plan report.
     retirements_not_carried: list[str] = field(default_factory=list)
     # extend_terminologies: names only the archive's copy of a term has, to
-    # add to the target's copy — {"term_id" (the target's), "names", "name"}.
+    # add to the target's copy of an active term — {"term_id" (the target's),
+    # "names", "name"}.
     extend_names: list[dict[str, Any]] = field(default_factory=list)
     # Definitions present and identical on both sides — nothing to do.
     unchanged: dict[str, int] = field(

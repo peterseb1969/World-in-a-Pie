@@ -91,8 +91,9 @@ replacement. With all three off a merge changes none of the target's
 definitions: a term the archive retired stays active, and the merge reports
 how many. Where a definition matches but its label, description or a term's
 names differ, the target's win and the difference is reported; under
-`extend_terminologies` the target's copy of a term also gains the names only
-the archive's copy has, and the report names the names kept and added. A
+`extend_terminologies` the target's copy of an active term also gains the names
+only the archive's copy has (a target term that is not active — deprecated or
+inactive — gains none), and the report names the names kept and added. A
 term's names compare as a set, one per (value, type, language), each name
 whole: a name whose description, source or preferred flag differs is a
 difference too, and the target's copy stands. A terminology's

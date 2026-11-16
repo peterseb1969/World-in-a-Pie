@@ -228,7 +228,7 @@ them differently:
 | Flag | Effect |
 |---|---|
 | `add_missing` | Insert terminologies and templates the target does not have |
-| `extend_terminologies` | Add terms the target's terminology is missing, and the names a term has only in the archive |
+| `extend_terminologies` | Add terms the target's terminology is missing, and give the target's copy of an active term the names only the archive's copy has — a target term that is not active (deprecated or inactive) gains none |
 | `carry_retirements` | Retire the target's active terms that the archive retired, with the archive's reason and replacement |
 | `align_templates` | For an archive from another install: match templates by value, map each archive version onto the target version whose schema can take its documents, and re-pin the documents. Documents no target version can take are listed on the job (`template_alignment.unplaceable_documents`) and not merged; reshape them with `wip-toolkit migrate`, export again and merge again. A template that is the same on both sides is matched by version number, as without the option |
 
