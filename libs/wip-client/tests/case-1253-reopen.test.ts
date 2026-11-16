@@ -97,3 +97,59 @@ describe('the client timeout follows the server timeout a call asks for', () => 
     )
   })
 })
+
+// Every reporting-sync call whose route lets its work run past the client's
+// 30 s default, each held open just short of the longest the server may take
+// for that request. A new long-running call belongs in this table.
+describe('every reporting call the server may run long outlives the client default', () => {
+  let release: ((r: Response) => void) | undefined
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    release = undefined
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+      release = resolve
+      init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const reporting = () => createWipClient({
+    baseUrl: 'http://localhost', auth: { type: 'api-key', key: 'k' }, retry: { maxRetries: 0 },
+  }).reporting
+
+  const JSON_ROWS = '{"columns": [], "rows": [], "row_count": 0}'
+  const INTEGRITY = '{"status": "healthy", "services_checked": [], "summary": {}, "issues": []}'
+
+  it.each<[string, () => Promise<unknown>, string, number]>([
+    ['runQuery at the 300 s maximum', () => reporting().runQuery('SELECT 1', [], { timeout_seconds: 300 }), JSON_ROWS, 300_000],
+    ['readViewRows at the 300 s maximum', () => reporting().readViewRows('ns', 'v', { timeout_seconds: 300 }), JSON_ROWS, 300_000],
+    ['exportTableCsv at the 600 s maximum', () => reporting().exportTableCsv('doc_t', 'ns', { timeoutSeconds: 600 }), 'a\n', 600_000],
+    ['exportQueryCsv at the 600 s maximum', () => reporting().exportQueryCsv('SELECT 1', { timeoutSeconds: 600 }), 'a\n', 600_000],
+    // The route's default is a full document scan, which document-store
+    // is given 1800 s for.
+    ['getIntegrityCheck with no limit (full scan, 1800 s)', () => reporting().getIntegrityCheck(), INTEGRITY, 1_800_000],
+    ['getIntegrityCheck with document_limit 0 (1800 s)', () => reporting().getIntegrityCheck({ document_limit: 0 }), INTEGRITY, 1_800_000],
+    ['getIntegrityCheck with document_limit 1000 (120 s floor)', () => reporting().getIntegrityCheck({ document_limit: 1000 }), INTEGRITY, 120_000],
+    ['getIntegrityCheck with document_limit 50000 (600 s)', () => reporting().getIntegrityCheck({ document_limit: 50_000 }), INTEGRITY, 600_000],
+  ])('%s', async (_name, call, body, serverMs) => {
+    let settled: unknown = 'pending'
+    call().then((v) => { settled = v }, (e) => { settled = e })
+    await vi.advanceTimersByTimeAsync(serverMs)
+    expect(settled).toBe('pending')
+    release?.(new Response(body, { status: 200 }))
+    await vi.runAllTimersAsync()
+    expect(settled).not.toBe('pending')
+    expect(settled).not.toBeInstanceOf(WipNetworkError)
+  })
+
+  it('a call with no server budget still gives up at the client default', async () => {
+    let settled: unknown = 'pending'
+    reporting().getSyncStatus().then((v) => { settled = v }, (e) => { settled = e })
+    await vi.advanceTimersByTimeAsync(31_000)
+    expect(settled).toBeInstanceOf(WipNetworkError)
+  })
+})

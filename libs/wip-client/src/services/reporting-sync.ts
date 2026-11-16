@@ -59,6 +59,28 @@ function serverBound(seconds: number | undefined, serverDefault: number): number
   return ((seconds ?? serverDefault) + RESPONSE_GRACE_S) * 1000
 }
 
+// Every route here that lets its work run past the client's default
+// timeout, and the client floor that matches it:
+//   POST /query                           runQuery           timeout_seconds (default 30, max 300)
+//   POST /namespace/{ns}/views/{name}/rows readViewRows       timeout_seconds (default 30, max 300)
+//   GET  /export/csv                      exportTableCsv     timeout_seconds (default 120, max 600)
+//   POST /export/csv                      exportQueryCsv     timeout_seconds (default 120, max 600)
+//   GET  /health/integrity                getIntegrityCheck  the stores' budgets (integrityBound)
+// A new long-running route, or a new call to one, needs a floor here too.
+
+/**
+ * The client timeout (ms) for the aggregated integrity check. reporting-sync
+ * asks both stores at once and waits for each up to its own budget
+ * (main.py `_TEMPLATE_STORE_TIMEOUT` 30 s, `_document_store_timeout`): a
+ * full document scan (`document_limit` 0, the route's default) 1800 s,
+ * otherwise 0.012 s per document but at least 120 s.
+ */
+function integrityBound(documentLimit: number | undefined): number {
+  const limit = documentLimit ?? 0
+  const documentStore = limit === 0 ? 1800 : Math.max(120, limit * 0.012)
+  return serverBound(Math.max(30, documentStore), 0)
+}
+
 export class ReportingSyncService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
     super(transport, '/api/reporting-sync')
@@ -412,7 +434,7 @@ export class ReportingSyncService extends BaseService {
     check_term_refs?: boolean
     recent_first?: boolean
   }): Promise<IntegrityCheckResult> {
-    return this.get('/health/integrity', params)
+    return this.get('/health/integrity', params, integrityBound(params?.document_limit))
   }
 
   /**

@@ -54,3 +54,7 @@ server allowed the call longer. `reporting.exportTableCsv` and `exportQueryCsv`
 the client at least the server's limit plus 10 s. The limit is the given
 `timeoutSeconds` / `timeout_seconds` (up to 300 s for a query or a view's rows),
 or the server's default. A larger configured client timeout is kept.
+`reporting.getIntegrityCheck` gets the budget reporting-sync gives
+document-store's scan, plus 10 s: 1800 s for a full scan (`document_limit` 0,
+the default), otherwise 0.012 s per document and at least 120 s. These five
+are every client call whose route lets its work run past 30 s.

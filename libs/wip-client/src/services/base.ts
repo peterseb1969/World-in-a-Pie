@@ -8,14 +8,18 @@ export abstract class BaseService {
     protected readonly basePath: string,
   ) {}
 
-  protected get<T>(path: string, params?: Record<string, unknown> | object): Promise<T> {
+  /** `minTimeout` (ms) raises the client timeout for a call the server may
+   * run longer than it; it never lowers a larger configured timeout. */
+  protected get<T>(
+    path: string, params?: Record<string, unknown> | object, minTimeout?: number,
+  ): Promise<T> {
     return this.transport.request<T>('GET', `${this.basePath}${path}`, {
       params: params as Record<string, unknown>,
+      minTimeout,
     })
   }
 
-  /** `minTimeout` (ms) raises the client timeout for a call the server may
-   * run longer than it; it never lowers a larger configured timeout. */
+  /** `minTimeout`: as for `get`. */
   protected post<T>(
     path: string, body?: unknown, params?: Record<string, unknown> | object, minTimeout?: number,
   ): Promise<T> {
