@@ -81,12 +81,13 @@ class DefStoreClient:
 
                 if response.status_code != 200:
                     raise DefStoreError(
-                        f"Failed to get terminology: {response.status_code} - {response.text}"
+                        f"Failed to get terminology: {response.status_code} - {response.text}",
+                        unavailable=response.status_code >= 500,
                     )
 
                 return cast(dict[str, Any] | None, response.json())
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}") from e
+            raise DefStoreError(f"Request failed: {e!s}", unavailable=True) from e
 
     async def terminology_exists(
         self,
@@ -145,12 +146,13 @@ class DefStoreClient:
 
                 if response.status_code != 200:
                     raise DefStoreError(
-                        f"Validation failed: {response.status_code} - {response.text}"
+                        f"Validation failed: {response.status_code} - {response.text}",
+                        unavailable=response.status_code >= 500,
                     )
 
                 return cast(dict[str, Any], response.json())
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}") from e
+            raise DefStoreError(f"Request failed: {e!s}", unavailable=True) from e
 
     async def validate_values_bulk(
         self,
@@ -183,13 +185,14 @@ class DefStoreClient:
 
                 if response.status_code != 200:
                     raise DefStoreError(
-                        f"Bulk validation failed: {response.status_code} - {response.text}"
+                        f"Bulk validation failed: {response.status_code} - {response.text}",
+                        unavailable=response.status_code >= 500,
                     )
 
                 data = response.json()
                 return cast(list[dict[str, Any]], data.get("results", []))
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}") from e
+            raise DefStoreError(f"Request failed: {e!s}", unavailable=True) from e
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""
@@ -202,8 +205,13 @@ class DefStoreClient:
 
 
 class DefStoreError(Exception):
-    """Error communicating with the Def-Store service."""
-    pass
+    """Error communicating with the Def-Store service. ``unavailable`` marks
+    one where Def-Store gave no answer (unreachable, or a 5xx), as opposed to
+    one it gave about this request (a 4xx)."""
+
+    def __init__(self, message: str = "", *, unavailable: bool = False) -> None:
+        super().__init__(message)
+        self.unavailable = unavailable
 
 
 class DefStoreAmbiguousError(DefStoreError):

@@ -14,11 +14,15 @@ store answered. A scan now stops asking a store that failed to answer once: the
 references after it are recorded as unchecked (`checks_not_run`,
 `checks_skipped`), exactly as the failing one was, so the counts and the
 `incomplete` / `unknown` verdict are unchanged and the scan answers inside one
-timeout. An answer is never treated as an outage: a refusal that carries a code
-(template-store's `inheritance_unresolved`) or a 409 ambiguous reference leaves
-the rest of the scan asking, and the next scan asks again.
+timeout. Only a store that gave no answer (unreachable, or a 5xx) stops the
+asking. An answer is never treated as an outage: a 4xx about one reference, a
+refusal that carries a code (template-store's `inheritance_unresolved`) or a
+409 ambiguous reference leaves the rest of the scan asking, and the next scan
+asks again.
 
 `/health/integrity` also asks template-store and document-store at once instead
 of one after the other, so its ceiling is the larger of the two budgets rather
 than their sum. Its response shape is unchanged; the services are listed, and
 their issues folded, in a fixed order regardless of which answer arrives first.
+A store that answers 200 without a JSON body is listed as unavailable, as
+before.

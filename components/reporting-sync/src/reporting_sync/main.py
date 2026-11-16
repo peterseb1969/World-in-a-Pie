@@ -1851,7 +1851,14 @@ async def _ask_store_integrity(
     if response.status_code != 200:
         logger.warning(f"{name} integrity check failed: {response.status_code}")
         return None
-    return cast(dict[str, Any], response.json())
+    try:
+        body = response.json()
+    except ValueError:
+        # A 200 that is not JSON (an unrouted path through Caddy answers 200
+        # with an empty body) is no verdict either.
+        logger.warning(f"{name} integrity check answered 200 without a JSON body")
+        return None
+    return cast(dict[str, Any], body) if isinstance(body, dict) else None
 
 
 def _fold_template_store(

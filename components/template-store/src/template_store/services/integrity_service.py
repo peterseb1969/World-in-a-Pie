@@ -8,9 +8,10 @@ Checks for orphaned references:
   reference field's target_templates), with pinned versions
 
 Terminology references are asked of Def-Store, one call per reference. Once
-Def-Store fails to answer, the scan stops asking it: the remaining references
-are recorded as skipped, so an outage costs one timeout instead of one per
-reference, and the verdict says what went unchecked.
+Def-Store gives no answer (unreachable, or a 5xx), the scan stops asking it:
+the remaining references are recorded as skipped, so an outage costs one
+timeout instead of one per reference, and the verdict says what went
+unchecked. A 4xx about one reference skips that reference only.
 """
 
 from datetime import UTC, datetime
@@ -150,7 +151,10 @@ async def check_terminology_reference(
         scan.skip(template, field_path, ref, f"Ambiguous reference: {e}")
         return
     except DefStoreError as e:
-        scan.stop_asking("def-store")
+        # Only a Def-Store that gave no answer stops the scan asking it; a 4xx
+        # is its answer about this one reference, and the next is asked.
+        if e.unavailable:
+            scan.stop_asking("def-store")
         scan.skip(template, field_path, ref, f"Def-Store did not answer: {e}")
         return
     if terminology is None:

@@ -154,3 +154,23 @@ async def test_the_worst_case_is_the_larger_budget_not_the_sum(monkeypatch):
 
     assert body["status"] == "healthy", body
     assert elapsed < 2 * slow, f"the two asks ran one after the other ({elapsed:.2f}s)"
+
+
+@pytest.mark.asyncio
+async def test_a_200_without_a_json_body_is_no_verdict_not_a_500(monkeypatch):
+    """An unrouted path through Caddy answers 200 with an empty body. That is
+    a store giving no verdict, as before the asks ran together: the
+    aggregate names it unavailable and still reports the other store."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if _name_of(request) == "template-store":
+            return httpx.Response(200, content=b"")
+        return httpx.Response(200, json=_DOCUMENT_ANSWER)
+
+    _patch_transport(monkeypatch, handler)
+    response = await _call()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["services_unavailable"] == ["template-store"]
+    assert body["services_checked"] == ["document-store"]

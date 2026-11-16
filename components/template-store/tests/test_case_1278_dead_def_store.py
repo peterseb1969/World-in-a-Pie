@@ -90,7 +90,7 @@ async def test_a_dead_def_store_is_asked_once_for_the_whole_scan(
                                              ("C1278_B", ["DOC_STATUS"])])
     assert sum(len(refs) for refs in mine.values()) == 3
 
-    down = _CountingDefStore(DefStoreError("connection refused"))
+    down = _CountingDefStore(DefStoreError("connection refused", unavailable=True))
     with patch("template_store.services.integrity_service.get_def_store_client",
                return_value=down):
         resp = await client.get(INTEGRITY, headers=auth_headers, params={"limit": 0})
@@ -129,12 +129,31 @@ async def test_an_ambiguous_answer_is_not_an_outage(client: AsyncClient, auth_he
 
 
 @pytest.mark.asyncio
+async def test_a_refusal_about_one_reference_is_not_an_outage(client: AsyncClient, auth_headers):
+    """A 4xx is Def-Store answering about that one reference: it is skipped,
+    and the scan goes on asking about the others."""
+    mine = await _mine(client, auth_headers, [("C1278_F", ["GENDER", "COUNTRY"]),
+                                             ("C1278_G", ["DOC_STATUS"])])
+
+    refusing = _CountingDefStore(DefStoreError("Failed to get terminology: 422 - bad id"))
+    with patch("template_store.services.integrity_service.get_def_store_client",
+               return_value=refusing):
+        resp = await client.get(INTEGRITY, headers=auth_headers, params={"limit": 0})
+
+    body = resp.json()
+    assert all(r in set(refusing.calls) for refs in mine.values() for r in refs), \
+        "the scan stopped after the first 4xx"
+    assert not any("earlier in this scan" in s["reason"] for s in _skips_for(body, mine)), \
+        _skips_for(body, mine)
+
+
+@pytest.mark.asyncio
 async def test_the_next_scan_asks_again(client: AsyncClient, auth_headers):
     """The latch belongs to a scan: an outage does not outlive it."""
     mine = await _mine(client, auth_headers, [("C1278_E", ["GENDER"])])
 
     with patch("template_store.services.integrity_service.get_def_store_client",
-               return_value=_CountingDefStore(DefStoreError("connection refused"))):
+               return_value=_CountingDefStore(DefStoreError("connection refused", unavailable=True))):
         first = await client.get(INTEGRITY, headers=auth_headers, params={"limit": 0})
     assert first.status_code == 503, first.text
 
