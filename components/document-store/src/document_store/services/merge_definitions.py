@@ -433,6 +433,28 @@ def _differing_content(
     )
 
 
+def _judge_aligned_pair(
+    plan: DefinitionsPlan, name: str, row: dict[str, Any], target: dict[str, Any],
+) -> bool:
+    """One archive template version mapped onto a target version: False when
+    the pair is refused (a draft on either side, see _status_split), else
+    True, with the target's kept cosmetic fields and status reported."""
+    archive_filled = with_defaults("templates", row)
+    target_filled = with_defaults("templates", target)
+    kept_status, draft_gap = _status_split(
+        _DEFINITION_LIFECYCLE_FIELDS, archive_filled, target_filled,
+    )
+    if draft_gap:
+        plan.incompatibilities.append(_differing_content("templates", name, draft_gap, row, target))
+        return False
+    cosmetic, _ = compare_definitions(
+        archive_filled, target_filled, skip=_DEFINITION_LIFECYCLE_FIELDS,
+    )
+    if cosmetic or kept_status:
+        plan.target_wins.append(_target_wins("templates", name, cosmetic + kept_status, row, target))
+    return True
+
+
 def _target_wins(
     entity_type: str,
     name: str,
@@ -1332,25 +1354,22 @@ class DefinitionsPlanner:
     ) -> None:
         """Count the template's versions that map onto a target version, and
         report where the target version's label, description or other
-        cosmetic field differs from the archive's (the target's is kept)."""
+        cosmetic field differs from the archive's (the target's is kept).
+
+        A pair's status follows the rule every other template pair follows
+        (_status_split): active against inactive is reported as the target's
+        kept, and a draft on either side refuses the pair, since a draft was
+        never activated and absorbing it into an active version would hide
+        what the two sides hold."""
         by_version = {int(t.get("version") or 1): t for t in targets}
         for row in rows:
             version = alignment.versions.get(int(row.get("version") or 1))
             if version is None or version.target_version is None:
                 continue
-            plan.aligned += 1
             target = by_version.get(version.target_version)
-            if target is None:
-                continue
-            cosmetic, _ = compare_definitions(
-                with_defaults("templates", row), with_defaults("templates", target),
-            )
-            if cosmetic:
-                plan.target_wins.append(_target_wins(
-                    "templates",
-                    f"{alignment.value} v{version.archive_version} (as v{version.target_version})",
-                    cosmetic, row, target,
-                ))
+            name = f"{alignment.value} v{version.archive_version} (as v{version.target_version})"
+            if target is None or _judge_aligned_pair(plan, name, row, target):
+                plan.aligned += 1
 
     @staticmethod
     def _alignment_refusal(

@@ -247,3 +247,34 @@ async def test_an_unplaceable_template_does_not_stop_the_search_for_the_others(d
     assert _mapped(plan, "A-g") == {1: None}
     assert _mapped(plan, "A-a") == {1: 1}
     assert _mapped(plan, "A-b") == {1: 5}
+
+
+@pytest.mark.asyncio
+async def test_an_aligned_draft_against_an_active_version_refuses_the_pair(db):
+    """align_templates mapped an archive draft onto an identical active target
+    version and discarded the status difference, so the draft was absorbed
+    without a word: the rule every other template pair follows (a draft is a
+    real difference) never ran on this path (CASE-1275, f331b9ca review R1)."""
+    plan = await _plan(
+        db,
+        target=[_tpl("T-d", "DOC", 1, NOTE)],
+        archive=[_tpl("A-d", "DOC", 1, NOTE, status="draft")],
+    )
+
+    assert not plan.compatible
+    (issue,) = plan.incompatibilities
+    assert "status" in str(issue) and "DOC v1 (as v1)" in str(issue)
+    assert plan.aligned == 0
+
+
+@pytest.mark.asyncio
+async def test_an_aligned_retired_version_keeps_the_targets_status_and_says_so(db):
+    plan = await _plan(
+        db,
+        target=[_tpl("T-d", "DOC", 1, NOTE)],
+        archive=[_tpl("A-d", "DOC", 1, NOTE, status="inactive")],
+    )
+
+    assert plan.compatible, plan.incompatibilities
+    assert plan.aligned == 1
+    assert any("status" in str(w) for w in plan.target_wins), plan.target_wins
