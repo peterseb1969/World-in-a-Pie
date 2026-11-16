@@ -48,7 +48,7 @@ from ..services.file_storage_client import (
 )
 from ..services.file_validation import content_disposition
 from ..services.nats_client import get_throttle_delay
-from ..services.registry_client import get_registry_client
+from ..services.registry_client import RegistryClient, get_registry_client
 from .auth import check_readable, require_api_key, require_groups, write_refusals
 from .uploads import read_upload
 
@@ -713,7 +713,7 @@ class StorageDeleteRequest(StrictModel):
 
 
 async def _recorded_step_keys(
-    registry: Any, journal: dict[str, Any], request: StorageDeleteRequest
+    registry: RegistryClient, journal: dict[str, Any], request: StorageDeleteRequest
 ) -> set[str]:
     """The keys the running deletion's journal recorded for the step that sent
     a delete.
