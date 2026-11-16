@@ -88,7 +88,7 @@ Services extend `BulkResultItem` with extra fields:
 ### Key Rules
 
 1. **Always HTTP 200 for item outcomes** — errors are per-item in `results[i].status == "error"`, not HTTP status codes
-2. **Never check HTTP status for business errors** — a duplicate, a failed validation or a missing referent is never a 409 or any other status; check `result.error` instead. Only the request-level refusals under [Status Codes](#status-codes) change the status: an ambiguous identifier in the path or query (409), and an outage before any item is processed (503)
+2. **Never check HTTP status for an item's outcome** — on a bulk write, a duplicate, a failed validation, a missing referent, or an identifier in the item that names several entities (`ambiguous_reference`) is reported in that item (`results[i].status == "error"`, `error_code`), never as the request's status. The status changes only when the request is refused as a whole, before any item is written (see [Status Codes](#status-codes)): a malformed body (422), an identifier in the path or query that names several entities (409), or a Registry that does not answer while the request's identifiers are resolved or its permissions checked (503). Endpoints that are not bulk item writes (imports, migrations, backup jobs, namespace and API-key administration) answer their own refusals with a status, 409 included for something that already exists or a state conflict
 3. **Updates use PUT with ID in the body** — `PUT /templates` with `[{"template_id": "...", ...}]`
 4. **Deletes use DELETE with body** — `DELETE /terminologies` with `[{"id": "..."}]`
 5. **GET endpoints are NOT bulk** — single-entity GET and paginated list GET stay as-is
@@ -640,7 +640,7 @@ Where an endpoint has a value-based fallback, resolution is **best-effort** abou
 - Existing code using canonical UUIDs continues to work unchanged
 - Invalid synonyms are caught by downstream validation (e.g., "template not found"), not by the resolve layer
 
-It is never best-effort about an **outage**. If the Registry does not answer (unreachable, timed out, or an error status) while an identifier is being resolved, nothing is answered as "not found", nothing is passed on unresolved, and nothing is cached. Registry down means WIP down. How the refusal reads depends on where the identifier sits: one in the path or query fails the request with **503** and `error_code: "registry_unavailable"`; one inside an item of a bulk write refuses that item, in the 200 response, with `error_code: "registry_error"` (document-store adds `details.rule: "registry_unavailable"`), and nothing is written for it — see the per-store error codes above. An identifier that names several entities is **409** with its candidates (`detail.candidates`, `detail.total`); pick one by canonical ID or a qualified value.
+It is never best-effort about an **outage**. If the Registry does not answer (unreachable, timed out, or an error status) while an identifier is being resolved, nothing is answered as "not found", nothing is passed on unresolved, and nothing is cached. Registry down means WIP down. How the refusal reads depends on when the Registry was asked, not where the identifier sits. A request's identifiers are resolved, and the caller's permissions checked, before any item is written: those in the path or query, and the ids inside a bulk write's items, which every store resolves together first. An outage then fails the whole request with **503** and `error_code: "registry_unavailable"`, and nothing is written. Registry work done for one item while it is written (recording its entry or synonyms, a referrer read check) refuses only that item, in the 200 response, with `error_code: "registry_error"` (document-store adds `details.rule: "registry_unavailable"`) — see the per-store error codes above. An identifier in the path or query that names several entities is **409** with its candidates (`detail.candidates`, `detail.total`); one inside an item of a bulk write refuses that item as `ambiguous_reference`, naming the candidates. Pick one by canonical ID or a qualified value.
 
 ### Auto-Synonyms
 
@@ -666,12 +666,12 @@ For details, see `docs/design/universal-synonym-resolution.md`.
 | **200** | All successful responses, including write operations (errors are per-item in BulkResponse) |
 | **401** | Missing or invalid authentication |
 | **404** | Entity not found (GET by ID) |
-| **409** | An identifier in the path or query names several entities (`detail.candidates`) |
+| **409** | An identifier in the path or query names several entities (`detail.candidates`); or, on an endpoint that is not a bulk item write (import, migrate, backup jobs, namespace and key administration), the thing already exists or its state forbids the operation (e.g., a namespace locked for deletion, a backup job not finished) |
 | **422** | Invalid request body (validation error from FastAPI) |
 | **502** | The Registry refused an operation a route depends on (`Registry error: …`, e.g., Template-Store, Def-Store), or the object store refused a file hard delete (the file record is kept) |
 | **503** | The Registry did not answer (`error_code: "registry_unavailable"`), or the authorization check could not be made — retry |
 
-**Note:** 201 is never returned, and write results are communicated via `BulkResponse.results[i].status`: a per-item failure never changes the HTTP status. A 409 or 503 refuses the request as a whole.
+**Note:** 201 is never returned, and bulk write results are communicated via `BulkResponse.results[i].status`: a per-item failure never changes the HTTP status. A 409 or 503 refuses the request as a whole.
 
 **Health and readiness answer 503 outside the served specs.** `/health`, `/api/<svc>/health` and `/ready` on the Registry, Def-Store, Template-Store and Document-Store, and `/health` on Reporting-Sync, answer **503** when the service cannot serve (the `/health` body says which dependency is down; `/ready` answers `{"detail": {"ready": false}}`). The OpenAPI specs in `schemas/` declare only their 200 response. A probe treats any status other than 200 as unhealthy, and reads the body for the reason.
 

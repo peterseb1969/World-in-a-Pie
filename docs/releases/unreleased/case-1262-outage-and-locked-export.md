@@ -15,9 +15,14 @@ cases: [1262]
   gave a platform administrator the entries of a namespace locked for
   deletion. They now come back `not_found`, as every other Registry surface
   answers for a locked namespace.
-- **Docs.** `docs/api-conventions.md` now says where a Registry outage
-  answers 503 (an identifier in the path or query) and where it is a
-  per-item `registry_error` (an item of a bulk write). It also says that
+- **Docs.** `docs/api-conventions.md` now says when a Registry outage
+  answers 503 and when it is a per-item `registry_error`. It is a 503 while
+  the request's identifiers are resolved and its permissions checked, before
+  any item is written; that covers the ids inside a bulk write's items, which
+  every store resolves together first. It is a per-item `registry_error`
+  during the Registry work for one item as it is written. The 409s outside
+  bulk item writes (an import of something that exists, a locked namespace, a
+  backup job not finished) are listed too. It also says that
   `/health`, `/api/<svc>/health` and `/ready` answer 503 although the served
   specs declare only 200.
 
