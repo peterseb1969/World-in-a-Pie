@@ -17,6 +17,7 @@ from wip_auth.document_identity import (
 )
 from wip_auth.registry_client import AmbiguousIdentifierError, DependencyUnavailableError
 
+from ..models.numbers import INT64_MAX, INT64_MIN, numbers_in
 from .def_store_client import DefStoreAmbiguousError, DefStoreError, get_def_store_client
 from .errors import dependency_unavailable
 from .identity_service import IdentityService
@@ -71,17 +72,13 @@ def _feeds_identity(field_path: str, template: dict[str, Any]) -> bool:
     return base != field_path and base in referent
 
 
-_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
-
-
 def _fits_int64(value: int, field_path: str, result: "ValidationResult") -> bool:
-    """Whether a whole number can be stored: MongoDB holds a 64-bit integer at
-    most, and a larger one would pass validation and fail only at storage,
-    after the Registry had allocated the document's id."""
-    if _INT64_MIN <= value <= _INT64_MAX:
+    """Whether a whole number can be stored (MongoDB holds a 64-bit integer at
+    most); an error on field_path when it cannot."""
+    if INT64_MIN <= value <= INT64_MAX:
         return True
     result.add_error(
-        code="maximum" if value > _INT64_MAX else "minimum",
+        code="maximum" if value > INT64_MAX else "minimum",
         message=f"Field '{field_path}' must be a whole number between -2^63 and 2^63-1",
         field=field_path,
     )
@@ -603,31 +600,26 @@ class ValidationService:
         # minimum/maximum check, because every comparison with it is false.
         # Refused anywhere in the data, typed fields, untyped objects and
         # arrays alike.
-        bad_paths = self._non_finite_paths(data, "")
-        for path in bad_paths:
-            result.add_error(
-                code="non_finite_number",
-                message=f"Field '{path}' is not a finite number (NaN and Infinity are refused)",
-                field=path,
-            )
-        return not bad_paths
-
-    @classmethod
-    def _non_finite_paths(cls, value: Any, path: str) -> list[str]:
-        """The paths of every non-finite float inside value."""
-        if isinstance(value, float):
-            return [] if math.isfinite(value) else [path]
-        if isinstance(value, dict):
-            return [
-                p for k, v in value.items()
-                for p in cls._non_finite_paths(v, f"{path}.{k}" if path else str(k))
-            ]
-        if isinstance(value, list):
-            return [
-                p for i, v in enumerate(value)
-                for p in cls._non_finite_paths(v, f"{path}[{i}]")
-            ]
-        return []
+        #
+        # A whole number outside 64 bits is refused anywhere too: MongoDB
+        # holds a 64-bit integer at most, and a larger one would pass every
+        # later stage and fail only at storage, after the Registry had
+        # allocated the document's id, failing every document written with
+        # it. Typed fields, array items, a duration's value and untyped
+        # values alike.
+        valid = True
+        for path, number in numbers_in(data):
+            if isinstance(number, float):
+                if not math.isfinite(number):
+                    valid = False
+                    result.add_error(
+                        code="non_finite_number",
+                        message=f"Field '{path}' is not a finite number (NaN and Infinity are refused)",
+                        field=path,
+                    )
+            elif not _fits_int64(number, path, result):
+                valid = False
+        return valid
 
     async def _resolve_template(
         self,
@@ -831,9 +823,6 @@ class ValidationService:
                 field=field_path
             )
             return
-        if isinstance(value, int) and not _fits_int64(value, field_path, result):
-            return
-
         self._validate_numeric_constraints(value, field_path, validation, result)
 
     async def _validate_integer(
@@ -853,9 +842,6 @@ class ValidationService:
                 field=field_path
             )
             return
-        if not _fits_int64(value, field_path, result):
-            return
-
         self._validate_numeric_constraints(value, field_path, validation, result)
 
     def _validate_numeric_constraints(

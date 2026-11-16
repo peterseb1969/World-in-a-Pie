@@ -141,3 +141,32 @@ async def test_without_raise_an_error_item_is_left_out_as_before(httpx_mock):
     _answer(httpx_mock, {"index": 0, "status": "error", "error_code": "internal_error"})
     client = RegistryClientBase(base_url=BASE, api_key="k")
     assert await client.lookup_entry_namespaces(["id-a"]) == {}
+
+
+@pytest.mark.asyncio
+async def test_place_entries_reads_an_id_the_bulk_lookup_failed_on(httpx_mock):
+    """An error item answers the request but not that id. place_entries reads
+    such an id one by one, as it reads a miss, so one id the bulk lookup
+    failed on does not cost the answers for every other id."""
+    _answer(
+        httpx_mock,
+        {"index": 0, "status": "found", "entry_id": "id-a", "namespace": "ns-a"},
+        {"index": 1, "status": "error", "error_code": "internal_error", "error": "boom"},
+    )
+    httpx_mock.add_response(
+        url=f"{BASE}/api/registry/entries/id-b",
+        json={"entry_id": "id-b", "namespace": "ns-b", "status": "active"},
+    )
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    assert await client.place_entries(["id-a", "id-b"]) == {"id-a": "ns-a", "id-b": "ns-b"}
+
+
+@pytest.mark.asyncio
+async def test_place_entries_refuses_when_the_failed_id_cannot_be_read_either(httpx_mock):
+    from wip_auth.registry_client import RegistryError
+
+    _answer(httpx_mock, {"index": 0, "status": "error", "error_code": "internal_error"})
+    httpx_mock.add_response(url=f"{BASE}/api/registry/entries/id-a", status_code=500)
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    with pytest.raises(RegistryError):
+        await client.place_entries(["id-a"])

@@ -58,7 +58,7 @@ def _to_integer(value: Any) -> int:
     text = str(value).strip()
     if not _INTEGER_TEXT.fullmatch(text):
         raise CellConversionError(f"'{text}' is not an integer")
-    return int(text)
+    return _int_of(text)
 
 
 def _to_number(value: Any) -> int | float:
@@ -77,10 +77,20 @@ _INTEGER_TEXT = re.compile(r"[-+]?[0-9]+")
 _NUMBER_TEXT = re.compile(r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
 
 
+def _int_of(text: str) -> int:
+    """An integer numeral as an int. int() refuses a numeral longer than
+    Python's digit limit (4300) with a plain ValueError, which would escape
+    the row and fail the whole file; it fails the row instead."""
+    try:
+        return int(text)
+    except ValueError as e:
+        raise CellConversionError(f"a numeral of {len(text)} characters is too long to read") from e
+
+
 def _parse_number(text: str) -> int | float:
     """A numeral as an int when it is one, else as a float."""
     if _INTEGER_TEXT.fullmatch(text):
-        return int(text)
+        return _int_of(text)
     if _NUMBER_TEXT.fullmatch(text):
         return float(text)
     raise CellConversionError(f"'{text}' is not a number")

@@ -208,6 +208,14 @@ class AddSynonymResponse(BaseModel):
 # ── Canonical client ────────────────────────────────────────────────────────
 
 
+def _failed_lookup_item(item: dict[str, Any], asked: list[str]) -> tuple[str, str]:
+    """(the id asked for, the reason) for a bulk lookup's error item."""
+    index = item.get("index")
+    entry_id = asked[index] if isinstance(index, int) and 0 <= index < len(asked) else "?"
+    reason = f"{item.get('error_code') or 'error'}: {item.get('error') or ''}".rstrip(": ")
+    return entry_id, reason
+
+
 class RegistryClientBase:
     """Canonical Registry HTTP client.
 
@@ -562,30 +570,39 @@ class RegistryClientBase:
         """
         if not entry_ids:
             return {}
+        try:
+            namespaces, failed = await self._lookup_namespaces(entry_ids)
+        except RegistryError:
+            if raise_on_error:
+                raise
+            return {}
+        if raise_on_error and failed:
+            asked, reason = failed[0]
+            raise RegistryError(f"Registry entry lookup failed for {asked!r}: {reason}")
+        return namespaces
+
+    async def _lookup_namespaces(
+        self, entry_ids: list[str],
+    ) -> tuple[dict[str, str], list[tuple[str, str]]]:
+        """One bulk lookup: (entry_id -> namespace for the active entries
+        found, [(entry_id, reason)] for the ids the Registry answered with an
+        error item). Raises RegistryError when the request itself fails."""
         async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/lookup/by-id",
                 headers=self._get_headers(),
                 json=[{"entry_id": eid} for eid in entry_ids],
             )
-            if response.status_code != 200:
-                if raise_on_error:
-                    raise RegistryError(
-                        f"Registry entry lookup failed: HTTP {response.status_code}"
-                    )
-                return {}
-            namespaces: dict[str, str] = {}
-            for r in response.json().get("results", []):
-                if raise_on_error and r.get("status") == "error":
-                    index = r.get("index")
-                    asked = entry_ids[index] if isinstance(index, int) and 0 <= index < len(entry_ids) else "?"
-                    raise RegistryError(
-                        f"Registry entry lookup failed for {asked!r}: "
-                        f"{r.get('error_code') or 'error'}: {r.get('error') or ''}".rstrip(": ")
-                    )
-                if r.get("status") == "found" and r.get("entry_id") and r.get("namespace"):
-                    namespaces[r["entry_id"]] = r["namespace"]
-            return namespaces
+        if response.status_code != 200:
+            raise RegistryError(f"Registry entry lookup failed: HTTP {response.status_code}")
+        namespaces: dict[str, str] = {}
+        failed: list[tuple[str, str]] = []
+        for r in response.json().get("results", []):
+            if r.get("status") == "error":
+                failed.append(_failed_lookup_item(r, entry_ids))
+            elif r.get("status") == "found" and r.get("entry_id") and r.get("namespace"):
+                namespaces[r["entry_id"]] = r["namespace"]
+        return namespaces, failed
 
     async def place_entries(self, entry_ids: list[str]) -> dict[str, str]:
         """Each entry's owning namespace, whatever the entry's status.
@@ -593,12 +610,15 @@ class RegistryClientBase:
         lookup_entry_namespaces sees active entries only; an entry merged
         away, deactivated or never activated still lives in a namespace, and
         a caller deciding who may see a target needs that namespace too. The
-        entries the bulk lookup misses are read one by one. An id absent
-        from the result has no Registry entry at all. Raises RegistryError
-        when the Registry cannot answer, so a caller can refuse instead of
+        entries the bulk lookup misses, or answers with an error item, are
+        read one by one. An id absent from the result has no Registry entry
+        at all. Raises RegistryError when the Registry cannot answer (the
+        bulk request, or an id's own read), so a caller can refuse instead of
         treating "could not ask" as "nowhere".
         """
-        placed = await self.lookup_entry_namespaces(entry_ids, raise_on_error=True)
+        if not entry_ids:
+            return {}
+        placed, _failed = await self._lookup_namespaces(entry_ids)
         missing = [eid for eid in entry_ids if eid not in placed]
         if not missing:
             return placed

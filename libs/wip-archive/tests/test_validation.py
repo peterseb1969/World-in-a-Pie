@@ -190,3 +190,20 @@ class TestFields:
 
     def test_non_dict_data_is_a_structural_error(self):
         assert _codes(_validate(_index(), _template([]), [1])) == {(None, "invalid_structure")}
+
+    def test_a_number_live_cannot_store_is_a_structural_error_anywhere(self):
+        """Live stage 1 refuses a whole number outside 64 bits and a NaN or
+        Infinity wherever it sits, with the live codes and paths, before any
+        field is checked."""
+        fields = [{"name": "age", "type": "integer"},
+                  {"name": "scores", "type": "array", "array_item_type": "number"}]
+        data = {"age": "x", "scores": [1, 2**63], "extra": {"n": [-(2**63) - 1, float("nan")]}}
+        outcome = _validate(_index(), _template(fields), data)
+        assert _codes(outcome) == {
+            ("scores[1]", "maximum"), ("extra.n[0]", "minimum"), ("extra.n[1]", "non_finite_number"),
+        }
+        assert "2^63" in outcome.errors[0]["message"]
+
+    def test_the_64_bit_bounds_themselves_are_storable(self):
+        fields = [{"name": "a", "type": "array", "array_item_type": "integer"}]
+        assert _validate(_index(), _template(fields), {"a": [2**63 - 1, -(2**63)]}).valid

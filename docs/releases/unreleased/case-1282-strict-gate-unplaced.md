@@ -18,4 +18,9 @@ The Registry's bulk lookup can also answer one id with an error inside an
 otherwise successful response. Every service that places references with it
 (the strict check above, both stores' inbound checks, template-store's
 reference check) read that id as "nowhere"; they now treat it as the
-Registry being unavailable for that write.
+Registry being unavailable for that write. reporting-sync's
+entity-references view, which hides references into namespaces the caller
+cannot read, places entries of any status: it reads such an id on its own,
+as it already read an id the lookup missed, and answers 503 only when that
+read cannot place it either. One id the bulk lookup failed on no longer
+turns the whole view into a 503.

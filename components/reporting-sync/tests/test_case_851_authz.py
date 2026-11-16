@@ -363,11 +363,12 @@ async def _references(monkeypatch, key):
     from reporting_sync.main import state
     from wip_auth.registry_client import RegistryClientBase
 
-    async def placed(self, ids, raise_on_error=False):
-        return {"tpl-own": "ns-a", "term-c": "ns-c"}
+    async def placed(self, ids):
+        # The bulk lookup place_entries makes: (placed, failed items).
+        return {"tpl-own": "ns-a", "term-c": "ns-c"}, []
 
     monkeypatch.setattr(state, "search_service", _FakeSearchServiceWithRefs())
-    monkeypatch.setattr(RegistryClientBase, "lookup_entry_namespaces", placed)
+    monkeypatch.setattr(RegistryClientBase, "_lookup_namespaces", placed)
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test",
                            headers={"X-API-Key": key}) as c:

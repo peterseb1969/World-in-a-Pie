@@ -48,6 +48,7 @@ from wip_archive.definitions import DefinitionIndex, UnresolvableTemplate, term_
 from wip_archive.identity import _get_nested_value, referent_identity_fields
 
 TIME_UNITS_TERMINOLOGY = "_TIME_UNITS"
+INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
 _UUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
@@ -258,6 +259,8 @@ class OfflineValidator:
         result = ValidationOutcome()
         if not isinstance(data, dict):
             result.add_error(code="invalid_structure", message="Document data must be a dictionary")
+            return result
+        if not _numbers_storable(data, result):
             return result
         template_ns = template.get("namespace") or namespace
 
@@ -1113,3 +1116,42 @@ class OfflineValidator:
                         field=target,
                     )
                     break
+
+
+def _numbers(value: Any, path: str) -> list[tuple[str, int | float]]:
+    """(path, number) for every number inside value; booleans are not numbers."""
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, int | float):
+        return [(path, value)]
+    if isinstance(value, dict):
+        return [
+            found for k, v in value.items()
+            for found in _numbers(v, f"{path}.{k}" if path else str(k))
+        ]
+    if isinstance(value, list):
+        return [found for i, v in enumerate(value) for found in _numbers(v, f"{path}[{i}]")]
+    return []
+
+
+def _numbers_storable(data: dict[str, Any], result: ValidationOutcome) -> bool:
+    """Live stage 1: a NaN or Infinity, and a whole number outside 64 bits
+    (MongoDB's largest integer), are refused wherever they sit in the data."""
+    valid = True
+    for path, number in _numbers(data, ""):
+        if isinstance(number, float):
+            if not math.isfinite(number):
+                valid = False
+                result.add_error(
+                    code="non_finite_number",
+                    message=f"Field '{path}' is not a finite number (NaN and Infinity are refused)",
+                    field=path,
+                )
+        elif not INT64_MIN <= number <= INT64_MAX:
+            valid = False
+            result.add_error(
+                code="maximum" if number > INT64_MAX else "minimum",
+                message=f"Field '{path}' must be a whole number between -2^63 and 2^63-1",
+                field=path,
+            )
+    return valid

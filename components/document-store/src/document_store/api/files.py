@@ -37,6 +37,7 @@ from ..models.api_models import (
     UpdateFileItem,
 )
 from ..models.file import FileStatus
+from ..models.numbers import refuse_unstorable_numbers
 from ..services.errors import error_fields
 from ..services.file_service import FileServiceError, get_file_service
 from ..services.file_storage_client import (
@@ -126,7 +127,10 @@ def _parse_custom(custom: str | None) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=f"custom is not valid JSON: {e}") from None
     if not isinstance(value, dict):
         raise HTTPException(status_code=422, detail="custom must be a JSON object")
-    return value
+    try:
+        return refuse_unstorable_numbers(value, "custom")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
 
 
 @router.post(

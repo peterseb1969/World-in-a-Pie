@@ -17,6 +17,7 @@ from wip_auth.bulk_models import (
 
 from .document import DocumentMetadata, DocumentStatus
 from .file import FileMetadata, FileStatus
+from .numbers import refuse_unstorable_numbers
 
 
 class StrictModel(BaseModel):
@@ -69,6 +70,12 @@ class DocumentCreateRequest(StrictModel):
         default=None,
         description="Custom metadata"
     )
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_numbers_are_storable(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return refuse_unstorable_numbers(v, "metadata")
+
     synonyms: list[dict[str, Any]] | None = Field(
         default=None,
         description="Optional synonym composite keys to register for this document in the Registry"
@@ -602,6 +609,11 @@ class PatchDocumentItem(StrictModel):
                     "metadata (warnings, source_system) cannot be addressed. "
                     "A metadata change creates a new version like any other change."
     )
+
+    @field_validator("metadata_patch")
+    @classmethod
+    def _metadata_numbers_are_storable(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return refuse_unstorable_numbers(v, "metadata_patch")
     if_match: int | None = Field(
         default=None,
         description="Expected current revision (the document's `revision`, which "
@@ -985,6 +997,11 @@ class UpdateFileMetadataRequest(StrictModel):
         default=None,
         description="Additional custom metadata fields (merges with existing)"
     )
+
+    @field_validator("custom")
+    @classmethod
+    def _custom_numbers_are_storable(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return refuse_unstorable_numbers(v, "custom")
     allowed_templates: list[str] | None = Field(
         default=None,
         description=(
