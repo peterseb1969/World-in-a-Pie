@@ -8,9 +8,10 @@ key never reached the running services.
 
 The renderers now stamp a per-workload hash of those inputs (k8s pod-template
 annotation, compose service label). Contract under test: the hash moves for
-exactly the workloads whose inputs moved, never for storage-bearing ones,
-and an unchanged install renders byte-identically (a no-op re-apply
-restarts nothing).
+exactly the workloads whose inputs moved, never for storage-bearing
+components (an app is hashed with or without storage, see
+tests/unit/test_case_602_storage_app_restarts.py), and an unchanged install
+renders byte-identically (a no-op re-apply restarts nothing).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from wip_deploy.renderers import render_compose, render_k8s
 from wip_deploy.secrets import ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import (
+    AppRef,
     AuthSpec,
     ComposePlatform,
     Deployment,
@@ -47,7 +49,9 @@ def discovery() -> Discovery:
     return discover(REPO_ROOT)
 
 
-def _deployment(target: str, *, api_keys: list[str] | None = None) -> Deployment:
+def _deployment(
+    target: str, *, api_keys: list[str] | None = None, apps: list[str] | None = None,
+) -> Deployment:
     platform = (
         PlatformSpec(k8s=K8sPlatform(namespace="wip-test"))
         if target == "k8s"
@@ -63,6 +67,7 @@ def _deployment(target: str, *, api_keys: list[str] | None = None) -> Deployment
         spec=DeploymentSpec(
             target=target,  # type: ignore[arg-type]
             modules={"optional": ["mcp-server", "reporting-sync"]},  # type: ignore[arg-type]
+            apps=[AppRef(name=n) for n in apps or []],
             auth=auth,
             network=NetworkSpec(hostname="wip.local"),
             images=ImagesSpec(registry="ghcr.io/peterseb1969", tag="v2.0.0"),
@@ -119,14 +124,20 @@ class TestK8s:
             p: e.content for p, e in second.files.items()
         }
 
-    def test_statefulsets_carry_no_hash(self, tmp_path, discovery):
-        """Storage workloads are not rolled by secret changes. NATS, MongoDB
-        and Dex are the exceptions: they carry the hash of their rendered
-        config / start script (config_gen/nats.py, mongodb.py,
-        renderers/compose_dex.py), not of their secrets."""
-        d = _deployment("k8s")
+    def test_component_statefulsets_carry_no_hash(self, tmp_path, discovery):
+        """Storage-bearing components are not rolled by secret changes. NATS,
+        MongoDB and Dex are the exceptions: they carry the hash of their
+        rendered config / start script (config_gen/nats.py, mongodb.py,
+        renderers/compose_dex.py), not of their secrets. A storage-bearing
+        app is a StatefulSet that does carry it (enabled here, so the scope
+        of this assertion is exercised)."""
+        d = _deployment("k8s", apps=["wip-aa"])
         w = _k8s_workloads(d, discovery, _secrets(tmp_path, d, discovery))
-        stateful = [n for n, doc in w.items() if doc["kind"] == "StatefulSet"]
+        # Every workload is named wip-<owner>, apps included.
+        apps = {f"wip-{a.metadata.name}" for a in discovery.apps}
+        aa = w["wip-wip-aa"]
+        assert aa["kind"] == "StatefulSet" and _annotation(aa) is not None
+        stateful = [n for n, doc in w.items() if doc["kind"] == "StatefulSet" and n not in apps]
         assert stateful, "expected storage-bearing components in the standard set"
         exceptions = ("wip-nats", "wip-mongodb", "wip-dex")
         assert all(_annotation(w[n]) is None for n in stateful if n not in exceptions)

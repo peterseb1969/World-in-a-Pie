@@ -8,8 +8,8 @@ Output tree:
     namespace.yaml
     secrets.yaml
     configmaps.yaml
-    infrastructure/<name>.yaml    (StatefulSets for storage-bearing components)
-    services/<name>.yaml          (Deployments for stateless services)
+    infrastructure/<name>.yaml    (StatefulSets for storage-bearing components and apps)
+    services/<name>.yaml          (Deployments for stateless components and apps)
     ingress.yaml
 
 Design decisions:
