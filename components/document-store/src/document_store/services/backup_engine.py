@@ -2199,7 +2199,12 @@ class _IdentityRehash:
         return row
 
     def rekey(self, entry: dict[str, Any]) -> dict[str, Any]:
-        """A rehashed document's Registry row, keyed on its new hash."""
+        """A rehashed document's Registry row, keyed on its new hash.
+
+        The recorded key always follows the rehash (a merge plan matches a
+        merged-away entry on it); the stored hash goes through _rehashed, so
+        an entry the Registry merged away keeps its cleared hash and claims
+        no key."""
         new_hash = (
             self.new_hash.get(str(entry.get("entry_id")))
             if entry.get("entity_type") == "documents" else None
@@ -2210,7 +2215,7 @@ class _IdentityRehash:
             entry = {
                 **entry,
                 "primary_composite_key": key,
-                "primary_composite_key_hash": compute_composite_key_hash(key),
+                "primary_composite_key_hash": _rehashed(entry, key),
             }
         return entry
 
