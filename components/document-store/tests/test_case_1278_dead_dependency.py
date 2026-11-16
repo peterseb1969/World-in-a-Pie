@@ -106,7 +106,11 @@ async def test_a_dead_def_store_is_asked_once_for_the_whole_scan(documents):
     def_store, template_store = _CountingDefStore(NS_DOWN), _CountingTemplateStore()
     result = await _scan(NS_DOWN, def_store, template_store)
 
-    assert def_store.calls == [f"{NS_DOWN}-T1-TERM0"], "every reference asked def-store again"
+    # The scan reads documents unsorted, in whatever order MongoDB returns
+    # them, so which reference is asked first is not part of the contract —
+    # only that one ask was made.
+    assert len(def_store.calls) == 1, f"every reference asked def-store again: {def_store.calls}"
+    assert def_store.calls[0].startswith(f"{NS_DOWN}-"), def_store.calls
     assert result.status == "incomplete"
     assert result.summary.checks_not_run == {"term_reference:def-store": 6}
     assert result.issues == []
