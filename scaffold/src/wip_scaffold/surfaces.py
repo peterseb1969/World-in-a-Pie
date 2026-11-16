@@ -870,7 +870,7 @@ def app_surfaces(app_meta: dict[str, str], profile: str = "full") -> list[Surfac
         Surface(
             name="pre-commit-gate",
             policy=Policy.PRESERVE_OR_SET,
-            rationale="a .gitignore entry does not stop `git add -f` or a file that was tracked before it was ignored, and app repos have committed WIP API keys that way; written only when absent, because the hook is the app's to extend once it exists",
+            rationale="a .gitignore entry does not stop `git add -f` or a file that was tracked before it was ignored, and app repos have committed WIP API keys that way; written when absent, or when still byte-identical to an earlier shipped gate; an app's own edit is kept, because the hook is the app's to extend once it exists",
             executable=True,
             produce=_pre_commit_gate,
         ),
