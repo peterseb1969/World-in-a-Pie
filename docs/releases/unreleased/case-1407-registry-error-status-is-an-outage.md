@@ -23,3 +23,5 @@ A 4xx stays a refusal.
 Auto-synonym registration after a create also reported an unreachable
 Registry as a plain refusal. It now reports it as an outage too, on every
 document it rolls back.
+
+File uploads draw the same line. `POST /api/document-store/files` mints the file's id with its own Registry call, which still read a 5xx as a refusal: the upload answered 502 with no outage rule. It now answers 503, the same answer as for an unreachable Registry, and the error carries `details.rule: "registry_unavailable"` for callers that report per item. A 4xx stays a refusal (502).

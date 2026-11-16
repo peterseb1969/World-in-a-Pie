@@ -38,7 +38,12 @@ from .file_storage_client import (
 from .file_validation import content_type_matches
 from .namespace_scope import and_namespace
 from .nats_client import EventType, publish_file_event
-from .registry_client import RegistryError, get_registry_client
+from .registry_client import (
+    RegistryError,
+    RegistryUnreachableError,
+    _status_error,
+    get_registry_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +317,12 @@ class FileService:
             file_id, already_exists = await self._generate_file_id(
                 registry, checksum, actor, namespace=namespace, entry_id=file_id,
             )
+        except RegistryUnreachableError as e:
+            raise FileServiceError(
+                f"Registry did not answer while generating the file ID — retry shortly ({e})",
+                "registry_error",
+                rule="registry_unavailable",
+            ) from e
         except RegistryError as e:
             raise FileServiceError(f"Failed to generate file ID: {e}", "registry_error") from e
         except httpx.TransportError as e:
@@ -426,9 +437,8 @@ class FileService:
             )
 
             if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to generate file ID: {response.status_code} - {response.text}"
-                )
+                # A 5xx is the Registry not answering, a 4xx a refusal.
+                raise _status_error("Failed to generate file ID", response)
 
             data = response.json()
             result = data["results"][0]
