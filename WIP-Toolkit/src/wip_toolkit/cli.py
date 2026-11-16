@@ -1138,6 +1138,29 @@ _MERGE_ONLY_OPTIONS = (
 )
 
 
+def _print_reporting_verdict(result: dict) -> None:
+    """State what reporting looks like after a restore, and what to run when it
+    is not right. The verdict is the server's — computed by reporting-sync over
+    the tables it owns — and a complete job is not a verified one, so it gets
+    its own line instead of hiding in the result JSON.
+    """
+    verification = result.get("reporting_verification") or {}
+    if verification.get("status", "verified") == "verified":
+        return
+    console.print(f"[yellow]reporting: {verification.get('status')}[/yellow]")
+    for namespace, verdict in (verification.get("namespaces") or {}).items():
+        if verdict.get("status") == "verified":
+            continue
+        console.print(
+            f"  {namespace}: {verdict.get('status')} — {verdict.get('reason') or ''}"
+        )
+        console.print(
+            "[dim]  re-sync: POST "
+            f"/api/reporting-sync/sync/batch?namespace={namespace}&force=true, "
+            "then GET /api/reporting-sync/parity[/dim]"
+        )
+
+
 @main.command()
 @click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("--mode", type=click.Choice(["restore", "merge", "fresh"]), default="restore",
@@ -1351,6 +1374,7 @@ def restore(
             console.print(f"[red]{snapshot['error']}[/red]")
         for warning in snapshot.get("warnings") or []:
             console.print(f"[yellow]warning:[/yellow] {warning}")
+        _print_reporting_verdict(snapshot.get("result") or {})
         if snapshot.get("result"):
             console.print(_json.dumps(snapshot["result"], indent=2, default=str))
     status = snapshot.get("status")

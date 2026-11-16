@@ -425,6 +425,21 @@ export interface ViewParity {
   present: boolean
 }
 
+/**
+ * One finding behind the parity verdict: what is missing, or why it could not
+ * be told. `kind` is the surface (`template`, `table`, `view`, `namespace`),
+ * `issue` a stable code, `detail` the finding on one line, and
+ * `expected`/`actual` the numbers where the check has them.
+ */
+export interface ParityReason {
+  kind: string
+  name: string | null
+  issue: string
+  detail: string
+  expected: number | null
+  actual: number | null
+}
+
 /** Does PostgreSQL reflect what sync should have built for a namespace? */
 export interface NamespaceParityResult {
   namespace: string
@@ -440,9 +455,18 @@ export interface NamespaceParityResult {
   derived_tables: DerivedTableParity[]
   views: ViewParity[]
   /** Failing derived tables plus missing registered views; kept apart from
-   * structural_issues, which a restore's structure gate reads mid-restore. */
+   * structural_issues because the term data and views land after it. */
   derived_issues: number
   ok: boolean
+  /** The answer to branch on, computed by reporting-sync over the tables it
+   * owns: `verified` — every check ran and found nothing missing; `failed` — a
+   * check proved rows or tables missing; `unverified` — nothing could be
+   * settled, because a store did not answer, this namespace's batch sync is
+   * still running, or there was nothing to check. A check that could not run is
+   * never reported as a clean one. */
+  verdict: 'verified' | 'failed' | 'unverified'
+  /** What stands behind `verdict`, one entry per finding. */
+  reasons: ParityReason[]
 }
 
 export interface SearchResult {

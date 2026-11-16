@@ -5468,10 +5468,12 @@ async def get_backup_job(job_id: str) -> str:
     archive_size (when complete). Poll this to track progress.
 
     A completed restore or merge is not proof that reporting caught up:
-    read result.reporting_verification.status — verified, incomplete (the
-    per-namespace entries list the gaps), unavailable (reporting-sync not
-    reachable) or not_checked (documents skipped, or a fresh restore, which
-    does not wait for reporting).
+    read result.reporting_verification.status — verified, failed (reporting
+    proved rows or tables missing; the per-namespace entries carry reporting-
+    sync's reasons, and the job's warnings name the batch sync to re-run) or
+    unverified (nothing could be settled: reporting-sync or template-store did
+    not answer, documents were skipped, or a fresh restore, which does not
+    wait for reporting). A restore never halts on reporting.
     """
     try:
         data = await get_client().get_backup_job(job_id)
@@ -5564,6 +5566,13 @@ async def check_reporting_parity(
     state: schema presence, table count, and whether the sync bookkeeping
     tables are usable at all (a pre-namespace-keying database is named
     explicitly, with remediation).
+
+    `verdict` is the one answer to branch on, with `reasons` behind it:
+    `verified` (every check ran and found nothing missing), `failed` (a check
+    proved rows or tables missing) or `unverified` (nothing could be settled:
+    a store did not answer, this namespace's batch sync is still running, or
+    there was nothing to check). A check that could not run is never reported
+    as a clean one.
 
     Interpreting results:
     - structural_issues > 0: tables missing or mis-shaped — check the

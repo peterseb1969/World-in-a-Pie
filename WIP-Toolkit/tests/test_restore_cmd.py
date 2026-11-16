@@ -10,12 +10,12 @@ from wip_toolkit.cli import main
 from wip_toolkit.restore import build_form, wait_for_job
 
 
-def _mock_client(final_status="complete"):
+def _mock_client(final_status="complete", result=None):
     client = MagicMock()
     client.__enter__ = MagicMock(return_value=client)
     client.__exit__ = MagicMock(return_value=False)
     client.post_form.return_value = {"job_id": "rst-1", "status": "pending"}
-    client.get.return_value = {"job_id": "rst-1", "status": final_status}
+    client.get.return_value = {"job_id": "rst-1", "status": final_status, "result": result}
     return client
 
 
@@ -317,3 +317,44 @@ def _real_archive(tmp_path, *, template_version, data=None):
     writer.write(Manifest(namespace="aa", counts=counts,
                           namespaces=[NamespaceEntry(prefix="aa", counts=counts)]))
     return path
+
+
+class TestReportingVerdictLine:
+    """A complete job is not a verified one: the verdict gets its own line."""
+
+    def test_a_failed_verdict_is_stated_with_the_resync_to_run(self, tmp_path):
+        client = _mock_client(result={"reporting_verification": {
+            "status": "failed",
+            "namespaces": {"kb": {"status": "failed", "reason": "kb:BOOK 3 of 10 rows",
+                                  "reasons": []}},
+        }})
+        out = _invoke(tmp_path, client).output
+        assert "reporting: failed" in out
+        assert "kb: failed — kb:BOOK 3 of 10 rows" in out
+        assert "sync/batch?namespace=kb&force=true" in out
+
+    def test_an_unverified_namespace_is_stated_too(self, tmp_path):
+        client = _mock_client(result={"reporting_verification": {
+            "status": "unverified",
+            "namespaces": {"kb": {"status": "unverified",
+                                  "reason": "reporting-sync not reachable"}},
+        }})
+        out = _invoke(tmp_path, client).output
+        assert "reporting: unverified" in out
+        assert "reporting-sync not reachable" in out
+
+    def test_a_verified_run_adds_no_line(self, tmp_path):
+        client = _mock_client(result={"reporting_verification": {
+            "status": "verified", "namespaces": {"kb": {"status": "verified"}},
+        }})
+        assert "reporting:" not in _invoke(tmp_path, client).output
+
+    def test_a_job_with_no_verdict_adds_no_line(self, tmp_path):
+        assert "reporting:" not in _invoke(tmp_path, _mock_client()).output
+
+    def test_json_output_stays_parseable(self, tmp_path):
+        client = _mock_client(result={"reporting_verification": {
+            "status": "failed", "namespaces": {"kb": {"status": "failed", "reason": "r"}},
+        }})
+        out = _invoke(tmp_path, client, "--json").output
+        assert json.loads(out)["result"]["reporting_verification"]["status"] == "failed"

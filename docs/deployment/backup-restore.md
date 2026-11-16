@@ -86,8 +86,11 @@ data starts a validation job that resolves every reference.
 
 ## What the restore verifies for you
 
-Restore is not blind anymore. The engine runs three verification phases per
-namespace, backed by reporting-sync's parity check:
+A restore never stops on reporting. The documents are what a restore protects,
+and the reporting tables are derived from them: a namespace whose tables were
+missing the whole time still ends up correct once the batch sync lands, while a
+restore halted halfway leaves data unrestored. So the engine checks reporting at
+two points, and only the one before any write can refuse the job:
 
 (This section describes `mode=restore`, the wholesale restore into an empty
 target. For merging an archive into a namespace that already holds data, see
@@ -107,36 +110,41 @@ the next section — the preconditions differ.)
    also fail here — loudly, before any write, instead of as silent per-type
    sync failures afterwards.
 
-2. **Structural gate (after templates, before documents):** reporting tables
-   for every restored sync-enabled template must materialize with the right
-   columns in the right schema. A persistent failure **halts the restore
-   before any document moves** — the incident class is caught at the first
-   template.
+2. **Verification (after the documents, never a halt):** the restore triggers
+   the namespace batch sync, waits while reporting-sync says it is still
+   working, and records the **verdict reporting-sync computed** — the tables,
+   their shape, and the expected-vs-actual row counts of every sync-enabled
+   template, plus the term tables and registered views. A `failed` or
+   `unverified` verdict completes the job **with a warning** naming the re-sync
+   to run; the restore's data is already in MongoDB.
 
-3. **Count parity (after documents):** expected row counts (computed from
-   Mongo with the same query the sync uses) vs actual postgres rows, polled
-   with a bounded wait. A mismatch **completes the restore with a warning**
-   on the job record (`warnings` field of the job snapshot) — the data is
-   safe in Mongo; the warning tells you the reporting layer needs a look.
+   The wait is bounded: it lasts while rows keep landing and gives up after
+   60 s without progress (or 30 min overall), so a stuck sync delays the
+   verdict and never the restore.
 
-If reporting-sync is not deployed (core preset), the phases degrade to a
-logged warning — a restore never fails because the optional reporting layer
-is absent.
+If reporting-sync is not deployed (the core preset), the phase records
+`unverified` and warns — a restore never fails because the optional reporting
+layer is absent.
 
 **The verdict is on the job.** A completed restore or merge carries
 `result.reporting_verification` on its job snapshot, so a script can tell a
-verified restore from one that gave up without reading `warnings`:
+verified restore from one that could not be, without reading `warnings`:
 
 ```json
 "reporting_verification": {
-  "status": "incomplete",
+  "status": "failed",
   "namespaces": {
     "kb": {
-      "status": "incomplete",
-      "reason": "no reporting rows written for 60s",
-      "gaps": [
+      "status": "failed",
+      "reason": "kb:BOOK 3 of 10 live documents have rows (and 1 more)",
+      "reasons": [
+        {"kind": "template", "name": "BOOK", "issue": "count_mismatch",
+         "detail": "kb:BOOK 3 of 10 live documents have rows",
+         "expected": 10, "actual": 3},
         {"kind": "table", "name": "term_relations",
-         "issue": "term_relations_mismatch", "expected": 7, "actual": 0}
+         "issue": "term_relations_mismatch",
+         "detail": "term_relations: 0 rows where 7 are expected",
+         "expected": 7, "actual": 0}
       ]
     }
   }
@@ -144,17 +152,23 @@ verified restore from one that gave up without reading `warnings`:
 ```
 
 Each namespace the run wrote gets one of:
-- `verified`: count parity held.
-- `incomplete`: the wait gave up. `gaps` lists each gap: `kind` (`template`,
-  `table`, `view`), `name`, `issue` and, where the check has them, the
-  expected and actual counts.
-- `unavailable`: reporting-sync could not be reached.
-- `not_checked`: the run did not verify reporting. This is the case when
-  documents were skipped, and for a fresh restore (`namespace_map`), which
-  does not wait for reporting: its sync starts when the job completes.
+- `verified`: every check ran and found nothing missing.
+- `failed`: a check proved rows or tables missing. `reasons` lists each one:
+  `kind` (`template`, `table`, `view`, `namespace`), `name`, `issue`, a
+  one-line `detail` and, where the check has them, the expected and actual
+  counts. Re-run the batch sync (`force=true` rebuilds the tables from
+  MongoDB) and confirm with the parity check.
+- `unverified`: nothing could be settled — reporting-sync or template-store
+  did not answer, the wait gave out while the sync was still running, there
+  was nothing to check (documents skipped), or the run did not verify at all.
+  This includes a fresh restore (`namespace_map`), which does not wait for
+  reporting: its sync starts when the job completes.
 
-`status` at the top is the worst of the namespaces' verdicts. The standing
-check (below) repairs most gaps afterwards; confirm with the parity check.
+`verified`, `failed` and `unverified` are reporting-sync's own verdict, computed
+over the tables it owns and recorded as given — document-store keeps no second
+copy of the judgement. `status` at the top is the worst of the namespaces'
+verdicts, `failed` worst of all. The standing check (below) repairs most gaps
+afterwards; confirm with `GET /api/reporting-sync/parity?namespace=kb`.
 
 Whatever the mode, the restore also rebuilds the Registry's **composite-key
 claims** for the entries it wrote. Claims are derived state (one row per
@@ -302,18 +316,16 @@ every difference the target won, and the document counts. Documents the
 target already holds are counted as `not_compared`, not as unchanged or
 clashing: the plan does not read their content, and a real run compares each
 one when it writes, leaving an identical copy alone. It still fails on
-everything a real run would refuse, a file key another file holds included,
-except the reporting structure gate below, which only a real run reaches.
+everything a real run would refuse, a file key another file holds included.
 
-One check cannot run before writing: the reporting structure gate, which
-needs the merged templates written so reporting-sync can build their tables.
-A merge therefore writes in three steps across all the archive's namespaces:
-every namespace's definitions (terminologies, terms, relations, templates and
-their Registry entries), then every namespace's reporting gate, then every
-namespace's documents, files and remaining entries. A gate that refuses does
-so before any document is written anywhere, and says so. Nothing a merge has
-written is undone: any failure after the first write names, per target, what
-was written (`details.written` on the failed job, `result_kind:
+A merge writes in two steps across all the archive's namespaces: every
+namespace's definitions (terminologies, terms, relations, templates and their
+Registry entries), then every namespace's documents, files and remaining
+entries, each followed by its reporting verification. Reporting is the last of
+these and refuses nothing: a merge whose reporting layer comes out `failed`
+still merged its documents, and says so in its verdict (above). Nothing a
+merge has written is undone: any failure after the first write names, per
+target, what was written (`details.written` on the failed job, `result_kind:
 merge_partial`).
 
 ```bash
@@ -398,9 +410,11 @@ recent repairs. The interval and the repair limit are the service's
 `PARITY_REPAIR_ATTEMPTS`; wip-deploy does not set them, so every install runs
 the defaults.
 
-Interpreting it: structural issues → tables missing/mis-shaped (was the
-restore's phase-1 skipped or the sync broken?); count mismatches → sync
-behind or blocked (check `get_sync_status`, re-run the batch sync);
+Interpreting it: the `verdict` (`verified` / `failed` / `unverified`) with its
+`reasons` is the answer to branch on. Behind it: structural issues → tables
+missing/mis-shaped (was the sync broken, or the schema never built?); count
+mismatches → sync behind or blocked (check `get_sync_status`, re-run the batch
+sync);
 `bookkeeping_tables_ok: false` → old-shape database — wipe per the ritual,
 or apply the namespace-column ALTER by hand.
 
