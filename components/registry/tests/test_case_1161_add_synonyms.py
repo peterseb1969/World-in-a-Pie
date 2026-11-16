@@ -3,10 +3,13 @@ refactor.
 
 Provenance: CASE-1161, CASE-1268. A synonym the entry already holds, or its
 own primary key, is already_exists with no claim; an item that raises is an
-error of its own; a repeat of an item that fails shares its error; and
-re-adding a synonym whose inactive copy is still recorded replaces that copy
-on a re-read after a lost race. The same replacement on the first write was
-already pinned by test_case_1019_synonyms_bulk (test_an_inactive_copy_is_replaced).
+error of its own; a repeat of an item that fails shares its error;
+re-adding a synonym whose inactive copy is still recorded, while the entry
+still holds its claim, replaces that copy (the claim insert finds the key
+held by its own entry and takes it over); and the same replacement happens
+on a re-read after a lost race. test_case_1019_synonyms_bulk
+(test_an_inactive_copy_is_replaced) pins the replacement on the first write
+with the claim released first, where the claim insert simply succeeds.
 """
 
 import uuid

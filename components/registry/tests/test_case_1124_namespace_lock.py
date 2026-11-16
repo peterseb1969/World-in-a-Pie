@@ -14,8 +14,9 @@ import uuid
 
 import pytest
 
+from registry.models.deletion_journal import DeletionJournal
 from registry.models.namespace import Namespace
-from registry.services.namespace_deletion import NamespaceDeletionService
+from registry.services.namespace_deletion import DeletionRefused, NamespaceDeletionService
 
 NS = "/api/registry/namespaces"
 
@@ -87,5 +88,29 @@ async def test_a_second_deletion_cannot_take_the_lock(client, auth_headers):
         return []
 
     svc._check_inbound_references = the_other_deletion_locks_it
-    with pytest.raises(ValueError, match="already locked"):
+    with pytest.raises(DeletionRefused, match="its deletion is in progress") as refused:
         await svc.start_deletion(prefix, requested_by="t")
+    assert refused.value.status == 409
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_that_finds_the_namespace_removed_meanwhile_is_not_found(
+    client, auth_headers,
+):
+    """Another deletion finished between this one's read and its lock: the
+    namespace is gone, so the answer is 404, not "deletion in progress", and
+    no journal is started."""
+    prefix = f"lock-{uuid.uuid4().hex[:8]}"
+    r = await client.put(f"{NS}/{prefix}", json={"deletion_mode": "full"}, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    svc = NamespaceDeletionService()
+
+    async def the_other_deletion_removes_it(_prefix):
+        await Namespace.get_motor_collection().delete_one({"prefix": prefix})
+        return []
+
+    svc._check_inbound_references = the_other_deletion_removes_it
+    with pytest.raises(DeletionRefused, match=f"Namespace not found: {prefix}") as refused:
+        await svc.start_deletion(prefix, requested_by="t")
+    assert refused.value.status == 404
+    assert await DeletionJournal.find({"namespace": prefix}).count() == 0

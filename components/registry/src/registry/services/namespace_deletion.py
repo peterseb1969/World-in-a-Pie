@@ -48,7 +48,7 @@ from ..models.deletion_journal import (
 )
 from ..models.entry import RegistryEntry
 from ..models.id_algorithm import VALID_ENTITY_TYPES
-from ..models.namespace import Namespace, set_unless_locked
+from ..models.namespace import LOCKED_DETAIL, Namespace, set_unless_locked, unwritten_answer
 from .event_bus import access_changed, get_event_bus
 
 logger = logging.getLogger("registry.namespace_deletion")
@@ -247,7 +247,7 @@ def deletion_refusals(ns: Namespace) -> list[tuple[str, str, int]]:
     if ns.status == "locked":
         refusals.append((
             "locked",
-            f"Namespace '{ns.prefix}' is already locked (deletion in progress)",
+            LOCKED_DETAIL.format(prefix=ns.prefix),
             409,
         ))
     return refusals
@@ -960,12 +960,13 @@ class NamespaceDeletionService:
             )
 
         # Lock the namespace, in one conditional update: two deletions that
-        # both read it unlocked cannot both take the lock.
+        # both read it unlocked cannot both take the lock. Nothing written
+        # means another deletion locked it (409) or has already removed it
+        # (404): a namespace that is gone is not answered as in progress.
         prior_status = ns.status
         if not await set_unless_locked(ns, {"status": "locked", "updated_at": datetime.now(UTC)}):
-            raise DeletionRefused(
-                f"Namespace '{prefix}' is already locked (deletion in progress)", 409,
-            )
+            status, detail = await unwritten_answer(ns, prefix)
+            raise DeletionRefused(detail, status)
         logger.info("Namespace '%s' locked for deletion", prefix)
         # Every service drops its cached permissions now: an answer cached
         # before the lock would otherwise keep the namespace open for the

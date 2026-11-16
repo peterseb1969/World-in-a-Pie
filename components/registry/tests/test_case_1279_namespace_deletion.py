@@ -40,5 +40,5 @@ async def test_a_namespace_locked_meanwhile_is_a_409(client, auth_headers, monke
     monkeypatch.setattr(nd, "set_unless_locked", locked_by_another)
     r = await client.delete(f"{NS}/{prefix}", headers=auth_headers)
     assert r.status_code == 409, r.text
-    assert "already locked" in r.text
+    assert "its deletion is in progress" in r.text
     await Namespace.get_motor_collection().delete_one({"prefix": prefix})

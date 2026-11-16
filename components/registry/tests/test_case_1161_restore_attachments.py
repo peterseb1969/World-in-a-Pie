@@ -4,10 +4,12 @@ _restore_attachments' refactor.
 Provenance: CASE-1161, CASE-1268. The suite did not reach these branches: the
 restore inserts an attachment the target did not hold when it was read, and
 another request attaches the same name first (duplicate key), or it replaces
-one that another request deleted and attached again under the same name; and
-an archived upstream that is not a valid URL. A lost write moves the item
-from created/replaced (and unresolved) to a concurrent_write skip, an invalid
-upstream is an upstream_invalid skip, and the restore goes on with the rest.
+one that another request deleted and attached again under the same name. A
+lost write moves the item from created/replaced (and unresolved) to a
+concurrent_write skip, and the restore goes on with the rest. An archived
+upstream that is not a valid URL was reached but unasserted
+(test_case_1055_attachment_backup checks only that the item is skipped); its
+upstream_invalid reason is pinned here.
 """
 
 import pytest
