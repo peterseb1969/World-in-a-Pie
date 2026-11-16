@@ -157,13 +157,17 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     # treats the wrapper-call as a valid gate without needing to
     # recurse into module-local definitions.
     "_enforce_replay_admin",        # document_store.api.replay
-    "check_readable",               # document_store.api.auth: read, 404 text of an unknown id
+    "check_readable",               # wip_auth.permissions: read, 404 text of an unknown id
     "_check_job_permission",        # document_store.api.backup: every namespace a job spans
-    "write_refusals",               # document_store.api.auth: write on every namespace a bulk write spans
+    "write_refusals",               # wip_auth.permissions: write on every namespace a bulk write spans
     "_batch_write_refusals",        # document_store.api.documents: write_refusals for the documents a batch names
     "_require_write_on_template",   # template_store.api.templates: write on the template row's own namespace
+    "_gate_unresolvable",           # template_store.api.templates: check_readable on the raw template's namespace, or 404
     "_audited_namespace",           # def_store.api.audit: can_read on the audited entity's namespace
     "_bulk_item_terminology",       # def_store.api.terms: can_read on the resolved terminology's namespace
+    # Not registered: def_store.api.terms._terminology_namespace. It reads a
+    # namespace out of an NS:VALUE argument with no permission check, so it is
+    # a lookup, not a gate; a door relying on it alone must be reported.
 })
 
 # Names that count as valid permission gates when they appear as the

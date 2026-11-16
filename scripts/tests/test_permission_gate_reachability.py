@@ -581,3 +581,30 @@ def test_repository_is_at_zero_permission_violations():
         result = checker.check_file(path)
         total += sum(1 for v in result["violations"] if v["rule"] == "permission-enforcement")
     assert total == 0, "the permission rule found ungated paths in the repo"
+
+
+# --------------------------------------------------------------------------
+# Registered wrappers: a module-local gate counts; a lookup does not.
+# --------------------------------------------------------------------------
+
+
+def test_a_door_gated_only_by_gate_unresolvable_passes():
+    """template-store's _gate_unresolvable always reaches check_readable (or
+    404s) before it re-raises, so a door gated only by it is gated."""
+    assert _permission_violations("""
+        @router.get("/x")
+        async def read(x: str, identity = Depends(require_api_key)):
+            await _gate_unresolvable(exc, raw, "Template not found")
+            return {}
+    """) == []
+
+
+def test_a_door_relying_only_on_terminology_namespace_is_reported():
+    """def-store's _terminology_namespace returns the namespace of an
+    NS:VALUE argument with no permission check: a lookup, not a gate."""
+    assert _permission_violations("""
+        @router.get("/x")
+        async def search(terminology: str, identity = Depends(require_api_key)):
+            namespace = await _terminology_namespace(identity, terminology)
+            return {"namespace": namespace}
+    """)
