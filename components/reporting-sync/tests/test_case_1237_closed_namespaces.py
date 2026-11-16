@@ -316,6 +316,40 @@ async def test_the_grant_step_waits_for_a_namespace_being_closed(pg_pool, scoped
             await conn.execute(f'DROP SCHEMA IF EXISTS "{NS}" CASCADE')
 
 
+async def test_the_startup_grant_loop_waits_for_a_namespace_being_closed(pg_pool, roles):
+    """The restart's reader grants take the same per-schema lock as a close, so
+    a close running alongside (another replica during a rolling update) cannot
+    commit between the loop's closed check and its GRANT."""
+    spec, _reader_pool = roles
+    holder = await asyncpg.connect(POSTGRES_TEST_URI)
+    task = None
+    try:
+        trx = holder.transaction()
+        await trx.start()
+        await holder.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{NS}")
+
+        async def restart() -> None:
+            async with pg_pool.acquire() as conn:
+                await provision_roles(conn, spec)
+
+        task = asyncio.create_task(restart())
+        assert await _waits_on_namespace_lock(pg_pool, NS), (
+            "the startup grant loop ran while the close held its schema lock"
+        )
+        await holder.execute(f"COMMENT ON SCHEMA \"{NS}\" IS '{CLOSED_SCHEMA_COMMENT}'")
+        await holder.execute(f'REVOKE USAGE ON SCHEMA "{NS}" FROM "{spec.reader}"')
+        await trx.commit()
+        await asyncio.wait_for(task, 30)
+        task = None
+        assert not await _usage(pg_pool, spec.reader)
+    finally:
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncpg.PostgresError):
+                await task
+        await holder.close()
+
+
 SYNCED = {"template_id": "t-closing", "value": "closing", "version": 1,
           "fields": [{"name": "k", "type": "string"}],
           "identity_fields": ["k"], "reporting": {"sync_enabled": True}}

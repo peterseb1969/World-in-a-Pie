@@ -15,4 +15,6 @@ step now takes the same per-schema advisory lock the close and the drop take,
 before it checks the mark, so the two exclude each other: either the close
 lands first and the grant step leaves the schema out, or the grants land first
 and the close revokes them. A scoped read naming a namespace whose deletion has
-begun can wait for the close in progress.
+begun can wait for the close in progress. The reader grants reporting-sync renews at startup take the same lock
+per schema, so a replica starting during a rolling update cannot reopen a
+schema another replica is closing.

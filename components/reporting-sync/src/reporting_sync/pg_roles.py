@@ -189,20 +189,34 @@ async def provision_roles(conn: asyncpg.Connection, spec: RoleSpec) -> Provision
     # The reader can read everything the owner owns, now and later — except
     # the schema of a namespace whose deletion has begun (close_namespace
     # revoked its USAGE; re-granting it here on a restart would reopen it).
+    # Each schema is checked under the per-schema lock close_namespace takes,
+    # so a close running alongside (another replica during a rolling update)
+    # is either seen by the check or waits for the grants and revokes them.
+    # Sorted, the order every holder of several of these locks takes them in.
     async with conn.transaction():
         owned = await conn.fetch(
             f"""
             SELECT n.nspname FROM pg_namespace n
             WHERE {_SYSTEM_SCHEMA_FILTER}
               AND (pg_get_userbyid(n.nspowner) = $1 OR n.nspname = 'public')
-              AND obj_description(n.oid, 'pg_namespace') IS DISTINCT FROM $2
             """,  # nosec B608  # SQL fragments are code constants, values bound
-            spec.owner, CLOSED_SCHEMA_COMMENT,
+            spec.owner,
         )
-        for row in owned:
-            await conn.execute(await _quoted(conn, "GRANT USAGE ON SCHEMA %I TO %I", row["nspname"], spec.reader))
+        # Python's order, not the database collation's: the scoped grant step
+        # sorts the same way, and two lock takers must agree on the order.
+        for schema in sorted(row["nspname"] for row in owned):
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{schema}")
+            current = await conn.fetchrow(
+                "SELECT obj_description(oid, 'pg_namespace') AS note FROM pg_namespace "
+                "WHERE nspname = $1",
+                schema,
+            )
+            # Dropped, or closed, while this step waited for its lock.
+            if current is None or current["note"] == CLOSED_SCHEMA_COMMENT:
+                continue
+            await conn.execute(await _quoted(conn, "GRANT USAGE ON SCHEMA %I TO %I", schema, spec.reader))
             await conn.execute(await _quoted(
-                conn, "GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I", row["nspname"], spec.reader,
+                conn, "GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I", schema, spec.reader,
             ))
         await conn.execute(await _quoted(
             conn, "ALTER DEFAULT PRIVILEGES FOR ROLE %I GRANT SELECT ON TABLES TO %I", spec.owner, spec.reader,
