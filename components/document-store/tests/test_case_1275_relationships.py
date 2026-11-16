@@ -52,13 +52,23 @@ async def clean(session_mongo_client):
     await Document.find({"namespace": {"$in": [NS, OTHER]}}).delete()
 
 
-def _store(by_id: dict, *, unavailable: tuple = ()):
+def _store(by_id: dict, *, unavailable: tuple = (), unresolvable: dict | None = None):
+    """``unresolvable``: templates whose resolved read the store refuses
+    (409 inheritance_unresolved), by id, mapped to their unresolved rows."""
+    unresolvable = unresolvable or {}
+
     async def get_template_resolved(template_id, version=None):
         if template_id in unavailable:
             raise TemplateStoreError("store unreachable", "unavailable", unavailable=True)
+        if template_id in unresolvable:
+            raise TemplateStoreError("parent deleted", "inheritance_unresolved")
         return by_id.get(template_id)
 
-    client = SimpleNamespace(get_template_resolved=get_template_resolved)
+    async def get_template(template_id=None, template_value=None, resolve_inheritance=True, version=None):
+        assert resolve_inheritance is False
+        return unresolvable.get(template_id, by_id.get(template_id))
+
+    client = SimpleNamespace(get_template_resolved=get_template_resolved, get_template=get_template)
     return patch(
         "document_store.services.document_service.get_template_store_client",
         return_value=client,
@@ -148,3 +158,38 @@ async def test_edges_of_a_confirmed_edge_type_are_still_walked(clean):
         resp = await DocumentService().traverse_relationships("A")
 
     assert [(n.document_id, n.depth, n.via_relationship) for n in resp.nodes] == [("B", 1, "E-AB")]
+
+
+@pytest.mark.asyncio
+async def test_an_edge_type_whose_inheritance_cannot_be_composed_is_still_an_edge_type(clean):
+    """template-store refuses the resolved read of a template whose parent was
+    deleted (409 inheritance_unresolved). The edge type dropped out of the edge
+    set: a filter naming it answered an empty page and an unfiltered listing
+    lost its edges (ca27293e review R3). ``usage`` is on the template's own
+    row, which the unresolved read still serves."""
+    await _doc("A")
+    await _doc("B")
+    await _edge("E-AB", "A", "B")
+    broken = {EDGE: {"usage": "relationship", "value": "MEMBER_OF", "extends": "GONE"}}
+
+    with _store({}, unresolvable=broken):
+        named = await DocumentService().find_relationships("A", template_ids=[EDGE])
+        listed = await DocumentService().find_relationships("A")
+        walked = await DocumentService().traverse_relationships("A", type_ids=[EDGE])
+
+    assert [i.document_id for i in named.items] == ["E-AB"]
+    assert [i.document_id for i in listed.items] == ["E-AB"]
+    assert [n.document_id for n in walked.nodes] == ["B"]
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_entity_template_is_still_no_edge_type(clean):
+    await _doc("A")
+    await _doc("B")
+    await _edge("E-NOTE", "A", "B", template=ENTITY)
+    broken = {ENTITY: {"usage": "entity", "value": "NOTE", "extends": "GONE"}}
+
+    with _store({}, unresolvable=broken):
+        listed = await DocumentService().find_relationships("A")
+
+    assert listed.items == []

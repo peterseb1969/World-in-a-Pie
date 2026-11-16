@@ -2724,26 +2724,42 @@ class DocumentService:
 
         A source_ref / target_ref field makes nothing an edge on its own: an
         entity template may declare one. The template store says which
-        templates are edge types (cached); a template it cannot read is not
-        counted as one.
+        templates are edge types (cached). ``usage`` is stored on the template
+        itself and never changes, so a template whose inheritance cannot be
+        composed (a deleted parent, a cycle: the store refuses the resolved
+        read) is still asked through its unresolved row; only a template the
+        store does not hold at all is not counted.
         """
         candidate_ids = await Document.get_motor_collection().distinct("template_id", query)
         client = get_template_store_client()
         edge_ids: list[str] = []
         for template_id in candidate_ids:
-            try:
-                template = await client.get_template_resolved(template_id)
-            except TemplateStoreError as e:
-                # An outage is not "this document has no edges": the answer is
-                # unavailable, and an empty list would report it as one.
-                if e.unavailable:
-                    raise dependency_unavailable(
-                        "template-store", f"edge type {template_id!r}", e,
-                    ) from e
-                continue
+            template = await self._edge_usage_source(client, template_id)
             if template and template.get("usage") == "relationship":
                 edge_ids.append(template_id)
         return edge_ids
+
+    @staticmethod
+    async def _edge_usage_source(client: Any, template_id: str) -> dict[str, Any] | None:
+        """The template row whose ``usage`` says whether ``template_id`` is an
+        edge type: the resolved one, else the unresolved one when the store
+        refuses to compose it. An outage is never "not an edge type": the
+        answer is unavailable, and an empty list would report it as one."""
+        try:
+            try:
+                return cast(dict[str, Any] | None, await client.get_template_resolved(template_id))
+            except TemplateStoreError as e:
+                if e.unavailable:
+                    raise
+                return cast(dict[str, Any] | None, await client.get_template(
+                    template_id=template_id, resolve_inheritance=False,
+                ))
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", f"edge type {template_id!r}", e,
+                ) from e
+            return None
 
     async def find_relationships(
         self,
