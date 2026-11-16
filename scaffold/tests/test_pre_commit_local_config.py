@@ -160,13 +160,46 @@ def test_a_secret_file_with_a_nul_byte_is_read_up_to_the_nul(repo):
     # The awk that reads every secret file in one pass cuts each line at its
     # first NUL byte. BSD awk does so by itself; gawk and mawk (Linux, CI)
     # kept the NUL and the rest in the value, which then matched nothing, so
-    # the hook cuts it explicitly. wip-deploy writes its secrets as text; a
+    # the hook cuts it explicitly. BusyBox awk drops the NUL instead, so there
+    # such a value matches nothing. wip-deploy writes its secrets as text; a
     # binary file's value is what precedes its first NUL, or nothing when that
     # is under 12 characters.
     root, env = repo
     _secret(env, "other", "binary", b"visible-part-before\0rest\n")
     result = _hook(root, env, "notes.txt", "x=visible-part-before\n")
     assert result.returncode == 1, result.stderr
+
+
+def _secret_reader() -> str:
+    """The hook's own awk program that reads the secret files."""
+    import re
+
+    return re.search(r"awk '(BEGIN \{ nul.*?)' \\\n", HOOK.read_text(), re.S).group(1)
+
+
+def test_a_secret_file_that_cannot_be_opened_does_not_drop_the_others(tmp_path):
+    """Every awk stops at an operand it cannot open, and the value of the
+    file before it was lost too, so check 2 passed a commit carrying it. A
+    file removed after the list was built is now skipped and named in a
+    note, and the others are still read."""
+    (tmp_path / "a").write_text("secret-value-aaaa\n")
+    (tmp_path / "b").write_text("secret-value-bbbb\n")
+    result = subprocess.run(
+        ["awk", _secret_reader(), "a", "gone", "b"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["secret-value-aaaa", "secret-value-bbbb"]
+    assert "1 secret file(s) could not be read" in result.stderr
+
+
+def test_with_every_secret_file_gone_the_reader_does_not_wait_on_stdin(tmp_path):
+    result = subprocess.run(
+        ["awk", _secret_reader(), "gone-1", "gone-2"],
+        cwd=tmp_path, input="secret-from-stdin-xxxx\n", capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
 
 
 def test_an_added_line_starting_with_plus_plus_is_checked(repo):

@@ -76,14 +76,27 @@ fi
 # A line is cut at its first NUL byte. BSD awk (macOS) stops a line there by
 # itself; gawk and mawk keep the NUL and the rest inside the value, which then
 # never matches a staged line, so a binary secret file went unchecked on Linux.
-# Cutting it here makes the value the same on every awk.
+# Cutting it here makes the value the same on BSD awk, gawk and mawk. BusyBox
+# awk drops the NUL instead, so such a secret is not matched there.
+# A file that can no longer be opened (removed or made unreadable after the
+# list was built) is skipped and counted: every awk stops at an operand it
+# cannot open, and the values of the files before it were lost with it. Any
+# other awk failure refuses the commit rather than check a partial list.
 if [ "${#key_files[@]}" -gt 0 ]; then
-  awk 'BEGIN { nul = sprintf("%c", 0) }
+  awk 'BEGIN { nul = sprintf("%c", 0)
+               for (n = 1; n < ARGC; n++)
+                 if ((getline probe < ARGV[n]) < 0) { skipped++; delete ARGV[n] }
+                 else { close(ARGV[n]); kept++ }
+               # With every operand gone awk would read stdin.
+               if (!kept) exit }
        function flush() { if (length(v) >= 12) print v; v = "" }
        FNR == 1 && NR > 1 { flush() }
        { if (nul != "" && (i = index($0, nul)) > 0) $0 = substr($0, 1, i - 1)
          gsub(/\r/, ""); v = v $0 }
-       END { flush() }' "${key_files[@]}" >> "$vals"
+       END { flush()
+             if (skipped) printf "pre-commit: note: %d secret file(s) could not be read and were not checked\n", skipped > "/dev/stderr" }' \
+    "${key_files[@]}" >> "$vals" \
+    || report "this host's secret files could not be read (awk failed), so check 2 cannot run"
 fi
 
 # Checks 2 and 3 read the same added lines: one diff per staged file. Only

@@ -131,6 +131,18 @@ SUPERSEDED_PRE_COMMIT_GATES = {
         "it read this host's secret files one subshell at a time, which on a "
         "host with many installs added over a second to every commit"
     ),
+    # The third read every secret file in one awk, which kept a NUL byte and
+    # what follows it inside the value on gawk and mawk, so a binary secret
+    # file was never matched on Linux.
+    "04d32124d1867576c923c31bc694a094851f51f6e6c1ac10f209ae4c53c2e1c5": (
+        "on Linux it never matched a secret file containing a NUL byte"
+    ),
+    # The fourth stopped at a secret file it could not open, and lost the
+    # value of the file before it too, so a commit carrying either passed.
+    "bc04e85dec2b801f52e8ddba851dcd7b74c158db86fdc4646b9812028aa90cd8": (
+        "a secret file removed or made unreadable after it was listed stopped "
+        "the check, and a commit carrying another secret's value passed"
+    ),
 }
 
 

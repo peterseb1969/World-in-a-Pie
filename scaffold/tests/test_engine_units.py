@@ -432,7 +432,10 @@ def test_pre_commit_gate_keeps_the_current_gate_quietly(tmp_path):
 # last wrote it: 969e63e2 read staged paths C-quoted, b3a5b907 read each
 # secret file in its own subshell. A clone that never edited one gets the
 # current gate on refresh.
-SHIPPED_GATE_FIXTURES = ["pre-commit-gate-969e63e2.sh", "pre-commit-gate-b3a5b907.sh"]
+SHIPPED_GATE_FIXTURES = [
+    "pre-commit-gate-969e63e2.sh", "pre-commit-gate-b3a5b907.sh",
+    "pre-commit-gate-84c7fe69.sh", "pre-commit-gate-e683b86b.sh",
+]
 
 
 def test_every_superseded_gate_has_its_shipped_bytes_as_a_fixture():

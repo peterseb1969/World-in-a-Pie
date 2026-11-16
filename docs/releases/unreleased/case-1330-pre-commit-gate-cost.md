@@ -17,7 +17,8 @@ secret file in one pass and diffs each staged file once: the same commits take
   with `++`. Such a line used to be skipped as if it were the diff's file
   header.
 - A secret file containing a NUL byte now contributes what precedes its first
-  NUL. wip-deploy writes its secrets as text.
+  NUL, with BSD awk, gawk and mawk. BusyBox awk drops the NUL instead, so such
+  a secret is not matched there. wip-deploy writes its secrets as text.
 
 A scaffold refresh replaces a `.githooks/pre-commit` that is still this or the
 earlier shipped gate byte for byte, and says so. A hook the app has changed is
