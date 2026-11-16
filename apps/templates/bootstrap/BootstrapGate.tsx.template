@@ -145,6 +145,9 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
     if (refusedSince === null) setRefusedSince(since)
     if (Date.now() - since >= KEY_RETRY_WINDOW_MS) { setNextAt(null); return }
     const due = Date.now() + keyRetryDelay(attempt)
+    // `now` stood still while nothing was scheduled: the countdown starts
+    // from the present, not from the last tick.
+    setNow(Date.now())
     setNextAt(due)
     const t = setTimeout(() => { setAttempt((a) => a + 1); checkStatus(true) }, due - Date.now())
     return () => clearTimeout(t)
@@ -288,8 +291,8 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
                   WIP answered with an error{httpStatus ? ` (HTTP ${httpStatus})` : ''}
                 </p>
                 <p className="mt-1 text-sm text-red-600">
-                  WIP is reachable and accepted the key, but failed to answer the check. A WIP service
-                  may be starting or unhealthy; check the install's status.
+                  WIP is reachable but failed to answer the check. A WIP service may be starting or
+                  unhealthy, or a proxy in front of it answered; check the install's status.
                 </p>
                 {error && <p className="mt-1 break-words font-mono text-xs text-red-500">{error}</p>}
               </div>
@@ -309,11 +312,11 @@ export function BootstrapGate({ children }: { children: React.ReactNode }) {
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
               <div>
                 <p className="font-medium text-red-800">
-                  {status === 'app_error' ? "The app's server did not answer" : "The app's server could not run its check"}
+                  {status === 'app_error' ? "The app's server failed the check" : "The app's server could not run its check"}
                 </p>
                 <p className="mt-1 text-sm text-red-600">
                   This is {APP_TITLE}'s own server, not WIP. {status === 'app_error'
-                    ? 'It may be restarting; check the app container.'
+                    ? 'If it did not answer, it may be restarting: check the app container. If it answered HTTP 401/403 or a page that is not JSON, the session may have expired: reload the page.'
                     : 'Its log says more.'}
                 </p>
                 {error && <p className="mt-1 break-words font-mono text-xs text-red-500">{error}</p>}
