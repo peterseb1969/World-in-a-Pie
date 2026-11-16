@@ -78,6 +78,12 @@ def get_jetstream() -> Any:
     return _bus.jetstream
 
 
+async def wait_nats_connected(timeout: float | None = None) -> bool:
+    """Wait until the event bus is connected (no timeout: as long as it
+    takes). False when no NATS is configured, or on timeout."""
+    return await _bus.wait_connected(timeout)
+
+
 def nats_stats() -> dict[str, Any]:
     """Connection state and publish/queue/drop counters for /health."""
     return _bus.stats()

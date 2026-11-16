@@ -320,15 +320,18 @@ async def lifespan(app: FastAPI):
 
     # Replay sessions live in memory: a stream left by an earlier run of this
     # process belongs to no session anyone can address any more. Delete them
-    # once NATS is up, in the background — a slow or refusing NATS must not
-    # hold up serving, and the sweep reports rather than failing.
+    # once NATS is connected, in the background: on a whole-stack start NATS
+    # connects after this point, so the sweep waits for the connection rather
+    # than finding none and giving up. A slow or refusing NATS must not hold
+    # up serving, and the sweep reports rather than failing. The outcome is
+    # printed, as the other startup lines are (no log level is configured).
     async def _sweep_replay_streams() -> None:
         from .services.replay_service import get_replay_service
 
         try:
-            swept = await get_replay_service().sweep_orphan_streams()
-            if swept:
-                logger.info(f"Deleted {swept} orphaned replay stream(s) from an earlier run")
+            swept = await get_replay_service().sweep_once_connected()
+            if swept is not None:
+                print(f"Replay stream sweep: deleted {swept} orphaned stream(s) from an earlier run")
         except Exception as e:
             logger.warning(f"Replay stream sweep failed: {e}")
 

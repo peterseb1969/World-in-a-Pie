@@ -222,7 +222,7 @@ class ReplayService:
         self._stream_deletes.add(task)
         task.add_done_callback(self._stream_deletes.discard)
 
-    async def sweep_orphan_streams(self) -> int:
+    async def sweep_orphan_streams(self) -> int | None:
         """Delete replay streams left behind by an earlier run of this process.
 
         Session state lives only in memory: after a restart no session can be
@@ -230,8 +230,9 @@ class ReplayService:
         holds is unreachable. Cancel is the only other delete, so without this
         sweep those streams accumulate for the whole age-out window. Streams of
         sessions this process still knows are left alone. Returns how many were
-        deleted; a NATS that cannot be asked is reported and skipped — startup
-        does not fail on it.
+        deleted, or None when NATS could not be asked (not connected, or the
+        listing failed, which is logged): startup does not fail on it, and
+        nothing reports "deleted 0" for a sweep that never looked.
 
         One process owns every replay stream: document-store runs as a single
         replica on every target, and the sessions live in its memory. A second
@@ -240,13 +241,13 @@ class ReplayService:
 
         js = get_jetstream()
         if js is None:
-            return 0
+            return None
         live = {session.stream_name for session in self._sessions.values()}
         try:
             names = await _stream_names(js)
         except Exception as e:
             logger.warning(f"Replay stream sweep could not list NATS streams: {e}")
-            return 0
+            return None
         orphans = [
             name for name in names
             if name and name.startswith(REPLAY_STREAM_PREFIX) and name not in live
@@ -254,6 +255,20 @@ class ReplayService:
         for name in orphans:
             await self._cleanup_stream(name)
         return len(orphans)
+
+    async def sweep_once_connected(self) -> int | None:
+        """The startup sweep: wait until NATS is connected, then sweep.
+
+        On a whole-stack start NATS connects in the background after startup
+        has begun, so a sweep run at once would find no connection and do
+        nothing. This waits as long as it takes (the task is cancelled at
+        shutdown). None when no NATS is configured: then no replay stream can
+        exist."""
+        from .nats_client import wait_nats_connected
+
+        if not await wait_nats_connected():
+            return None
+        return await self.sweep_orphan_streams()
 
     def get_session(self, session_id: str) -> dict | None:
         """Get replay session state."""

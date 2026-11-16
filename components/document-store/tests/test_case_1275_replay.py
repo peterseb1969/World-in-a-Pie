@@ -98,7 +98,7 @@ async def test_the_sweep_reports_a_nats_it_cannot_ask_rather_than_failing():
 
     service = ReplayService()
     with _nats(Broken()):
-        assert await service.sweep_orphan_streams() == 0
+        assert await service.sweep_orphan_streams() is None
 
 
 @pytest.mark.asyncio
@@ -131,3 +131,35 @@ async def test_a_stream_nats_cannot_create_is_an_outage_not_a_bare_500(monkeypat
 
     with _nats(js), pytest.raises(RuntimeError, match="could not create the replay stream"):
         await ReplayService().start_replay({"namespace": NS}, throttle_ms=0)
+
+
+@pytest.mark.asyncio
+async def test_the_startup_sweep_waits_for_nats_to_connect():
+    """On a whole-stack start NATS connects after startup: the sweep ran once,
+    found no connection and did nothing, so an earlier run's streams stayed
+    for their whole age-out window (772379ab review R1). It now waits."""
+    js = _FakeJetStream(stream_names=[f"{REPLAY_STREAM_PREFIX}OLD1"])
+    connected = asyncio.Event()
+
+    async def wait_connected(timeout=None):
+        await connected.wait()
+        return True
+
+    service = ReplayService()
+    with patch.object(nats_client, "wait_nats_connected", wait_connected), \
+            patch.object(nats_client, "get_jetstream", lambda: js if connected.is_set() else None):
+        task = asyncio.create_task(service.sweep_once_connected())
+        await asyncio.sleep(0.05)
+        assert not task.done(), "the sweep gave up before NATS connected"
+        connected.set()
+        assert await asyncio.wait_for(task, 1) == 1
+    assert js.deleted == [f"{REPLAY_STREAM_PREFIX}OLD1"]
+
+
+@pytest.mark.asyncio
+async def test_without_nats_the_startup_sweep_does_nothing():
+    async def not_configured(timeout=None):
+        return False
+
+    with patch.object(nats_client, "wait_nats_connected", not_configured):
+        assert await ReplayService().sweep_once_connected() is None
