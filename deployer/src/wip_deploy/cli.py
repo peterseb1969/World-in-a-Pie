@@ -2679,7 +2679,12 @@ def _apply_and_persist_mutation(
     except (ValueError, LookupError) as e:
         # LookupError: an env reference to an inactive component, as in install.
         typer.echo(
-            typer.style(f"✗ {action_label} aborted: {e}", fg=typer.colors.RED, bold=True),
+            # action_label is the success sentence a finished change prints
+            # ("Added app 'x' to <install>"); this change was not made.
+            typer.style(
+                f"✗ not done: {action_label} — the render refused: {e}",
+                fg=typer.colors.RED, bold=True,
+            ),
             err=True,
         )
         raise typer.Exit(2) from e

@@ -521,10 +521,17 @@ def test_a_mutation_verbs_render_refusal_is_a_message_and_exit_2(
     monkeypatch.setattr(cli, "_render_tree", refuse)
 
     with pytest.raises(typer.Exit) as excinfo:
-        cli._apply_and_persist_mutation(_deployment(), [], [], tmp_path, "add-app")
+        cli._apply_and_persist_mutation(
+            _deployment(), [], [], tmp_path, "Added app 'foo' to wip-local",
+        )
 
     assert excinfo.value.exit_code == 2
-    assert f"add-app aborted: {refusal}" in capsys.readouterr().err
+    # The label is the success sentence callers pass; the line must not read
+    # as that success.
+    assert (
+        f"✗ not done: Added app 'foo' to wip-local — the render refused: {refusal}"
+        in capsys.readouterr().err
+    )
 
 
 # ────────────────────────────────────────────────────────────────────
