@@ -2657,6 +2657,7 @@ def _apply_and_persist_mutation(
     `redeploy` or `install` did.
     """
     _validate_or_exit(deployment, components, apps_list)
+    _refuse_sourceless_dev_apps(deployment)
 
     _select_cluster_or_exit(deployment, mutating=True)
     # Values are resolved in memory here and written only once the render below
@@ -2802,6 +2803,47 @@ def _echo_apply_outcome(result: ApplyResult, done: str, what: str) -> None:
                 bold=True,
             )
         )
+
+
+def _refuse_sourceless_dev_apps(deployment: Deployment) -> None:
+    """Refuse a verb applying a saved dev install that lists an enabled app
+    with neither a checkout nor the registry opt-in.
+
+    The dev renderer cannot produce such an app's image and raises on it, so
+    the run aborts either way; only the advice differs. The renderer names
+    `install`'s flags (`--app-source NAME=PATH`, `--app-from-registry NAME`)
+    and a re-install — right for `install` and `render`, which build their
+    spec from flags and never come through here, but nothing a verb editing an
+    existing install accepts. This names the per-app routes, with this
+    install's `--name`.
+
+    Runs after the verb's own mutation and before anything reaches the cluster
+    or the secret store, so `remove-app` of such an app is a way out rather
+    than another refusal.
+    """
+    if deployment.spec.target != "dev":
+        return
+    dev = deployment.spec.platform.dev
+    bound = (set(dev.app_sources) | set(dev.apps_from_registry)) if dev else set()
+    unbound = sorted(
+        a.name for a in deployment.spec.apps
+        if a.enabled and a.name not in bound
+    )
+    if not unbound:
+        return
+
+    install_name = deployment.metadata.name
+    for app_name in unbound:
+        typer.echo(
+            f"error: app {app_name!r} is enabled in this install but has no "
+            "source for --target dev, so nothing can render it. Either: (a) "
+            f"`wip-deploy add-app {app_name} --app-source <path-to-checkout> "
+            f"--name {install_name}`, (b) `wip-deploy add-app {app_name} "
+            f"--app-from-registry --name {install_name}`, or (c) "
+            f"`wip-deploy remove-app {app_name} --name {install_name}`.",
+            err=True,
+        )
+    raise typer.Exit(2)
 
 
 def _refuse_unworkable_dev_app(
