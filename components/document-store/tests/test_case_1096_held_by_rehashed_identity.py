@@ -49,17 +49,17 @@ def _row(doc_id: str, template_id: str, version: int, term_id: str, lov: str, da
     }
 
 
-async def _seed_target(mongo) -> dict:
-    await _target(mongo, {**_tpl("B-tpl", 1, [UNIT_B]), "identity_fields": ["unit"]})
-    await _seed(mongo, "terminologies", [
+async def _seed_target(db) -> dict:
+    await _target(db, {**_tpl("B-tpl", 1, [UNIT_B]), "identity_fields": ["unit"]})
+    await _seed(db, "terminologies", [
         {"terminology_id": "B-lov", "namespace": NAMESPACE, "value": "UNIT", "label": "Unit"},
     ])
-    await _seed(mongo, "terms", [
+    await _seed(db, "terms", [
         {"term_id": "B-kg", "terminology_id": "B-lov", "namespace": NAMESPACE,
          "value": "kg", "label": "kg", "status": "active"},
     ])
     held = _hashed(_row("T-1", "B-tpl", 1, "B-kg", "B-lov", {"unit": "kg"}), [UNIT_B])
-    await _seed(mongo, "documents", [held])
+    await _seed(db, "documents", [held])
     return held
 
 
