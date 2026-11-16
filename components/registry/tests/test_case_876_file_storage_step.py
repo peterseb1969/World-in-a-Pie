@@ -96,7 +96,7 @@ async def test_keys_go_to_document_store_in_batches(service, monkeypatch):
     keys = [f"k{i}" for i in range(2500)]
     step = _step(keys)
 
-    deleted = await service._execute_step(step, "probe-ns")
+    deleted = await service._execute_step(step, "probe-ns", "journal-1")
 
     assert deleted == 2500
     assert step.error is None
@@ -104,6 +104,10 @@ async def test_keys_go_to_document_store_in_batches(service, monkeypatch):
     url, payload, headers = rec.posts[0]
     assert url == f"{DOC_STORE}/api/document-store/files/storage/delete"
     assert payload["namespace"] == "probe-ns"
+    # The request names the deletion and the step, so document-store can
+    # delete only what this step's journal recorded.
+    assert payload["journal_id"] == "journal-1"
+    assert payload["step_order"] == 1
     assert headers == {"X-API-Key": mod._service_api_key()}
 
 
@@ -111,7 +115,9 @@ async def test_legacy_minio_step_runs_the_same_way(service, monkeypatch):
     rec = _Recorder(_all_deleted)
     monkeypatch.setattr(mod.httpx, "AsyncClient", rec)
 
-    assert await service._execute_step(_step(["k1"], store="minio"), "probe-ns") == 1
+    assert await service._execute_step(
+        _step(["k1"], store="minio"), "probe-ns", "journal-1"
+    ) == 1
     assert len(rec.posts) == 1
 
 
@@ -126,7 +132,7 @@ async def test_refused_and_failed_keys_degrade_the_step(service, monkeypatch):
     monkeypatch.setattr(mod.httpx, "AsyncClient", _Recorder(respond))
     step = _step(["k1", "k2", "k3"])
 
-    assert await service._execute_step(step, "probe-ns") == 1
+    assert await service._execute_step(step, "probe-ns", "journal-1") == 1
     assert step.error is not None
     assert "1 of 3" in step.error
     assert "refused" in step.error and "failed" in step.error
@@ -138,7 +144,7 @@ async def test_document_store_error_status_degrades_the_step(service, monkeypatc
     )
     step = _step(["k1"])
 
-    assert await service._execute_step(step, "probe-ns") == 0
+    assert await service._execute_step(step, "probe-ns", "journal-1") == 0
     assert "409" in step.error
 
 
@@ -151,7 +157,7 @@ async def test_unreachable_document_store_defers_the_step(service, monkeypatch):
     step = _step(["k1"])
 
     with pytest.raises(mod._Unreachable, match="could not reach document-store"):
-        await service._execute_step(step, "probe-ns")
+        await service._execute_step(step, "probe-ns", "journal-1")
 
 
 async def test_missing_document_store_url_degrades_without_calling(service, monkeypatch):
@@ -160,7 +166,7 @@ async def test_missing_document_store_url_degrades_without_calling(service, monk
     service._document_store_url = None
     step = _step(["k1"])
 
-    assert await service._execute_step(step, "probe-ns") == 0
+    assert await service._execute_step(step, "probe-ns", "journal-1") == 0
     assert "DOCUMENT_STORE_URL" in step.error
     assert rec.posts == []
 
@@ -170,5 +176,5 @@ async def test_a_rerun_does_not_keep_the_previous_error(service, monkeypatch):
     step = _step(["k1"])
     step.error = "could not reach document-store: earlier attempt"
 
-    assert await service._execute_step(step, "probe-ns") == 1
+    assert await service._execute_step(step, "probe-ns", "journal-1") == 1
     assert step.error is None

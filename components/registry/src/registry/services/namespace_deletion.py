@@ -355,6 +355,11 @@ async def _store_key_batch(namespace: str, keys: list[str]) -> str:
     return str(result.inserted_id)
 
 
+def is_file_storage_step(step: DeletionStep) -> bool:
+    """Whether the step deletes stored objects through document-store."""
+    return step.store in _FILE_STORAGE_STORES
+
+
 async def step_storage_keys(step: DeletionStep) -> list[str]:
     """The keys a file-storage step deletes: inline (older journals) or read
     from its batch document. A batch that is gone while its step is not
@@ -1627,7 +1632,9 @@ class NamespaceDeletionService:
             await _drop_key_batch(step)
             return "kept"
         try:
-            deleted = await self._execute_step(step, journal.namespace)
+            # Keys go only on a request that names its journal: document-store
+            # verifies them against that step's recorded key set.
+            deleted = await self._execute_step(step, journal.namespace, str(journal.id))
             if step.store == "mongodb" and step.collection == "namespaces":
                 # The namespace is gone, and its id with it: a runtime
                 # reservation that stays reserves a new namespace of that
@@ -1718,12 +1725,12 @@ class NamespaceDeletionService:
             return live.namespace_id != journal.namespace_id
         return live.status != "locked"
 
-    async def _execute_step(self, step: DeletionStep, namespace: str) -> int:
+    async def _execute_step(self, step: DeletionStep, namespace: str, journal_id: str) -> int:
         """Execute a single journal step. Returns count of deleted items."""
         if step.store == "mongodb":
             return await self._exec_mongodb_step(step)
-        elif step.store in _FILE_STORAGE_STORES:
-            return await self._exec_file_storage_step(step, namespace)
+        elif is_file_storage_step(step):
+            return await self._exec_file_storage_step(step, namespace, journal_id)
         elif step.store == "postgresql":
             return await self._exec_postgresql_step(step, namespace)
         else:
@@ -1738,8 +1745,16 @@ class NamespaceDeletionService:
         result = await coll.delete_many(cast(dict, step.filter) or {})
         return result.deleted_count
 
-    async def _exec_file_storage_step(self, step: DeletionStep, namespace: str) -> int:
-        """Delete the step's stored objects through document-store."""
+    async def _exec_file_storage_step(
+        self, step: DeletionStep, namespace: str, journal_id: str,
+    ) -> int:
+        """Delete the step's stored objects through document-store.
+
+        The request names the journal and the step it comes from: document-store
+        deletes only keys the running deletion's journal recorded for that
+        step, so a key list from elsewhere — or from an earlier deletion of a
+        namespace since re-created under the same name — removes nothing.
+        """
         if _names_no_keys(step):
             return 0
         keys = await step_storage_keys(step)
@@ -1776,7 +1791,12 @@ class NamespaceDeletionService:
                     batch = keys[i:i + _STORAGE_DELETE_BATCH]
                     resp = await client.post(
                         url,
-                        json={"namespace": namespace, "storage_keys": batch},
+                        json={
+                            "namespace": namespace,
+                            "journal_id": journal_id,
+                            "step_order": step.order,
+                            "storage_keys": batch,
+                        },
                         headers={"X-API-Key": api_key},
                     )
                     if resp.status_code >= 500:
@@ -1796,7 +1816,8 @@ class NamespaceDeletionService:
                         refused, failed = data.get("refused") or [], data.get("failed") or []
                         if refused:
                             problems.append(
-                                f"{len(refused)} keys refused (owned by another namespace)"
+                                f"{len(refused)} keys refused (not recorded by this step, "
+                                "or owned by another namespace)"
                             )
                         if failed:
                             problems.append(f"{len(failed)} keys failed to delete")

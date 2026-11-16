@@ -19,6 +19,8 @@ from ..services.namespace_deletion import (
     DeletionRefused,
     NamespaceDeletionService,
     deletion_refusals,
+    is_file_storage_step,
+    step_storage_keys,
 )
 
 router = APIRouter()
@@ -152,6 +154,9 @@ async def deletion_status(
         raise not_found
 
     return {
+        # The journal's own id: a storage-delete request names it, so keys are
+        # only ever deleted for the deletion that recorded them.
+        "journal_id": str(journal.id),
         "namespace": journal.namespace,
         "status": journal.status,
         "requested_by": journal.requested_by,
@@ -165,6 +170,61 @@ async def deletion_status(
         "steps": [s.model_dump() for s in journal.steps],
         "summary": journal.summary,
     }
+
+
+@router.get(
+    "/{prefix}/deletion-steps/{order}/keys",
+    summary="Stored-object keys a deletion step recorded",
+    responses={
+        404: {"description": "No deletion journal for this namespace, or its most recent "
+              "journal has no file-storage step with this order"},
+    },
+)
+async def deletion_step_keys(
+    prefix: str,
+    order: int,
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """The stored-object keys the namespace's most recent deletion journal recorded
+    for one of its file-storage steps.
+
+    Platform admins only, as for deletion-status: the answer names the objects a
+    deletion removes. document-store checks a storage-delete request's keys
+    against it, so a deletion removes only the keys its own journal recorded —
+    not a list from elsewhere, nor one replayed against a later deletion.
+
+    keys_available is false when the step's key set can no longer be read — its
+    batch is dropped once the step has completed. The answer then names no keys,
+    and nothing may be deleted on that step's behalf.
+    """
+    not_found = HTTPException(404, f"No deletion journal found for namespace '{prefix}'")
+    if not identity.has_any_group(get_auth_config().admin_groups):
+        raise not_found
+    journal = await _deletion_service.get_deletion_status(prefix)
+    if not journal:
+        raise not_found
+
+    step = next((s for s in journal.steps if s.order == order), None)
+    if step is None or not is_file_storage_step(step):
+        raise HTTPException(
+            404, f"Namespace '{prefix}' has no file-storage deletion step {order}"
+        )
+
+    body = {
+        "namespace": journal.namespace,
+        "journal_id": str(journal.id),
+        "step_order": order,
+    }
+    try:
+        body["keys"] = await step_storage_keys(step)
+        body["keys_available"] = True
+        body["reason"] = None
+    except ValueError as e:
+        # The batch document is gone: what the step was to delete is unknown,
+        # so the reader is told so rather than handed an empty set that would
+        # read as "nothing to check".
+        body.update(keys=[], keys_available=False, reason=str(e))
+    return body
 
 
 @router.post(
