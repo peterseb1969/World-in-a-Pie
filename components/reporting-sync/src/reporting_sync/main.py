@@ -1266,6 +1266,7 @@ async def resolve_table_name(
     try:
         schema = sm.schema_for(namespace)
         table_name = sm.get_table_name(template_value, config)
+        entities_view = sm.entities_view_name(template_value, config)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1281,7 +1282,7 @@ async def resolve_table_name(
         "exists": kind is not None,
         "kind": kind or "absent",
         "version_tables": {v: t for v, t in sorted(version_tables.items())},
-        "entities_view": sm.entities_view_name(template_value, config),
+        "entities_view": entities_view,
     }
 
 
@@ -2113,6 +2114,9 @@ async def get_term_documents(
         limit: Maximum number of documents to return (1-1000, default 100);
             ``total`` counts every referencing document
 
+    A term in a namespace the caller cannot read is answered like a term
+    that does not exist: no documents.
+
     Returns:
         TermDocumentsResponse with list of referencing documents
     """
@@ -2124,7 +2128,7 @@ async def get_term_documents(
         limit = 100
 
     try:
-        return await state.search_service.get_term_documents(
+        result = await state.search_service.get_term_documents(
             term_id=term_id, limit=limit, namespace=effective, within=within
         )
     except (UpstreamError, httpx.HTTPError, asyncpg.PostgresError, OSError) as e:
@@ -2132,6 +2136,26 @@ async def get_term_documents(
         raise HTTPException(
             status_code=503, detail="Cannot look up the term's documents now"
         ) from e
+    # The term is read with the service key, so it is authorized on the
+    # namespace it lives in, like the other reference routes. A caller who
+    # cannot read it gets the answer for a term that does not exist (no
+    # documents), so the answer does not confirm that the term exists.
+    # A term whose namespace is unknown is shown to administrators only.
+    if result._term_found and not await _can_read_term(identity, result._term_namespace):
+        return TermDocumentsResponse(term_id=term_id, documents=[], total=0)
+    return result
+
+
+async def _can_read_term(identity: UserIdentity, owner: str | None) -> bool:
+    if owner is None:
+        return is_superadmin(identity)
+    try:
+        await check_namespace_permission(identity, owner, "read")
+    except HTTPException as e:
+        if e.status_code in (403, 404):
+            return False
+        raise
+    return True
 
 
 @router.get("/entity/{entity_type}/{entity_id}/references", response_model=EntityReferencesResponse)
@@ -2360,7 +2384,10 @@ async def list_tables(
             tables.append(entry)
             # Entity grouping (skipped in single-relation detail mode).
             if not table_name and tname.startswith("doc_"):
-                _group_relation(entities, schema, tname, is_view, count)
+                _group_relation(
+                    entities, schema, tname, is_view, count,
+                    relations_by_schema.get(schema, set()),
+                )
 
         if table_name and not tables:
             raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
@@ -2387,13 +2414,37 @@ def _base_tables_by_schema(raw_tables: list[Any]) -> dict[str, set[str]]:
     return by_schema
 
 
-def _entity_of_relation(tname: str) -> str | None:
+def _entity_of_relation(tname: str, tables: set[str] = frozenset()) -> str | None:
     """The entity a doc_* relation belongs to: doc_x, doc_x__v3 and
-    doc_x__entities all belong to x. None for other relations."""
+    doc_x__entities all belong to x, and so does the truncated name
+    PostgreSQL stores for a long base's __entities view (``tables``, the
+    schema's base tables, tells it apart). None for other relations."""
     if not tname.startswith("doc_"):
         return None
+    view_base = _entities_view_base(tname, tables)
+    if view_base is not None:
+        return view_base[len("doc_"):]
     base = tname[len("doc_"):]
-    return re.sub(r"__(v\d+|entities)$", "", base)
+    return re.sub(r"__v\d+$", "", base)
+
+
+def _entities_view_base(tname: str, tables: set[str]) -> str | None:
+    """The base whose identity-core view this name is: ``<base>__entities``,
+    or the name PostgreSQL stored for it when ``<base>__entities`` was
+    longer than 63 bytes. That truncated name is recognised by a version
+    table ``<base>__v<N>`` among ``tables`` whose view name is stored as it.
+    None when the name is no base's __entities view."""
+    if tname.endswith("__entities"):
+        return tname[: -len("__entities")]
+    # A truncated name is 63 bytes, a byte or two less when the cut fell
+    # inside a multi-byte character.
+    if len(tname.encode()) < 61:
+        return None
+    for table in tables:
+        m = _VERSION_TABLE_RE.match(table)
+        if m and SchemaManager.entities_view_for_base(m.group(1)) == tname:
+            return m.group(1)
+    return None
 _VERSION_TABLE_RE = re.compile(r"^(doc_.+)__v(\d+)$")
 
 
@@ -2461,7 +2512,7 @@ async def _relation_count(
     selects some versions reads only those. Any other view is not counted."""
     if not is_view:
         return await _bounded_count(conn, schema, tname)
-    base = tname[: -len("__entities")] if tname.endswith("__entities") else tname
+    base = _entities_view_base(tname, relations) or tname
     read = await _tables_a_view_reads(conn, schema, tname)
     versions = sorted(
         n for n in relations & read if re.fullmatch(rf"{re.escape(base)}__v\d+", n)
@@ -2502,7 +2553,7 @@ async def _relation_entry(
         "kind": "view" if is_view else "table",
         # The entity's base name (doc_x__v3 and doc_x__entities are x), as
         # the table names carry it: lowercased.
-        "template_value": _entity_of_relation(tname),
+        "template_value": _entity_of_relation(tname, relations),
         "qualified_name": f'"{schema}"."{tname}"',
         "row_count": count,
     }
@@ -2525,7 +2576,7 @@ def _entity_entry(entities: dict[tuple[str, str], dict], schema: str, base: str)
         "entity": base[len("doc_"):],
         "default_view": base,
         "default_view_present": False,
-        "entities_view": f"{base}__entities",
+        "entities_view": SchemaManager.entities_view_for_base(base),
         "legacy_table": False,
         "versions": [],
         "row_count": 0,
@@ -2534,7 +2585,7 @@ def _entity_entry(entities: dict[tuple[str, str], dict], schema: str, base: str)
 
 def _group_relation(
     entities: dict[tuple[str, str], dict], schema: str, tname: str, is_view: bool,
-    count: int | None,
+    count: int | None, tables: set[str] = frozenset(),
 ) -> None:
     """Place a doc_* relation under its entity: a version table adds a
     version and its rows, the __entities view and the bare view mark the
@@ -2545,8 +2596,8 @@ def _group_relation(
         ent["versions"].append({"version": int(m.group(2)), "table": tname, "row_count": count})
         # One uncounted version table leaves the entity's total unknown.
         ent["row_count"] = None if count is None or ent["row_count"] is None else ent["row_count"] + count
-    elif tname.endswith("__entities") and is_view:
-        _entity_entry(entities, schema, tname[: -len("__entities")])
+    elif is_view and (view_base := _entities_view_base(tname, tables)) is not None:
+        _entity_entry(entities, schema, view_base)
     elif is_view:
         _entity_entry(entities, schema, tname)["default_view_present"] = True
     else:

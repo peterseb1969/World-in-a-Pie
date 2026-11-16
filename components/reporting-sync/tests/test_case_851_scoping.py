@@ -100,7 +100,7 @@ async def test_recent_documents_are_scoped_and_named_from_the_listing(upstream):
 def _pool_capturing(calls: list):
     conn = MagicMock()
 
-    async def fetch(sql, *args):
+    async def fetch(sql, *args, **kwargs):
         calls.append((sql, args))
         return []
 
@@ -124,7 +124,7 @@ async def test_term_documents_scan_only_the_namespace_schema(namespace, monkeypa
     await SearchService(_pool_capturing(calls)).get_term_documents("term-1", 10, namespace)
     sql, args = calls[0]
     assert "c.table_schema = $2" in sql
-    assert args == ("term_references_json", namespace, None)
+    assert args[:3] == ("term_references_json", namespace, None)
 
 
 @pytest.mark.asyncio

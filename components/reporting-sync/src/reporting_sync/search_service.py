@@ -18,6 +18,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from .config import settings
+from .schema_manager import SchemaManager
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,10 @@ class TermDocumentsResponse(BaseModel):
     term_id: str
     documents: list[DocumentReference] = Field(default_factory=list)
     total: int = 0
+    # Where the term lives (never served), so the route can check that the
+    # caller may read it; unset for a term def-store does not know.
+    _term_found: bool = PrivateAttr(default=False)
+    _term_namespace: str | None = PrivateAttr(default=None)
 
 
 class EntityReference(BaseModel):
@@ -413,8 +418,9 @@ _UNSEARCHED_COLUMNS = frozenset({
 
 # ts_headline marks for HTML snippets: no character HTML-escaping changes,
 # so they survive the escaping of the text around them.
-_MARK_START = "⁣wip-b⁣"
-_MARK_STOP = "⁣/wip-b⁣"
+_MARK_CHAR = "⁣"
+_MARK_START = f"{_MARK_CHAR}wip-b{_MARK_CHAR}"
+_MARK_STOP = f"{_MARK_CHAR}/wip-b{_MARK_CHAR}"
 
 
 class _SearchColumns:
@@ -457,6 +463,23 @@ class _DocumentFilters:
             params.append(self.namespace)
             sql += f" AND {prefix}namespace = ${len(params)}"
         return sql
+
+
+def _snippet_input(search_cols: list[str], *, html: bool) -> str:
+    """The text ts_headline picks fragments from: the search columns, nulls
+    as empty, joined by a separator.
+
+    For HTML snippets the marks are built from U+2063 (invisible). Dropped
+    from the document text, every one left in the snippet is a mark, so text
+    that spells a mark never turns into <b>."""
+    joined = " || ' ... ' || ".join(f"coalesce(\"{c}\", '')" for c in search_cols)
+    return f"replace({joined}, chr({ord(_MARK_CHAR)}), '')" if html else joined
+
+
+def _resolved_id(entity: dict[str, Any], key: str, submitted: str) -> str:
+    """The canonical id a reference resolved to (``entity[key]``), else the
+    form it was submitted in: a draft may still hold a value."""
+    return entity.get(key) or submitted
 
 
 def _like_literal(text: str) -> str:
@@ -1023,9 +1046,7 @@ class SearchService:
         search_cols = [c[: -len("_tsv")] + "_search" for c in tsv_cols]
         # Snippet input — coalesce nulls and join with a separator so
         # ts_headline can pick fragments from any of the indexed sources.
-        snippet_input = " || ' ... ' || ".join(
-            f"coalesce(\"{c}\", '')" for c in search_cols
-        )
+        snippet_input = _snippet_input(search_cols, html=filters.snippet_format != "text")
 
         if filters.snippet_format == "text":
             # Empty marks: ts_headline's defaults are <b> and </b>.
@@ -1393,7 +1414,7 @@ class SearchService:
         page = rows[:limit]
         async with httpx.AsyncClient(timeout=30.0) as client:
             values = await _template_values(client, {row["template_id"] for row in page})
-        return TermDocumentsResponse(
+        response = TermDocumentsResponse(
             term_id=term_id,
             documents=[
                 DocumentReference(
@@ -1408,6 +1429,9 @@ class SearchService:
             ],
             total=len(rows),
         )
+        response._term_found = True
+        response._term_namespace = term.get("namespace")
+        return response
 
     async def get_entity_references(
         self,
@@ -1604,7 +1628,7 @@ class SearchService:
             extends = tpl.get("extends")
             if extends:
                 parent_response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates/{extends}",
+                    f"{settings.template_store_url}/api/template-store/templates/{_seg(extends)}",
                     headers={"X-API-Key": settings.api_key}
                 )
                 _raise_unless_answered(parent_response)
@@ -1621,7 +1645,7 @@ class SearchService:
 
                     references.append(EntityReference(
                         ref_type="template",
-                        ref_id=extends,  # extends stores template_id
+                        ref_id=_resolved_id(parent, "template_id", extends),
                         ref_value=parent.get("value"),
                         ref_label=parent.get("label"),
                         field_path="extends",
@@ -1651,7 +1675,7 @@ class SearchService:
                     if term_ref:
                         # Try to fetch terminology
                         term_response = await client.get(
-                            f"{settings.def_store_url}/api/def-store/terminologies/{term_ref}",
+                            f"{settings.def_store_url}/api/def-store/terminologies/{_seg(term_ref)}",
                             headers={"X-API-Key": settings.api_key}
                         )
                         _raise_unless_answered(term_response)
@@ -1668,7 +1692,7 @@ class SearchService:
 
                             references.append(EntityReference(
                                 ref_type="terminology",
-                                ref_id=term_ref,
+                                ref_id=_resolved_id(terminology, "terminology_id", term_ref),
                                 ref_value=terminology.get("value"),
                                 ref_label=terminology.get("label"),
                                 field_path=f"fields.{field_name}.terminology_ref",
@@ -1692,7 +1716,7 @@ class SearchService:
                     nested_ref = field.get("template_ref")
                     if nested_ref:
                         nested_response = await client.get(
-                            f"{settings.template_store_url}/api/template-store/templates/{nested_ref}",
+                            f"{settings.template_store_url}/api/template-store/templates/{_seg(nested_ref)}",
                             headers={"X-API-Key": settings.api_key}
                         )
                         _raise_unless_answered(nested_response)
@@ -2340,7 +2364,7 @@ class SearchService:
         """
         if self.postgres_pool is None:
             raise UpstreamError("PostgreSQL not connected")
-        async with self.postgres_pool.acquire() as conn:
+        async with self.postgres_pool.acquire(timeout=SEARCH_QUERY_TIMEOUT) as conn:
             tables = await _doc_tables_with_column(
                 conn, "term_references_json", namespace, within
             )
@@ -2362,6 +2386,7 @@ class SearchService:
                     ORDER BY document_id, version DESC
                     """,  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
                     term_id,
+                    timeout=SEARCH_QUERY_TIMEOUT,
                 )
                 for row in rows:
                     _keep_highest_version(found, dict(row, table_name=table["table_name"]))
@@ -2374,7 +2399,7 @@ class SearchService:
         is ``document_id``, one row per edge, ordered by document_id."""
         if self.postgres_pool is None:
             raise UpstreamError("PostgreSQL not connected")
-        async with self.postgres_pool.acquire() as conn:
+        async with self.postgres_pool.acquire(timeout=SEARCH_QUERY_TIMEOUT) as conn:
             tables = await _doc_tables_with_column(conn, "source_ref_id", namespace, within)
             found: dict[str, dict[str, Any]] = {}
             for table in tables:
@@ -2389,6 +2414,7 @@ class SearchService:
                     ORDER BY document_id, version DESC
                     """,  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
                     document_id,
+                    timeout=SEARCH_QUERY_TIMEOUT,
                 )
                 for row in rows:
                     _keep_highest_version(found, dict(row, table_name=table["table_name"]))
@@ -2549,15 +2575,23 @@ async def _template_values(
     client: httpx.AsyncClient, template_ids: set[str]
 ) -> dict[str, str]:
     """Each template's value, read from the template store. A template it
-    cannot find is left out: its value is unknown, not made up."""
-    values: dict[str, str] = {}
-    for template_id in sorted(template_ids):
-        tpl = await _fetch_target(
-            client, f"{settings.template_store_url}/api/template-store/templates/{_seg(template_id)}"
-        )
-        if tpl and tpl.get("value"):
-            values[template_id] = tpl["value"]
-    return values
+    cannot find is left out: its value is unknown, not made up. The reads
+    run concurrently, at most _TEMPLATE_VALUE_READS at a time."""
+    gate = asyncio.Semaphore(_TEMPLATE_VALUE_READS)
+
+    async def read(template_id: str) -> tuple[str, dict[str, Any] | None]:
+        async with gate:
+            return template_id, await _fetch_target(
+                client,
+                f"{settings.template_store_url}/api/template-store/templates/{_seg(template_id)}",
+            )
+
+    found = await asyncio.gather(*(read(t) for t in sorted(template_ids)))
+    return {tid: tpl["value"] for tid, tpl in found if tpl and tpl.get("value")}
+
+
+# How many template reads _template_values keeps in flight.
+_TEMPLATE_VALUE_READS = 8
 
 
 _TEMPLATE_PAGE = 1000
@@ -2628,10 +2662,15 @@ async def _doc_tables_with_column(
     conn: asyncpg.Connection, column: str, namespace: str | None,
     within: list[str] | None = None,
 ) -> list[Any]:
-    """The doc_* base tables (never the entity views over them, which would
-    report each row twice) that have ``column``, with whether each has
+    """The document base tables (never the entity views over them, which
+    would report each row twice) that have ``column``, with whether each has
     created_at (include_metadata: false tables do not). In ``namespace``'s
-    schema, else in the schemas of ``within``, else in every schema."""
+    schema, else in the schemas of ``within``, else in every schema.
+
+    A document table is found by the column, not by its name: a template's
+    ``reporting.table_name`` override names its tables without the ``doc_``
+    prefix. The platform's own ``_wip_*`` tables and the metadata tables are
+    left out."""
     return list(await conn.fetch(
         r"""
         SELECT c.table_schema, c.table_name,
@@ -2641,14 +2680,16 @@ async def _doc_tables_with_column(
           ON t.table_schema = c.table_schema AND t.table_name = c.table_name
         WHERE t.table_type = 'BASE TABLE'
           AND c.table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')
-          AND c.table_name LIKE 'doc\_%'
+          AND c.table_name NOT LIKE '\_wip\_%'
+          AND NOT (c.table_name = ANY($4::text[]))
           AND ($2::text IS NULL OR c.table_schema = $2)
           AND ($3::text[] IS NULL OR c.table_schema = ANY($3::text[]))
         GROUP BY c.table_schema, c.table_name
         HAVING bool_or(c.column_name = $1)
         ORDER BY c.table_schema, c.table_name
         """,
-        column, namespace, within,
+        column, namespace, within, sorted(SchemaManager.METADATA_TABLES),
+        timeout=SEARCH_QUERY_TIMEOUT,
     ))
 
 

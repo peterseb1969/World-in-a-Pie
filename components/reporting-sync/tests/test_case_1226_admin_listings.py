@@ -80,4 +80,4 @@ async def test_term_documents_keep_to_the_readable_schemas(monkeypatch):
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     await SearchService(pool).get_term_documents("term-1", 10, None, ["open-a"])
     _sql, args = calls[0]
-    assert args == ("term_references_json", None, ["open-a"])
+    assert args[:3] == ("term_references_json", None, ["open-a"])

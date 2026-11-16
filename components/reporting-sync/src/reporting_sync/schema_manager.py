@@ -253,6 +253,8 @@ class SchemaManager:
         # on an existing template, so one check per table per process is
         # enough — update_table_schema runs on every synced document event.
         self._legacy_identity_index_checked: set[tuple[str, str]] = set()
+        # (schema, table) pairs already holding the term_references_json index
+        self._term_refs_index_checked: set[tuple[str, str]] = set()
         # terminologies tables already rid of the retired `extensible` column
         self._retired_columns_checked: set[str] = set()
 
@@ -372,8 +374,21 @@ class SchemaManager:
     def entities_view_name(
         self, template_value: str, config: ReportingConfig | None = None
     ) -> str:
-        """The always-present identity-core view: ``<base>__entities``."""
-        return self._safe_ident(f"{self.get_table_name(template_value, config)}__entities")
+        """The always-present identity-core view: ``<base>__entities``, as
+        PostgreSQL stores it (see ``entities_view_for_base``)."""
+        return self.entities_view_for_base(self.get_table_name(template_value, config))
+
+    @classmethod
+    def entities_view_for_base(cls, base: str) -> str:
+        """The name of a base's identity-core view as PostgreSQL stores it.
+
+        ``<base>__entities`` passes 63 bytes once the base passes 53 (a
+        template value of 50-59 bytes, or a long table_name override).
+        PostgreSQL then truncates the name it creates the view under, so the
+        view is created, found and reported under that truncated name. A base
+        that is itself longer than 63 bytes is refused before this, by
+        ``get_table_name``."""
+        return cls._stored_identifier(f"{base}__entities")
 
     def qualified_name(
         self,
@@ -662,6 +677,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_namespace_idx" ON {qualified}(namespace
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_template_id_idx" ON {qualified}(namespace, template_id);
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx" ON {qualified}(namespace, status);
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_identity_hash_idx" ON {qualified}(namespace, identity_hash);
+-- Containment lookups of the documents holding a term (referenced-by, term documents)
+CREATE INDEX IF NOT EXISTS "{table_name}_term_refs_idx" ON {qualified} USING GIN (term_references_json jsonb_path_ops);
 """
 
         # The created_at index only exists when metadata columns do — otherwise
@@ -1053,6 +1070,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
 
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
+            # The DDL carries the term_references_json index: no catch-up needed.
+            self._term_refs_index_checked.add((schema, table_name))
 
             # Record the migration. Keyed on (namespace, template_value,
             # version): template_value is unique only per namespace, so the key
@@ -1157,6 +1176,9 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                     )
                 self._legacy_identity_index_checked.add((schema, table_name))
             migrations += await self._add_revision_column(conn, qualified, existing_columns)
+            migrations += await self._ensure_term_refs_index(
+                conn, schema, table_name, qualified, existing_columns,
+            )
             # Phase 7 — relationship templates need source_ref_id / target_ref_id
             # columns + indexes. Add them lazily when missing so legacy
             # relationship templates that pre-date Phase 7 catch up on next
@@ -1312,8 +1334,33 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         retried here, not only when a table is created)."""
         base = self.get_table_name(template_value, config)
         schema = self.schema_for(namespace)
-        if migrations or await self.relation_kind(schema, f"{base}__entities") is None:
+        if migrations or await self.relation_kind(schema, self.entities_view_for_base(base)) is None:
             await self.ensure_views_for_template(namespace, template_value, config)
+
+    async def _ensure_term_refs_index(
+        self, conn: asyncpg.Connection, schema: str, table_name: str, qualified: str,
+        existing_columns: set[str],
+    ) -> list[str]:
+        """Tables created before the term_references_json index get it here,
+        once per table and process: the lookup of the documents holding a term
+        is a containment scan, unbounded without it. Only a missing index is
+        created and recorded, as for the FTS indexes."""
+        key = (schema, table_name)
+        if key in self._term_refs_index_checked or "term_references_json" not in existing_columns:
+            return []
+        idx_name = f"{table_name}_term_refs_idx"
+        statements: list[str] = []
+        if self._stored_identifier(idx_name) not in await self._existing_indexes(
+            conn, schema, table_name
+        ):
+            idx_sql = (
+                f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON {qualified} '
+                "USING GIN (term_references_json jsonb_path_ops)"
+            )
+            await conn.execute(idx_sql)
+            statements.append(idx_sql)
+        self._term_refs_index_checked.add(key)
+        return statements
 
     @staticmethod
     async def _add_revision_column(
@@ -1338,7 +1385,9 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         try:
             async with conn.transaction():
                 await self.drop_registered_views(namespace, conn)
-                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}__entities"')
+                await conn.execute(
+                    f'DROP VIEW IF EXISTS "{schema}"."{self.entities_view_for_base(base)}"'
+                )
                 if await self.relation_kind(schema, base) == "view":
                     await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}"')
                 for sql in statements:
@@ -2092,7 +2141,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         here; as known dependents they are dropped first and recreated after
         the rebuild commits (best-effort).
         """
-        entities_view = f"{base}__entities"
+        entities_view = self.entities_view_for_base(base)
         async with self.pool.acquire() as conn, conn.transaction():
             await self.drop_registered_views(namespace, conn)
             await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
@@ -2217,7 +2266,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         """
         schema = self.schema_for(namespace)
         base = self.get_table_name(template_value, config)
-        entities_view = f"{base}__entities"
+        entities_view = self.entities_view_for_base(base)
         version_tables = await self.list_version_tables(namespace, template_value, config)
         entities_kind = await self.relation_kind(schema, entities_view)
         bare_kind = await self.relation_kind(schema, base)

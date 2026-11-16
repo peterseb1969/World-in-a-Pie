@@ -9,11 +9,13 @@ Responsibilities:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
 import uuid
 from collections import Counter
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -150,8 +152,8 @@ class BatchSyncService:
         self.closure = TermClosureMaintainer(postgres_pool, self.schema_manager)
         self._jobs: dict[str, BatchSyncJob] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
-        # Per template value (lowercased): see _run_batch_sync.
-        self._table_locks: dict[str, asyncio.Lock] = {}
+        # Per template value (lowercased): see _run_batch_sync and _table_lock.
+        self._table_locks: dict[str, _TableLock] = {}
         # Strong refs to fire-and-forget tasks (definitions pre-sync) so the
         # event loop cannot garbage-collect them mid-flight.
         self._background_tasks: set[asyncio.Task] = set()
@@ -1538,9 +1540,28 @@ class BatchSyncService:
         logger.info(f"TermRelation batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
 
-    def _table_lock(self, template_value: str) -> asyncio.Lock:
-        """The lock every batch job writing ``template_value``'s tables holds."""
-        return self._table_locks.setdefault(template_value.lower(), asyncio.Lock())
+    @contextlib.asynccontextmanager
+    async def _table_lock(self, template_value: str) -> AsyncIterator[None]:
+        """Hold the lock every batch job writing ``template_value``'s tables
+        holds. Jobs waiting for it are let in in the order they came. The
+        entry is dropped once no job holds it or waits on it, so the dict
+        does not grow with every value ever synced.
+
+        The key is the value alone, not (namespace, value): a job without a
+        namespace syncs the template's documents in every namespace, so it
+        writes the same tables as a job scoped to any one of them."""
+        key = template_value.lower()
+        entry = self._table_locks.get(key)
+        if entry is None:
+            entry = self._table_locks[key] = _TableLock()
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0 and self._table_locks.get(key) is entry:
+                del self._table_locks[key]
 
     def _forget_old_finished_jobs(self) -> None:
         """Keep at most MAX_FINISHED_JOBS finished jobs (the most recently
@@ -1573,3 +1594,12 @@ class BatchSyncService:
             del self._jobs[job_id]
             self._running_tasks.pop(job_id, None)
         return len(to_remove)
+
+
+class _TableLock:
+    """One template value's batch-job lock, and how many jobs hold it or
+    wait on it."""
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0

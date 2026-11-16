@@ -65,7 +65,11 @@ def test_non_indexed_string_field_emits_no_search_columns():
     ddl = _sm().generate_create_table_ddl("testns", "lesson", 1, fields)
     assert "_search" not in ddl
     assert "_tsv" not in ddl
-    assert "GIN" not in ddl
+    # The only GIN index is the term_references_json one every table has.
+    assert [line for line in ddl.splitlines() if "GIN" in line] == [
+        'CREATE INDEX IF NOT EXISTS "doc_lesson__v1_term_refs_idx" '
+        'ON "testns"."doc_lesson__v1" USING GIN (term_references_json jsonb_path_ops);'
+    ]
 
 
 def test_indexed_field_with_system_column_name_gets_data_prefix():

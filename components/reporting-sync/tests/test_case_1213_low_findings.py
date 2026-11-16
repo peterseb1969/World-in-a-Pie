@@ -168,8 +168,9 @@ def test_a_version_suffix_cannot_push_a_name_past_63_bytes():
     assert sm.get_table_name(value) == f"doc_{value}"
     with pytest.raises(ValueError):
         sm.get_table_name(value, version=1)  # 64 bytes: v1 and v2 would truncate alike
-    with pytest.raises(ValueError):
-        sm.entities_view_name(value)
+    # The identity-core view is not refused: it is named as PostgreSQL
+    # stores it, truncated to 63 bytes (one view per base, so no collision).
+    assert sm.entities_view_name(value) == f"doc_{value}__e"
 
 
 @pytest.mark.parametrize(
