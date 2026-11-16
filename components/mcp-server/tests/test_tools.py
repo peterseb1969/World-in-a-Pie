@@ -522,11 +522,29 @@ async def test_a_timed_out_import_points_at_the_jobs_it_may_have_started(tmp_pat
     assert "may still be running" in result
     assert "To check: list the namespace's jobs" in result
     assert "list_backup_jobs" in result
+    assert "adds a version, not a document" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", ["get_template_by_value", "preview_import"])
+async def test_a_timeout_before_the_import_carries_no_import_check(tmp_path, step):
+    """The template lookup and the preview write nothing and submit no job: a
+    timeout there points at no job list, and the import is never sent."""
+    mock = _mock_client()
+    mock.timeout = 30.0
+    mock.get_template_by_value.return_value = {"template_id": "T1", "fields": [{"name": "name"}]}
+    mock.preview_import.return_value = {"headers": ["name"]}
+    getattr(mock, step).side_effect = httpx.ReadTimeout("")
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await import_documents_csv(_rows_csv(tmp_path, 1), "PATIENT")
+    mock.import_documents.assert_not_awaited()
+    assert "timed out waiting for WIP (ReadTimeout)" in result
+    assert "To check" not in result
 
 
 @pytest.mark.parametrize(("exc", "expected"), [
     (httpx.ReadTimeout(""), "timed out waiting for WIP (ReadTimeout)"),
-    (httpx.ConnectTimeout(""), "timed out waiting for WIP (ConnectTimeout)"),
+    (httpx.WriteTimeout(""), "timed out waiting for WIP (WriteTimeout)"),
     (RuntimeError(""), "Error: RuntimeError"),
     (ValueError("boom"), "Error: boom"),
 ])
@@ -539,6 +557,17 @@ def test_error_names_a_timeout_and_an_empty_message(exc, expected):
         assert _error(exc, check="look").endswith("To check: look")
     else:
         assert "To check" not in _error(exc, check="look")
+
+
+@pytest.mark.parametrize("exc", [httpx.ConnectTimeout(""), httpx.PoolTimeout("")])
+def test_a_timeout_before_any_connection_says_nothing_was_sent(exc):
+    """No connection, nothing sent: no "may still be running", no check."""
+    from wip_mcp.server import _error
+
+    text = _error(exc, check="look")
+    assert f"WIP was not reached ({type(exc).__name__})" in text
+    assert "nothing was sent" in text
+    assert "may still be running" not in text and "To check" not in text
 
 
 @pytest.mark.asyncio

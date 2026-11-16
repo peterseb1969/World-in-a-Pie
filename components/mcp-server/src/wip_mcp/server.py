@@ -78,17 +78,24 @@ def _place_in_namespace(
 def _error(e: Exception, check: str | None = None) -> str:
     """Format an exception for MCP tool output.
 
-    A timeout is not a failure the server reported: the client stopped
-    waiting, and the request may still be running and may complete. It says
-    so, with ``check`` (how to see what the request did) when the tool gives
-    one, so an agent does not retry a write that is landing. An exception
-    with an empty message is named by its type."""
+    A connect or pool timeout means no connection was made, so nothing was
+    sent and the request did not run. Any other timeout is not a failure the
+    server reported: the client stopped waiting, and the request may still be
+    running and may complete. It says so, with ``check`` (how to see what the
+    request did) when the tool gives one, so an agent does not retry a write
+    that is landing. An exception with an empty message is named by its
+    type."""
     if isinstance(e, BulkError):
         head = f"WIP error [{e.error_code}]: " if e.error_code else "WIP error: "
         text = f"{head}{e.error}"
         if e.details:
             text += f"\ndetails: {json.dumps(e.details, default=str)}"
         return text
+    if isinstance(e, (httpx.ConnectTimeout, httpx.PoolTimeout)):
+        return (
+            f"Error: WIP was not reached ({type(e).__name__}). No connection was made, "
+            "so nothing was sent and the request did not run."
+        )
     if isinstance(e, httpx.TimeoutException):
         text = (
             f"Error: timed out waiting for WIP ({type(e).__name__}). This is not a "
@@ -5001,7 +5008,12 @@ async def import_documents_csv(
             column_mapping, refusal = _auto_mapping(preview.get("headers", []), tmpl.get("fields", []))
             if refusal:
                 return refusal
+    except Exception as e:
+        # The template lookup and the preview write nothing, and no import has
+        # been submitted yet: there is no job to look for.
+        return _error(e)
 
+    try:
         job = await client.import_documents(
             file_content=content,
             filename=p.name,
@@ -5011,25 +5023,27 @@ async def import_documents_csv(
             skip_errors=skip_errors,
         )
         job_id = job["job_id"]
-        try:
-            job = await _await_import_job(client, job)
-        except Exception as e:
-            # The job started, so the import goes on whatever this watch met.
-            return _error(e, check=(
-                f"the import runs as job {job_id} and goes on without this call: "
-                f"poll get_backup_job('{job_id}') for its progress and, at the end, "
-                "its report."
-            ))
-        return json.dumps(job, indent=2, default=str)
     except Exception as e:
         return _error(e, check=(
             f"list the namespace's jobs (list_backup_jobs, namespace "
             f"'{ns or 'the default one'}'): an import that started is there, "
             "with its id, its status and its report; an empty list means nothing was "
-            f"written. The import's own report counts a row that changed nothing as "
-            f"succeeded, so the document count of template '{template_value}' is "
-            "what tells what landed."
+            "written. The report gives each row's outcome and counts a row that "
+            "changed nothing as succeeded. On a template with identity fields, a row "
+            "that matched an existing document adds a version, not a document, so the "
+            f"document count of template '{template_value}' grows only by the rows "
+            "with new identities."
         ))
+    try:
+        job = await _await_import_job(client, job)
+    except Exception as e:
+        # The job started, so the import goes on whatever this watch met.
+        return _error(e, check=(
+            f"the import runs as job {job_id} and goes on without this call: "
+            f"poll get_backup_job('{job_id}') for its progress and, at the end, "
+            "its report."
+        ))
+    return json.dumps(job, indent=2, default=str)
 
 
 # ===================================================================
