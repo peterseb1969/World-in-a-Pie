@@ -270,7 +270,7 @@ export class DefStoreService extends BaseService {
     const format = options?.format ?? 'json'
     // CSV comes back as text/csv: read it as text, or the JSON parse fails
     // and the call resolves to undefined.
-    return this.transport.request('GET', `${this.basePath}/import-export/export/${terminologyId}`, {
+    return this.transport.request('GET', `${this.basePath}/import-export/export/${seg(terminologyId)}`, {
       params: {
         format,
         include_inactive: options?.includeInactive,

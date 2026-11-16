@@ -46,8 +46,11 @@ function invalidateFileViews(queryClient: QueryClient): void {
 }
 
 /**
- * A created entity gets a Registry entry, so Registry listings and searches
- * on screen refetch; ones not mounted are only marked stale.
+ * Registry listings and searches on screen refetch; ones not mounted are only
+ * marked stale. Called by every hook that changes what the Registry holds: a
+ * created entity gets an entry; a retired one (deleted, deprecated, every
+ * template version deactivated) releases its synonyms; a reactivated one
+ * claims them again; a hard delete removes the entry.
  */
 function invalidateRegistryListings(queryClient: QueryClient): void {
   queryClient.invalidateQueries({ queryKey: wipKeys.registry.all, refetchType: 'active' })
@@ -102,6 +105,7 @@ export function useDeleteTerminology(
     mutationFn: (id: string) => client.defStore.deleteTerminology(id),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -160,6 +164,7 @@ export function useDeprecateTerm(
       client.defStore.deprecateTerm(termId, data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -178,6 +183,7 @@ export function useDeleteTerm(
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.detail(terminologyId) })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -233,6 +239,7 @@ export function useDeleteTemplate(
       client.templates.deleteTemplate(id, opts),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -250,6 +257,7 @@ export function useActivateTemplate(
       client.templates.activateTemplate(id, opts),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -267,6 +275,7 @@ export function useReactivateTemplate(
       client.templates.reactivateTemplate(id, version, opts),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -415,6 +424,7 @@ export function useDeleteDocument(
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
       invalidateFileViews(queryClient)
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -494,6 +504,7 @@ export function useDeleteFile(
     },
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -513,6 +524,7 @@ export function useDeleteFiles(
     },
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -529,6 +541,7 @@ export function useHardDeleteFile(
     mutationFn: (fileId: string) => client.files.hardDeleteFile(fileId),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })

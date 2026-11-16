@@ -44,6 +44,42 @@ describe('path segments are encoded', () => {
     await client.registry.getAPIKey('key#1')
     expect(url().pathname).toBe('/api/registry/api-keys/key%231')
   })
+
+  it('a terminology export names its terminology whole', async () => {
+    await client.defStore.exportTerminology('COLOUR#2')
+    const u = url()
+    expect(u.pathname).toBe('/api/def-store/import-export/export/COLOUR%232')
+    expect(u.searchParams.get('format')).toBe('json')
+  })
+
+  it('a backup archive download names its job whole', async () => {
+    await client.documents.downloadBackupArchive('job?x')
+    expect(url().pathname).toBe('/api/document-store/backup/jobs/job%3Fx/download')
+  })
+})
+
+// Every value a service method puts into a request path goes through seg().
+// A hand sweep missed two sites once; this reads the sources instead.
+describe('no request path interpolates a value unencoded', () => {
+  it('every ${...} in a path is seg(), the base path or a prebuilt query suffix', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const dir = join(__dirname, '../src/services')
+    const allowed = /^((seg|encodeURIComponent)\(.*\)|this\.basePath|path|suffix|qs|query)$/
+    const offenders: string[] = []
+    for (const name of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
+      readFileSync(join(dir, name), 'utf8').split('\n').forEach((line, i) => {
+        for (const literal of line.match(/`[^`]*`/g) ?? []) {
+          const body = literal.slice(1, -1)
+          if (!/^(\$\{this\.basePath\})?\//.test(body)) continue // not a request path
+          for (const m of body.matchAll(/\$\{([^}]*)\}/g)) {
+            if (!allowed.test(m[1].trim())) offenders.push(`${name}:${i + 1} ${literal}`)
+          }
+        }
+      })
+    }
+    expect(offenders).toEqual([])
+  })
 })
 
 describe('uploadFile names the part after the given filename', () => {

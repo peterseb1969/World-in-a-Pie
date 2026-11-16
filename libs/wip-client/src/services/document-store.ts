@@ -574,7 +574,7 @@ export class DocumentStoreService extends BaseService {
    * if the archive file has already been cleaned up from disk.
    */
   async downloadBackupArchive(jobId: string): Promise<Blob> {
-    return this.transport.request<Blob>('GET', `${this.basePath}/backup/jobs/${jobId}/download`, {
+    return this.transport.request<Blob>('GET', `${this.basePath}/backup/jobs/${seg(jobId)}/download`, {
       responseType: 'blob',
     })
   }

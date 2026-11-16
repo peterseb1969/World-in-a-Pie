@@ -4,7 +4,7 @@ docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
 docs/WIP_DevGuardrails.md sha256:85f58743fe980331 reviewed:8da02dd9
 docs/WIP_PoNIFs.md sha256:5834cbc38977bdad reviewed:cdbecddf
 libs/wip-client/README.md sha256:26ed95d9edcd30a7 reviewed:c54871ff
-libs/wip-react/README.md sha256:4248acbe6da3a2c3 reviewed:c54871ff
+libs/wip-react/README.md sha256:0abbe98414b31b7a reviewed:f8c4ab62
 libs/wip-proxy/README.md sha256:e63cb4241bccc1e7 reviewed:4bb50871
 docs/wip-deployable-app-contract.md sha256:a00820fcfbaa290f reviewed:dda7e850
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0

@@ -388,11 +388,11 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 |------|-------|---------|-------------|
 | `useCreateTerminology()` | `CreateTerminologyRequest` | `BulkResultItem` | `terminologies.all` + `registry.all` (active) |
 | `useUpdateTerminology()` | `{ id, data }` | `BulkResultItem` | `terminologies.all` |
-| `useDeleteTerminology()` | `string` | `BulkResultItem` | `terminologies.all` |
+| `useDeleteTerminology()` | `string` | `BulkResultItem` | `terminologies.all` + `registry.all` (active) |
 | `useCreateTerm(terminologyId, namespace)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` + `registry.all` (active) |
 | `useUpdateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
-| `useDeprecateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
-| `useDeleteTerm(terminologyId)` | `string` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
+| `useDeprecateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` + `registry.all` (active) |
+| `useDeleteTerm(terminologyId)` | `string` | `BulkResultItem` | `terms.all` + `terminologies.detail` + `registry.all` (active) |
 | `useCreateTermRelations()` | `{ items, namespace }` | `BulkResponse` | `terms.all` |
 | `useDeleteTermRelations()` | `{ items, namespace }` | `BulkResponse` | `terms.all` |
 
@@ -402,9 +402,9 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 |------|-------|---------|-------------|
 | `useCreateTemplate()` | `CreateTemplateRequest` | `BulkResultItem` | `templates.all` + `registry.all` (active) |
 | `useUpdateTemplate()` | `{ id, data }` | `BulkResultItem` | `templates.all` |
-| `useDeleteTemplate()` | `{ id, updatedBy?, version?, force?, hardDelete? }` | `BulkResultItem` | `templates.all` |
-| `useActivateTemplate()` | `{ id, namespace, dry_run? }` | `ActivateTemplateResponse` | `templates.all` |
-| `useReactivateTemplate()` | `{ id, version, namespace }` | `Template` | `templates.all` |
+| `useDeleteTemplate()` | `{ id, updatedBy?, version?, force?, hardDelete? }` | `BulkResultItem` | `templates.all` + `registry.all` (active) |
+| `useActivateTemplate()` | `{ id, namespace, dry_run? }` | `ActivateTemplateResponse` | `templates.all` + `registry.all` (active) |
+| `useReactivateTemplate()` | `{ id, version, namespace }` | `Template` | `templates.all` + `registry.all` (active) |
 | `useAddEdgeTypeEndpoints()` | `{ id, namespace, addSourceTemplates?, addTargetTemplates? }` | `Template` | `templates.all` |
 
 **Documents**
@@ -415,7 +415,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useCreateDocuments()` | `CreateDocumentRequest[]` | `BulkResponse` | `documents.all` + file lists/details + `registry.all` (active) |
 | `useUpdateDocument()` | `{ documentId, patch, ifMatch?, metadataPatch? }` | `BulkResultItem` | `documents.all` + `documents.detail` + `documents.versions` + file lists/details |
 | `useUpdateDocuments()` | `PatchDocumentRequest[]` | `BulkResponse` | `documents.all` + file lists/details |
-| `useDeleteDocument()` | `{ id, updatedBy? }` | `BulkResultItem` | `documents.all` + file lists/details |
+| `useDeleteDocument()` | `{ id, updatedBy? }` | `BulkResultItem` | `documents.all` + file lists/details + `registry.all` (active) |
 
 **Files**
 
@@ -423,9 +423,9 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 |------|-------|---------|-------------|
 | `useUploadFile()` | `{ file, filename?, metadata?, namespace }` (`namespace` is required: the service refuses an upload without one) | `FileEntity` | `files.all` + `registry.all` (active) |
 | `useUpdateFileMetadata()` | `{ fileId, data }` | `BulkResultItem` | `files.all` |
-| `useDeleteFile()` | `string`, or `{ fileId, namespace?, force? }` (`force` deletes a file documents still reference) | `BulkResultItem` | `files.all` |
-| `useDeleteFiles()` | `string[]`, or `{ fileIds, namespace?, force? }` | `BulkResponse` | `files.all` |
-| `useHardDeleteFile()` | `string` | `void` | `files.all` |
+| `useDeleteFile()` | `string`, or `{ fileId, namespace?, force? }` (`force` deletes a file documents still reference) | `BulkResultItem` | `files.all` + `registry.all` (active) |
+| `useDeleteFiles()` | `string[]`, or `{ fileIds, namespace?, force? }` | `BulkResponse` | `files.all` + `registry.all` (active) |
+| `useHardDeleteFile()` | `string` | `void` | `files.all` + `registry.all` (active) |
 
 **Namespaces & Registry**
 
