@@ -1,10 +1,11 @@
 """Keyless activation's failure handling, pinned before activate_entries'
 refactor.
 
-Provenance: CASE-1161, CASE-1268. The suite did not reach two of these
-branches of the keyless fast path: the classify read failing, and the update
-modifying fewer entries than were reserved (a concurrent change), which a
-re-read sorts out. The guarded update failing was already pinned by
+Provenance: CASE-1161, CASE-1268. Before this file and
+test_activate_concurrent_retire (added together), the suite did not reach two
+of these branches of the keyless fast path: the classify read failing, and
+the update modifying fewer entries than were reserved (a concurrent change),
+which a re-read sorts out. The guarded update failing was already pinned by
 test_case_1132_registry_lows; the test here adds the post-state. Each is
 answered per item; a keyed item in the same request is answered by its own
 path regardless. A re-read that fails is retried once; if it fails again the

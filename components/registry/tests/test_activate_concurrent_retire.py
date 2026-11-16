@@ -1,5 +1,5 @@
-"""A keyless activation never reports an entry activated that it did not
-activate.
+"""A keyless activation never reports an entry activated that the re-read
+does not find active (one another request retired meanwhile, say).
 
 The guarded update flips only entries still reserved. When it modifies fewer
 than it was given, a re-read decides which items failed; it looked only for

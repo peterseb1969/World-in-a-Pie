@@ -1873,7 +1873,10 @@ async def activate_entries(
     whose status changes between the read and the write is not matched.
     When the write falls short, a re-read decides each entry: one now active
     is answered activated (another request may have flipped it), one still
-    reserved or moved to another status is a concurrency conflict.
+    reserved or moved to another status is a concurrency conflict. If the
+    re-read fails twice, which entries the write activated is unknown: each
+    is an internal_error saying so, and activating it again answers
+    already_active if it is live.
     """
     results: list[ActivateItemResponse | None] = [None] * len(items)
     # Acquired before either path writes: a request whose keyed half has
