@@ -88,7 +88,6 @@ import contextlib
 import json
 import logging
 import uuid
-from collections import Counter
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -130,6 +129,7 @@ from ..services.archive_store import (
 )
 from ..services.file_storage_client import FileStorageNotFoundError
 from ..services.file_validation import content_disposition
+from ..services.namespace_map import NamespaceMapError, merge_map_targets
 
 # NOTE — GUARDRAIL 1: do not add `import wip_archive` or `from wip_archive ...`
 # anywhere in this file. Use the factory helpers in backup_service instead.
@@ -933,48 +933,17 @@ def _check_merge_namespace_map(
     """A merge's map must name each archived namespace, and nothing else, and
     no two of them the same destination.
 
-    The engine applies the same rules (``_validated_namespace_map``,
-    ``_mapped_targets``); refusing here answers the caller with a 400 instead
-    of a job that fails at plan time after taking the upload.
+    The rules are the engine's (``merge_map_targets``), run here too rather
+    than restated: two copies drift, and they already key off different values
+    — this one sees what the caller sent, the engine sees what the door
+    settled on. Refusing on the door answers a bad map with a 400 before a job
+    exists. What it saves is the job record and the plan, not the upload: the
+    archive is on disk by the time the manifest is read.
     """
-    if target_namespace:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "target_namespace and namespace_map both name where the "
-                "archive is written; pass one or the other."
-            ),
-        )
-    unmapped = sorted(set(prefixes) - set(namespace_map))
-    unknown = sorted(set(namespace_map) - set(prefixes))
-    if unmapped or unknown:
-        problems = []
-        if unmapped:
-            problems.append(f"unmapped archive namespace(s) {unmapped}")
-        if unknown:
-            problems.append(f"mapped but not in the archive: {unknown}")
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "namespace_map must cover exactly the archive's "
-                f"namespaces {sorted(prefixes)} — " + "; ".join(problems)
-            ),
-        )
-    shared = sorted(
-        target for target, count in Counter(namespace_map.values()).items()
-        if count > 1
-    )
-    if shared:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "namespace_map sends more than one archived namespace into the "
-                f"same target: {shared}. A merge keeps every canonical id, so "
-                "merge them one at a time, or restore a copy with new ids "
-                "(mode=fresh), which can fold several sources into one "
-                "namespace."
-            ),
-        )
+    try:
+        merge_map_targets(prefixes, target_namespace or "", namespace_map)
+    except NamespaceMapError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _check_restore_redirect(

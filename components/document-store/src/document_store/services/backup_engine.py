@@ -19,7 +19,6 @@ import hashlib
 import logging
 import os
 import socket
-from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -67,6 +66,11 @@ from .merge_definitions import (
     TemplateAlignment,
 )
 from .merge_plan import MERGE_ENTITY_SPECS, Clash, EntityPlan, MergePlanner
+from .namespace_map import (
+    NamespaceMapError,
+    merge_map_targets,
+    validated_namespace_map,
+)
 from .referent_resolution import resolve_referents
 from .remap_restore import (
     REMAP_ENTITY_ORDER,
@@ -1955,39 +1959,6 @@ def _resolved_in(ref: Any, redirects: dict[str, str]) -> Any:
     return ref
 
 
-def _validated_namespace_map(
-    sources: list[str], namespace_map: dict[str, str]
-) -> dict[str, str]:
-    """Check a caller's {source: target} map against the archive's namespaces
-    and return it in archive order.
-
-    EVERY archived namespace must be mapped — restoring an unmapped namespace
-    to its old name by default would silently collide with the live original,
-    which is the accident both redirected modes exist to avoid. A namespace the
-    map names that the archive does not carry is a typo with no effect, so it
-    is refused rather than dropped. Archive order, not caller order:
-    provisioning order and the per-pair staging both key off it.
-    """
-    unknown = sorted(set(namespace_map) - set(sources))
-    unmapped = sorted(set(sources) - set(namespace_map))
-    if unknown or unmapped:
-        problems = []
-        if unmapped:
-            problems.append(f"unmapped archive namespace(s) {unmapped}")
-        if unknown:
-            problems.append(f"mapped but not in the archive: {unknown}")
-        raise RestoreEngineError(
-            "namespace_map must cover exactly the archive's "
-            f"namespaces {sorted(sources)} — " + "; ".join(problems)
-        )
-    invalid = {s: t for s, t in namespace_map.items() if not t}
-    if invalid:
-        raise RestoreEngineError(
-            f"namespace_map has empty target(s) for {sorted(invalid)}"
-        )
-    return {s: namespace_map[s] for s in sources}
-
-
 def _archived_template_ids(reader: Any, sources: list[str]) -> set[str]:
     """The template ids the archive carries in ``sources``."""
     return {
@@ -3472,7 +3443,7 @@ class DirectRestoreEngine:
     ) -> dict[str, str]:
         """Settle where every archived namespace goes.
 
-        With a map, its coverage rules are :func:`_validated_namespace_map`'s;
+        With a map, its coverage rules are :func:`validated_namespace_map`'s;
         a target equal to the source name is legal precisely when that
         namespace is absent (the per-target emptiness check enforces it).
         Without a map, only a single-namespace archive is unambiguous and
@@ -3484,7 +3455,10 @@ class DirectRestoreEngine:
         if namespace_map:
             # Preserve archive order, not caller order — provisioning order
             # and the N:1 first-source-config rule both key off it.
-            return _validated_namespace_map(sources, namespace_map)
+            try:
+                return validated_namespace_map(sources, namespace_map)
+            except NamespaceMapError as exc:
+                raise RestoreEngineError(str(exc)) from exc
 
         if not target_namespace:
             raise RestoreEngineError(
@@ -7235,37 +7209,19 @@ class DirectRestoreEngine:
 
         Only a mode that can re-namespace may use one: an id-preserving
         restore writes the archived rows verbatim, and they carry their
-        namespace in their entities and composite keys.
-
-        One destination per source. Several sources folding into one target is
-        what a fresh restore does, and it pays for that with a collision pass
-        over the folded set; a merge preserves ids and matches by content
-        against one namespace at a time, so it refuses instead.
+        namespace in their entities and composite keys. What a map then has to
+        satisfy — one destination per source, exact coverage — is
+        :func:`merge_map_targets`, shared with the HTTP door.
         """
         if not allow_redirect:
             raise RestoreEngineError(
                 "namespace_map redirects namespaces, which an id-preserving "
                 "restore cannot do — it writes each namespace to itself."
             )
-        if target_namespace:
-            raise RestoreEngineError(
-                f"target_namespace '{target_namespace}' and namespace_map both "
-                "name where the archive is written; pass one or the other."
-            )
-        mapping = _validated_namespace_map(sources, namespace_map)
-        shared = sorted(
-            target for target, count in Counter(mapping.values()).items()
-            if count > 1
-        )
-        if shared:
-            raise RestoreEngineError(
-                "namespace_map sends more than one archived namespace into the "
-                f"same target: {shared}. A merge keeps every canonical id, so "
-                "two sources folding into one namespace would need their ids "
-                "checked against each other; merge them one at a time, or "
-                "restore a copy with new ids (mode=fresh)."
-            )
-        return [(source, mapping[source]) for source in sources]
+        try:
+            return merge_map_targets(sources, target_namespace, namespace_map)
+        except NamespaceMapError as exc:
+            raise RestoreEngineError(str(exc)) from exc
 
     @staticmethod
     def _claim_rows_for(
