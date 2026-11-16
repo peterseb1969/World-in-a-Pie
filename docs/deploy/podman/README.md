@@ -164,7 +164,7 @@ Apps are opt-in with `--app <name>`. Each is its own container image (its own ta
 
 > The `--image-tag` key is the **image/app name** — the same value you pass to `--app` (`wip-kb`, **not** `kb`; everything WIP-built carries the `wip-` prefix). A mismatched or non-`--app`-enabled key is **silently dropped** and the service falls back to the base `--tag` — verify what actually deployed with `podman inspect <container> --format '{{.ImageName}}'`.
 
-> **With `--tag`, give every app its `--image-tag`.** An app's manifest pins a tag of its own, but on `install` the base `--tag` outranks that pin for apps as well as for the platform. An `--app` without its `--image-tag` therefore renders at the platform tag, which an app's repo rarely publishes, so its image cannot be pulled and the app does not start. The manifest pin applies only to an install with no `--tag`. (`redeploy --tag` keeps each app on the image it already runs.)
+> **Apps keep their manifest pin under `--tag`.** An app's manifest pins a tag of its own, because apps are built and tagged in their own repos. The pin wins over the base `--tag`, which sets the platform's images. `--image-tag` still wins over both. An app whose manifest pins no tag renders at the platform tag, which an app's repo rarely publishes, so give such an app its `--image-tag`, or its image cannot be pulled and the app does not start. (`redeploy --tag` keeps each app on the image it already runs.)
 
 **Install with the apps you want** — the flag set is declarative, so list every app each time. Backend + React Console + WIP-KB:
 

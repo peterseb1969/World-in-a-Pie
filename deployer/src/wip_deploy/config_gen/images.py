@@ -8,12 +8,15 @@ Precedence for WIP-built images (short name, no `/`):
 
   1. `spec.images.tag_overrides[name]` — per-service CLI override
      (`--image-tag NAME=TAG`), the hotfix path.
-  2. `spec.images.tag` — the deployment-wide tag. When set it is
-     AUTHORITATIVE over manifest pins: `--tag X` means "every WIP-built
-     image at X". `None` means no deployment-wide tag was specified.
-  3. The manifest pin (`spec.image.tag` in the component/app manifest) —
-     a fallback default, not an override.
-  4. `latest`.
+  2. For an app, its manifest pin (`spec.image.tag` in the app manifest).
+     Apps are built and tagged in their own repos, so the platform tag
+     rarely names an image of them; their pin is what they publish.
+  3. `spec.images.tag` — the deployment-wide tag. When set it is
+     authoritative over component manifest pins: `--tag X` means "every
+     WIP-built platform image at X", and every app without a pin.
+     `None` means no deployment-wide tag was specified.
+  4. A component's manifest pin — a fallback default, not an override.
+  5. `latest`.
 
 Fully-qualified images (contain `/`: mongo, postgres, dex, nats, garage,
 router) skip step 2 — their manifest pins are upstream version numbers
@@ -45,6 +48,8 @@ def resolve_tag(owner: Component | App, deployment: Deployment) -> tuple[str, Ta
         return override, "pin"
     if "/" in ref.name:
         return (ref.tag, "upstream") if ref.tag else ("latest", "latest")
+    if isinstance(owner, App) and ref.tag:
+        return ref.tag, "manifest"
     if spec_images.tag:
         return spec_images.tag, "base"
     if ref.tag:

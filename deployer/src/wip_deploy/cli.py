@@ -442,10 +442,12 @@ def _tag_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--tag",
         help=(
-            "Deployment-wide image tag. When set, it is authoritative: "
-            "every WIP-built component/app image renders at this tag, "
-            "overriding manifest pins (CASE-438). Unset → manifest pins "
-            "apply, then 'latest'. Fully-qualified infra images (mongo, "
+            "Deployment-wide image tag. Every WIP-built platform image "
+            "renders at this tag, overriding component manifest pins; an "
+            "app keeps the tag its manifest pins (apps are tagged in their "
+            "own repos), and only an app without a pin renders at --tag. "
+            "Unset → manifest pins apply, then 'latest'. Fully-qualified "
+            "infra images (mongo, "
             "postgres, dex…) keep their own pins; use --image-tag to "
             "override one of those explicitly."
         ),
@@ -1193,7 +1195,7 @@ def install(
       # Hot-reload an app from a local checkout
       wip-deploy install --target dev --app-source react-console=$HOME/Dev/WIP-ReactConsole
 
-      # Deploy everything at one tag (--tag overrides manifest pins)
+      # Deploy the platform at one tag (apps keep their manifest pins)
       wip-deploy install --hostname wip.example.com --tag 20260610a --registry ghcr.io/you
 
       # Override the tag for a single service (beats --tag and pins)
@@ -6721,7 +6723,7 @@ DEV LOOP — hot-reload an app from a local checkout
       --app-source react-console=$HOME/Dev/WIP-ReactConsole \\
       --app-source clintrial=$HOME/Dev/WIP-ClinTrial
 
-  Deploy every WIP-built image at one tag (--tag overrides manifest pins):
+  Deploy every WIP-built platform image at one tag (apps keep their manifest pins):
     wip-deploy install --hostname wip.example.com --tag 20260610a --registry ghcr.io/you
 
   Override the tag for a single service (beats --tag and manifest pins):

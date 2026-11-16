@@ -105,6 +105,10 @@ class TestResolveTag:
         d = _deployment(ImagesSpec(tag="B", tag_overrides={"pinned": "P"}))
         assert resolve_tag(_component("pinned"), d) == ("P", "pin")
         assert resolve_tag(_component("plain", pin="M"), d) == ("B", "base")
+        # An app's manifest pin outranks the base tag; without one it takes it.
+        assert resolve_tag(_app("app", pin="M"), d) == ("M", "manifest")
+        assert resolve_tag(_app("app"), d) == ("B", "base")
+        assert resolve_tag(_app("pinned", pin="M"), d) == ("P", "pin")
 
         no_base = _deployment(ImagesSpec())
         assert resolve_tag(_component("plain", pin="M"), no_base) == ("M", "manifest")
@@ -131,22 +135,23 @@ class TestPlan:
     def _setup(self) -> tuple[Deployment, list[Component], list[App]]:
         d = _deployment(
             ImagesSpec(registry="ghcr.io/t", tag="OLD", tag_overrides={"kb": "kb-1"}),
-            apps=["rc", "kb"],
+            apps=["rc", "kb", "aa"],
         )
         components = [
             _component("registry"),
             _component("mongodb", "docker.io/library/mongo", pin="7"),
         ]
-        apps = [_app("rc", pin="rc-manifest"), _app("kb"), _app("not-enabled")]
+        apps = [_app("rc"), _app("kb"), _app("aa", pin="aa-1"), _app("not-enabled")]
         return d, components, apps
 
     def test_rows_without_preview(self) -> None:
         d, components, apps = self._setup()
         rows = {r.name: r for r in plan_images(d, components, apps)}
-        assert set(rows) == {"registry", "mongodb", "rc", "kb"}
+        assert set(rows) == {"registry", "mongodb", "rc", "kb", "aa"}
         assert rows["rc"].image == "ghcr.io/t/rc:OLD"
         assert rows["rc"].source == "base"
         assert rows["kb"].source == "pin"
+        assert (rows["aa"].image, rows["aa"].source) == ("ghcr.io/t/aa:aa-1", "manifest")
         assert not any(r.moves for r in rows.values())
 
     def test_base_tag_preview_moves_unpinned_and_flags_apps(self) -> None:
@@ -156,12 +161,14 @@ class TestPlan:
         assert by_name["registry"].moves
         assert by_name["rc"].new_image == "ghcr.io/t/rc:NEW"
         assert not by_name["kb"].moves
+        assert not by_name["aa"].moves
         assert not by_name["mongodb"].moves
         assert [r.name for r in apps_carried_by_base_tag(rows)] == ["rc"]
 
         table = format_image_table(rows, preview=True)
         assert "→ ghcr.io/t/rc:NEW" in table
         assert "stays (pinned)" in table
+        assert "stays (manifest pin)" in table
         assert "stays (upstream pin)" in table
 
     def test_json_carries_moves(self) -> None:
@@ -217,12 +224,16 @@ def _write_state(install_dir: Path, *, apps: list[str], overrides: dict) -> Path
 
 class TestImagesCommand:
     def test_lists_images_and_changes_nothing(self, tmp_path: Path) -> None:
-        state = _write_state(tmp_path, apps=["react-console"], overrides={})
+        # dnd's manifest pins no tag; react-console's does.
+        state = _write_state(tmp_path, apps=["dnd", "react-console"], overrides={})
         before = state.read_text()
         result = runner.invoke(app, ["images", "--install-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "ghcr.io/t/registry:OLD" in result.output
-        assert "ghcr.io/t/react-console:OLD" in result.output
+        assert "ghcr.io/t/dnd-compendium:OLD" in result.output
+        rc_row = next(ln for ln in result.output.splitlines() if ln.startswith("react-console"))
+        assert rc_row.split()[-1] == "manifest"
+        assert "react-console:OLD" not in rc_row
         assert "AFTER CHANGE" not in result.output
         assert state.read_text() == before
 
@@ -230,7 +241,7 @@ class TestImagesCommand:
         self, tmp_path: Path
     ) -> None:
         state = _write_state(
-            tmp_path, apps=["react-console", "wip-kb"], overrides={"wip-kb": "kb-1"}
+            tmp_path, apps=["dnd", "wip-kb"], overrides={"wip-kb": "kb-1"}
         )
         before = state.read_text()
         result = runner.invoke(
@@ -239,8 +250,8 @@ class TestImagesCommand:
         assert result.exit_code == 0, result.output
         assert "→ ghcr.io/t/registry:NEW" in result.output
         # The preview applies redeploy's own app pinning: the app stays.
-        assert "react-console=OLD" in result.output
-        assert "→ ghcr.io/t/react-console" not in result.output
+        assert "dnd=OLD" in result.output
+        assert "→ ghcr.io/t/dnd-compendium" not in result.output
         assert "wip-kb=" not in result.output
         assert (
             f"To apply: wip-deploy redeploy --install-dir {tmp_path} --tag NEW"
@@ -288,8 +299,9 @@ class TestRedeployKeepsApps:
         return result, mutate
 
     def test_unpinned_app_is_pinned_to_its_current_tag(self, tmp_path: Path) -> None:
+        # dnd's manifest pins no tag, so the base tag alone would move it.
         _write_state(
-            tmp_path, apps=["react-console", "wip-kb"], overrides={"wip-kb": "kb-1"}
+            tmp_path, apps=["dnd", "wip-kb"], overrides={"wip-kb": "kb-1"}
         )
         result, mutate = self._redeploy(tmp_path, "--tag", "NEW")
         assert result.exit_code == 0, result.output
@@ -297,10 +309,10 @@ class TestRedeployKeepsApps:
         assert deployment.spec.images.tag == "NEW"
         assert deployment.spec.images.tag_overrides == {
             "wip-kb": "kb-1",
-            "react-console": "OLD",
+            "dnd": "OLD",
         }
-        assert "app 'react-console' stays on 'OLD'" in result.output
-        assert "react-console=OLD" in mutate.call_args.args[4]
+        assert "app 'dnd' stays on 'OLD'" in result.output
+        assert "dnd=OLD" in mutate.call_args.args[4]
 
     def test_explicit_image_tag_moves_the_app(self, tmp_path: Path) -> None:
         _write_state(tmp_path, apps=["react-console"], overrides={})

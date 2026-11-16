@@ -130,10 +130,16 @@ class TestShortNamePrecedence:
         c = _component("registry", "registry", pin="20260601")
         assert image_ref(c, d) == "registry:X"
 
-    def test_apps_resolve_like_components(self) -> None:
+    def test_an_app_keeps_its_manifest_pin_under_the_base_tag(self) -> None:
+        """Apps are tagged in their own repos, so `--tag` (a platform tag)
+        reaches only an app without a pin; an override still wins."""
         d = _deployment(ImagesSpec(registry="ghcr.io/test", tag="X"))
-        a = _app("wip-kb", pin="20260601")
-        assert image_ref(a, d) == "ghcr.io/test/wip-kb:X"
+        assert image_ref(_app("wip-kb", pin="20260601"), d) == "ghcr.io/test/wip-kb:20260601"
+        assert image_ref(_app("wip-kb", pin=None), d) == "ghcr.io/test/wip-kb:X"
+        pinned = _deployment(
+            ImagesSpec(registry="ghcr.io/test", tag="X", tag_overrides={"wip-kb": "P"})
+        )
+        assert image_ref(_app("wip-kb", pin="20260601"), pinned) == "ghcr.io/test/wip-kb:P"
 
 
 # ────────────────────────────────────────────────────────────────────

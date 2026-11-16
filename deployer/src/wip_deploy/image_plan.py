@@ -8,9 +8,9 @@ see which apps the new base tag would carry along. Read-only: it computes
 from a Deployment and never touches the install.
 
 A service's tag comes from the first precedence step that has one
-(`config_gen/images.py`): a per-service pin, the deployment-wide tag, the
-manifest pin, then `latest`. Fully-qualified (infra) images skip the
-deployment-wide tag. On the dev target, components with a build context
+(`config_gen/images.py`): a per-service pin, an app's manifest pin, the
+deployment-wide tag, a component's manifest pin, then `latest`.
+Fully-qualified (infra) images skip the deployment-wide tag. On the dev target, components with a build context
 and apps with a local source are built from source as `<name>:dev-<install>`; tags
 do not reach them.
 """

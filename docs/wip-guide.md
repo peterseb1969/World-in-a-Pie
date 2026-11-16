@@ -94,7 +94,7 @@ It prints each service's image, and in SOURCE the rule that decided its tag:
 |---|---|
 | `pin` | a per-service tag: `--image-tag NAME=TAG`, `add-app --tag` or `app-deploy --tag` |
 | `base` | the install-wide `--tag` |
-| `manifest` | the tag in the component's or app's manifest (used when no `--tag` is set) |
+| `manifest` | the tag in the manifest: an app's pin always (apps are tagged in their own repos); a component's only when no `--tag` is set |
 | `latest` | nothing set a tag |
 | `upstream` | an infrastructure image's own version (mongo, postgres, dex…); the install-wide tag never changes it |
 | `source` | dev target only: built locally as `<name>:dev`; no tag applies |
