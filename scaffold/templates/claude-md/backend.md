@@ -438,7 +438,7 @@ __WIP_ROOT__/
 │   ├── design/               # Feature design documents
 │   ├── slash-commands/       # Slash command sources (backend/ and app-builder/)
 │   └── wip-guide.md          # Operator guide — §7: encryption at rest, key rotation
-├── scripts/                  # Build, security, quality audit, seed data, wip-test.sh
+├── scripts/                  # Build, security, quality audit, wip-test.sh
 ├── config/                   # Caddy, Dex, API key configs
 ├── libs/                     # wip-auth (Py), wip-client (TS), wip-react (hooks)
 ├── components/               # Eight services, each with src/ and tests/

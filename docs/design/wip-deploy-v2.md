@@ -784,8 +784,7 @@ apps/                                   # new top-level
 tools/                                  # renamed from scripts/
 ├── build-release.sh                    # kept (orthogonal: image builds)
 ├── wip-test.sh                         # kept (orthogonal: test runner)
-├── quality-audit.sh                    # kept (orthogonal)
-└── seed-data/                          # kept (orthogonal)
+└── quality-audit.sh                    # kept (orthogonal)
 ```
 
 ### Removed

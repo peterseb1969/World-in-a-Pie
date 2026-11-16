@@ -117,7 +117,6 @@ wip-deploy status
 - [ ] `wip-deploy install` completes without errors
 - [ ] All services start and respond through Caddy
 - [ ] WIP Console loads and can log in via OIDC
-- [ ] Seed data script works: `python scripts/seed_comprehensive.py --profile minimal`
 
 ## 7. Release Cut — notes and versions
 

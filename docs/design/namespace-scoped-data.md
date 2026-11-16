@@ -39,7 +39,6 @@ Design document for adding namespace support to all WIP services, enabling names
 - All list/filter APIs accept `namespace` as a query parameter
 - Create endpoints require `namespace` in the request body — it is a required field, not defaulted to `"wip"`; omitting it is a 422
 - By-value lookups without an explicit namespace resolve across the namespaces the caller has a grant on (not "all namespaces"); some `/raw` variants now require an explicit namespace
-- Seed script uses `--namespace seed` to isolate test data from production data
 
 **Implementation note:** This design document originally proposed using the full pool name (e.g., `"wip-terminologies"`) as the namespace field value. The actual implementation uses a short prefix (e.g., `"wip"`) and derives the pool name in the registry client. (An earlier `namespace-implementation.md` reference was archived per CASE-184; for current schema details see `docs/data-models.md`.)
 

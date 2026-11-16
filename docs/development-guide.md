@@ -70,27 +70,6 @@ exists.)
 
 ---
 
-## Seed Data
-
-```bash
-source .venv/bin/activate
-pip install faker requests
-python scripts/seed_comprehensive.py --profile standard
-```
-
-| Profile | Documents (entity + relationship) | Use case |
-|---------|-----------------------------------|----------|
-| `minimal` | ~75 (60 + 15) | Quick smoke test |
-| `standard` | ~650 (525 + 125) | Normal development |
-| `full` | ~2,700 (2,230 + 480) | Integration testing |
-| `performance` | ~67k (57,400 + 9,500) | Load testing, bulk import tuning |
-
-Counts come from `DOCUMENT_PROFILES` and the relationship profiles in
-`components/seed_data/documents.py` — relationship documents are seeded in a
-second pass, after the entity documents they reference land.
-
----
-
 ## Agent Modes
 
 WIP supports two agent configurations, each with role-specific CLAUDE.md, slash commands, and MCP connectivity:
@@ -132,7 +111,7 @@ See `docs/WIP_AppSetup_Guide.md` for the full app builder guide.
 | `docs/glossary.md` | A–Z terminology reference |
 | `docs/install-test-guide.md` | Reproducible install procedure for the v1.0 install-test |
 | `docs/WIP_AppSetup_Guide.md` | Setting up app projects that build on WIP |
-| `docs/development-guide.md` | This file — tests, quality audit, seed data, agent modes |
+| `docs/development-guide.md` | This file — tests, quality audit, agent modes |
 | `docs/design/` | Surviving feature design documents (ontology, edge types, etc.) |
 | `docs/release-checklist.md` | Pre-release verification checklist (code, tests, security, docs, deploy) |
 | `docs/change-propagation-checklist.md` | Cross-layer propagation when adding or modifying a field/feature |

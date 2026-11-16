@@ -42,7 +42,7 @@ warn_redundant_casts = true
 [tool.vulture]
 min_confidence = 80
 paths = ["components/", "libs/wip-auth/"]
-exclude = ["*/tests/*", "*/__pycache__/*", "*/node_modules/*", "components/seed_data/*", "components/mcp-server/*"]
+exclude = ["*/tests/*", "*/__pycache__/*", "*/node_modules/*", "components/mcp-server/*"]
 
 [tool.bandit]
 exclude_dirs = ["tests", "*/tests/*"]
