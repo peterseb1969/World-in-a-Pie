@@ -126,27 +126,51 @@ IdConfigWrite = dict[IdEntityType, IdAlgorithmWrite]
 _ID_CONFIG_WRITE: TypeAdapter[IdConfigWrite] = TypeAdapter(IdConfigWrite)
 
 
-def _as_read(config: dict[str, Any], entity_type: str) -> Any:
-    """One entity type's config as a read serves it: defaults merged in, and
-    an absent type as the platform default. A value that cannot be read is
-    compared as it is."""
-    value = config.get(entity_type)
-    if value is None:
+_ABSENT = object()
+
+
+def _is_unreadable_view(value: Any) -> bool:
+    """Whether value is what a read serves for a stored entry it cannot read
+    (namespace.id_config_view): {"invalid": <reason>}."""
+    return isinstance(value, dict) and set(value) == {"invalid"}
+
+
+def _as_read(value: Any, entity_type: str) -> dict[str, Any] | None:
+    """One entity type's entry as a read serves it, defaults merged in; an
+    absent entry is the platform default. None for an entry a read cannot
+    serve as a config: present but null, not an object, not a valid config,
+    or the {"invalid": …} view a read serves for such an entry."""
+    if value is _ABSENT:
         return DEFAULT_ID_CONFIG.get(entity_type, IdAlgorithmConfig()).model_dump()
-    if not isinstance(value, dict):
-        return value
+    if not isinstance(value, dict) or _is_unreadable_view(value):
+        return None
     try:
         return IdAlgorithmConfig(**value).model_dump()
     except (TypeError, ValueError):
-        return value
+        return None
+
+
+def _same_entry(submitted: Any, stored: Any, entity_type: str) -> bool:
+    if submitted is not _ABSENT and submitted == stored:
+        return True
+    stored_read = _as_read(stored, entity_type)
+    if stored_read is None:
+        # Stored before writes were validated, and minting from it fails. It
+        # is matched only by itself (above) or by the view a read serves for
+        # it, never by a config: that config is a repair, and is validated.
+        return _is_unreadable_view(submitted)
+    return _as_read(submitted, entity_type) == stored_read
 
 
 def same_id_config(submitted: dict[str, Any], stored: dict[str, Any]) -> bool:
     """Whether two configs mint the same IDs: equal per entity type once
     defaults are merged in, so a config read back (GET serves every entity
-    type, defaults filled) and re-sent matches the stored one it came from."""
+    type, defaults filled, an unreadable entry as {"invalid": …}) and re-sent
+    matches the stored one it came from. An absent entry is the default; a
+    null one is not, because minting from it fails."""
     return all(
-        _as_read(submitted, t) == _as_read(stored, t) for t in set(submitted) | set(stored)
+        _same_entry(submitted.get(t, _ABSENT), stored.get(t, _ABSENT), t)
+        for t in set(submitted) | set(stored)
     )
 
 

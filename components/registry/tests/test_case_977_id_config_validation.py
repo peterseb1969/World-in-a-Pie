@@ -236,3 +236,55 @@ async def test_bounds_hold_for_a_field_of_another_algorithm(
         headers=auth_headers,
     )
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_entry_read_back_and_re_sent_is_accepted(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """A read serves an entry it cannot read as {"invalid": <reason>}. PUTting
+    the whole served config back changes nothing, so it is accepted and the
+    stored value is kept, as for any other config read back."""
+    await Namespace(prefix="idc-unreadable-rt", id_config={"terms": "prefixed"}).create()
+    served = (await client.get(
+        "/api/registry/namespaces/idc-unreadable-rt", headers=auth_headers
+    )).json()["id_config"]
+    assert "invalid" in served["terms"]
+    resp = await client.put(
+        "/api/registry/namespaces/idc-unreadable-rt", json={"id_config": served}, headers=auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    stored = await Namespace.find_one({"prefix": "idc-unreadable-rt"})
+    assert stored is not None and stored.id_config == {"terms": "prefixed"}
+
+
+@pytest.mark.asyncio
+async def test_a_null_entry_is_not_the_default_and_a_repair_is_stored(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """A stored null entry mints nothing (minting raises); an absent one mints
+    the default. A config sent to repair the null one is not mistaken for the
+    stored value: it is validated and stored."""
+    await Namespace(prefix="idc-null-entry", id_config={"terms": None}).create()
+    repair = {"terms": {"algorithm": "uuid7"}}
+    resp = await client.put(
+        "/api/registry/namespaces/idc-null-entry", json={"id_config": repair}, headers=auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    stored = await Namespace.find_one({"prefix": "idc-null-entry"})
+    assert stored is not None and stored.id_config == repair
+    assert stored.get_id_algorithm("terms").algorithm == "uuid7"
+
+
+def test_only_the_served_view_matches_an_unreadable_entry() -> None:
+    """Another unreadable value, or a config, is not the stored entry: the
+    first is refused by validation, the second is a repair."""
+    from registry.models.id_algorithm import same_id_config
+
+    stored = {"terms": "prefixed"}
+    assert same_id_config({"terms": "prefixed"}, stored)
+    assert same_id_config({"terms": {"invalid": "anything"}}, stored)
+    assert not same_id_config({"terms": "nanoid"}, stored)
+    assert not same_id_config({"terms": {"algorithm": "uuid7"}}, stored)
+    assert not same_id_config({"terms": {"invalid": "x"}}, {})
+    assert same_id_config({}, {"terms": {"algorithm": "uuid7"}})
