@@ -2227,7 +2227,10 @@ describe('Service classes via createWipClient', () => {
     it('triggerBatchSync reaches a template valued like a definition sync', async () => {
       // /sync/batch/terms is the term sync; a template valued "terms" is
       // only reachable under /sync/batch/template/.
-      mockJsonResponse({ job_id: 'j1', template_value: 'terms', status: 'pending' })
+      // A fresh response per call: a body can be read once.
+      fetchMock.mockImplementation(async () => new Response(
+        JSON.stringify({ job_id: 'j1', template_value: 'terms', status: 'pending' }), { status: 200 },
+      ))
 
       await client.reporting.triggerBatchSync('terms', { namespace: 'ns-a' })
       await client.reporting.triggerBatchSync('a/b')

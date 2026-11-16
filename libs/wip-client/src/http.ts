@@ -102,6 +102,7 @@ export class FetchTransport {
       headers?: Record<string, string>
       responseType?: 'json' | 'blob' | 'text'
       timeout?: number
+      minTimeout?: number
     },
   ): Promise<T> {
     const url = this.buildUrl(path, options?.params)
@@ -145,7 +146,9 @@ export class FetchTransport {
       // only once the body has been read (the finally below), so a response
       // whose body stalls is aborted like one whose headers never arrive.
       const controller = new AbortController()
-      const timeoutMs = options?.timeout ?? this.timeout
+      // minTimeout raises the client's timeout for a call the server may run
+      // longer (an export, a query with its own timeout), never lowers it.
+      const timeoutMs = options?.timeout ?? Math.max(this.timeout, options?.minTimeout ?? 0)
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
       fetchOptions.signal = controller.signal
 
@@ -175,13 +178,19 @@ export class FetchTransport {
         if (response.status === 204) {
           return undefined as T
         }
-        // Use response.json() directly — faster than text() + JSON.parse()
-        // Fall back gracefully if body is empty (some proxies return 200 with no body)
+        // An empty body (some proxies answer 200 with none) reads as no
+        // content. Any other body that is not JSON is not an answer: a body
+        // cut short, or a proxy's HTML page, is an error, never undefined.
+        const text = await response.text()
+        if (text.trim() === '') return undefined as T
         try {
-          return (await response.json()) as T
-        } catch (err) {
-          if (isAbort(err)) throw err
-          return undefined as T
+          return JSON.parse(text) as T
+        } catch {
+          throw new WipServerError(
+            `${method} ${path} answered ${response.status} with a body that is not JSON`,
+            response.status,
+            { body_start: text.slice(0, 200) },
+          )
         }
       } catch (err) {
         // An error mapped from a response was retried above when its status

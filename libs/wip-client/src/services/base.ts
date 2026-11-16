@@ -14,10 +14,15 @@ export abstract class BaseService {
     })
   }
 
-  protected post<T>(path: string, body?: unknown, params?: Record<string, unknown> | object): Promise<T> {
+  /** `minTimeout` (ms) raises the client timeout for a call the server may
+   * run longer than it; it never lowers a larger configured timeout. */
+  protected post<T>(
+    path: string, body?: unknown, params?: Record<string, unknown> | object, minTimeout?: number,
+  ): Promise<T> {
     return this.transport.request<T>('POST', `${this.basePath}${path}`, {
       body,
       params: params as Record<string, unknown>,
+      minTimeout,
     })
   }
 
@@ -42,18 +47,24 @@ export abstract class BaseService {
     })
   }
 
-  protected getBlob(path: string, params?: Record<string, unknown> | object): Promise<Blob> {
+  protected getBlob(
+    path: string, params?: Record<string, unknown> | object, minTimeout?: number,
+  ): Promise<Blob> {
     return this.transport.request<Blob>('GET', `${this.basePath}${path}`, {
       params: params as Record<string, unknown>,
       responseType: 'blob',
+      minTimeout,
     })
   }
 
-  protected postBlob(path: string, body?: unknown, params?: Record<string, unknown> | object): Promise<Blob> {
+  protected postBlob(
+    path: string, body?: unknown, params?: Record<string, unknown> | object, minTimeout?: number,
+  ): Promise<Blob> {
     return this.transport.request<Blob>('POST', `${this.basePath}${path}`, {
       body,
       params: params as Record<string, unknown>,
       responseType: 'blob',
+      minTimeout,
     })
   }
 

@@ -141,7 +141,8 @@ describe('FetchTransport', () => {
       retry: { maxRetries: 0 },
     })
 
-    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }))
+    // A fresh response per call: a body can be read once.
+    fetchMock.mockImplementation(async () => new Response('{}', { status: 200 }))
     await authedTransport.request('GET', '/api/a')
     await authedTransport.request('GET', '/api/b')
     await authedTransport.request('GET', '/api/c')
@@ -159,7 +160,8 @@ describe('FetchTransport', () => {
       retry: { maxRetries: 0 },
     })
 
-    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }))
+    // A fresh response per call: a body can be read once.
+    fetchMock.mockImplementation(async () => new Response('{}', { status: 200 }))
     await authedTransport.request('GET', '/api/a')
     await authedTransport.request('GET', '/api/b')
 

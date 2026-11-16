@@ -40,3 +40,16 @@ packages: [wip-client, wip-react]
 **Action:** code that read `status` from those four registry calls to detect
 a refusal now gets the thrown error instead. Callers passing `version` to a
 soft `deleteDocument` must drop it, or delete hard.
+
+**A 200 whose body is not JSON is an error.** `@wip/client` read any
+response body it could not parse as `undefined`, so a truncated answer or a
+proxy's HTML page came back as an empty success. A body that is not JSON now
+throws `WipServerError` with the body's start in `detail`. An empty body
+still reads as no content.
+
+**Long reporting calls are no longer cut off by the client.** The client
+aborted every request after its timeout (30 s by default), even when the
+server allowed the call longer. `reporting.exportTableCsv` and `exportQueryCsv`
+(server default 120 s) and `runQuery` (30 s) now give the client at least the
+server's limit, the given `timeoutSeconds` / `timeout_seconds` or its default,
+plus 10 s. A larger configured client timeout is kept.

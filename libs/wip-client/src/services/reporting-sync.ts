@@ -42,6 +42,21 @@ function isTransientSyncError(err: unknown): err is WipError {
   return err instanceof WipValidationError && /does not exist/.test(err.message)
 }
 
+// The server's own defaults for a query and a CSV export (reporting-sync
+// main.py: ReportQueryRequest / export_csv timeout_seconds).
+const QUERY_TIMEOUT_S = 30
+const EXPORT_TIMEOUT_S = 120
+// What the answer needs on top of the server's limit to arrive.
+const RESPONSE_GRACE_S = 10
+
+/**
+ * The client timeout (ms) for a call the server may run for `seconds`, or
+ * for its default: the client must not give up before the server does.
+ */
+function serverBound(seconds: number | undefined, serverDefault: number): number {
+  return ((seconds ?? serverDefault) + RESPONSE_GRACE_S) * 1000
+}
+
 export class ReportingSyncService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
     super(transport, '/api/reporting-sync')
@@ -92,7 +107,7 @@ export class ReportingSyncService extends BaseService {
       params: params || [],
       ...options,
     }
-    return this.post('/query', body)
+    return this.post('/query', body, undefined, serverBound(options?.timeout_seconds, QUERY_TIMEOUT_S))
   }
 
   // ── Registered Views ──
@@ -420,7 +435,7 @@ export class ReportingSyncService extends BaseService {
     const params: Record<string, string> = { table, namespace }
     if (options?.filename) params.filename = options.filename
     if (options?.timeoutSeconds !== undefined) params.timeout_seconds = String(options.timeoutSeconds)
-    return this.getBlob('/export/csv', params)
+    return this.getBlob('/export/csv', params, serverBound(options?.timeoutSeconds, EXPORT_TIMEOUT_S))
   }
 
   /**
@@ -444,7 +459,7 @@ export class ReportingSyncService extends BaseService {
     if (options?.namespace) body.namespace = options.namespace
     if (options?.timeoutSeconds !== undefined) body.timeout_seconds = options.timeoutSeconds
     if (options?.filename) body.filename = options.filename
-    return this.postBlob('/export/csv', body)
+    return this.postBlob('/export/csv', body, undefined, serverBound(options?.timeoutSeconds, EXPORT_TIMEOUT_S))
   }
 
   // ── Search & Activity ──
