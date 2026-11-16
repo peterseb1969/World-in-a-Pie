@@ -26,7 +26,8 @@ Design decisions:
     project, which the render pins to the install name).
   - Config files bound read-only from the install dir.
   - A service's `command:` is its manifest's, when it pins one; otherwise
-    the image's own CMD runs. The renderer supplies none of its own.
+    the image's own CMD runs, except for Dex, whose `dex serve` command and
+    config path the renderer supplies (`_command_for`).
   - Never `depends_on`. Ordering is not the start path's job: every service
     retries its own real dependencies (Mongo/Postgres via init_beanie_with_retry
     and asyncpg pool retries, NATS via nats-py's reconnect plus retry_async,
@@ -476,7 +477,8 @@ def _command_for(owner: Component | App) -> list[str] | None:
 
     name = owner.metadata.name
 
-    # Two image-level conventions that live here for pragmatic reasons.
+    # One image-level convention that lives here for pragmatic reasons:
+    # Dex's config path.
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
     # Everything else relies on the image's default CMD.
