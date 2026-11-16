@@ -167,8 +167,9 @@ def test_re_running_is_idempotent(tmp_path: Path):
 
 
 def test_a_file_git_would_not_run_is_no_hook(tmp_path: Path):
-    """Git runs only an executable hook: a non-executable file (a copied
-    backup, a README) in .git/hooks retires nothing, so it does not block."""
+    """Git runs only an executable hook: a non-executable file (a README, a
+    script whose bit was cleared) in .git/hooks retires nothing, so it does not
+    block."""
     init_repo(tmp_path)
     stray = tmp_path / ".git" / "hooks" / "commit-msg"
     stray.write_text("#!/bin/sh\nexit 0\n")
@@ -177,6 +178,41 @@ def test_a_file_git_would_not_run_is_no_hook(tmp_path: Path):
     result = run(tmp_path, radon=True)
     assert result.returncode == 0, result.stderr
     assert hooks_path(tmp_path) == "scripts/git-hooks"
+
+
+def test_an_executable_backup_of_a_hook_is_no_hook(tmp_path: Path):
+    """Archiving a hook the usual way keeps its mode bit, and git never runs
+    the result: `mv pre-commit pre-commit.disabled` and `cp -p commit-msg
+    commit-msg.bak` both stay 0755. Only a hook name is a hook, so neither
+    retires anything and neither may hold the ratchet back."""
+    init_repo(tmp_path)
+    for name in ("pre-commit.disabled", "commit-msg.bak", "pre-push.old"):
+        stray = tmp_path / ".git" / "hooks" / name
+        stray.write_text("#!/bin/sh\nexit 0\n")
+        stray.chmod(0o755)
+    result = run(tmp_path, radon=True)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) == "scripts/git-hooks", (
+        "a file git does not run cannot be retired by setting the path"
+    )
+    for name in ("pre-commit.disabled", "commit-msg.bak", "pre-push.old"):
+        assert name not in result.stdout
+
+
+def test_a_hook_under_another_git_hook_name_blocks_it(tmp_path: Path):
+    """post-commit is a hook git runs (githooks(5)) though git ships no sample
+    for it. Filtering the entries down to the names git ships as samples would
+    stop seeing it, and setting the path would retire it in silence."""
+    init_repo(tmp_path)
+    own = tmp_path / ".git" / "hooks" / "post-commit"
+    own.write_text("#!/bin/sh\nexit 0\n")
+    own.chmod(0o755)
+    result = run(tmp_path, radon=True)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) is None, (
+        "setting core.hooksPath silently retires the post-commit hook in .git/hooks"
+    )
+    assert "post-commit" in result.stdout
 
 
 def test_a_link_to_a_non_executable_script_is_no_hook(tmp_path: Path):
@@ -204,3 +240,33 @@ def test_a_re_run_warns_of_hooks_added_after_the_path_was_set(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert hooks_path(tmp_path) == "scripts/git-hooks"
     assert "WARNING" in result.stdout and "not run: prepare-commit-msg" in result.stdout
+
+
+def test_a_re_run_without_radon_says_the_hook_it_left_is_active(tmp_path: Path):
+    """An earlier run set the key; the hook stays installed and refuses every
+    commit once the venv loses radon (a recreated .venv, a skipped or failed
+    install). Saying it is NOT enabled sends the operator to the wrong file."""
+    init_repo(tmp_path)
+    assert run(tmp_path, radon=True).returncode == 0
+    assert hooks_path(tmp_path) == "scripts/git-hooks"
+    result = run(tmp_path, radon=False)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) == "scripts/git-hooks", (
+        "step 4b unsetting a key it did not set would drop the gate unasked"
+    )
+    assert "IS active" in result.stdout, result.stdout
+    assert "NOT enabled" not in result.stdout, result.stdout
+    assert "git config --unset core.hooksPath" in result.stdout
+
+
+def test_a_re_run_without_radon_over_someone_elses_path_says_not_enabled(tmp_path: Path):
+    """git uses the other hooks directory, so the ratchet really is off here —
+    the blocked state above is only ours."""
+    init_repo(tmp_path)
+    subprocess.run(
+        ["git", "config", "core.hooksPath", "my-hooks"], cwd=tmp_path, check=True, capture_output=True,
+    )
+    result = run(tmp_path, radon=False)
+    assert result.returncode == 0, result.stderr
+    assert hooks_path(tmp_path) == "my-hooks"
+    assert "NOT enabled" in result.stdout and "IS active" not in result.stdout
