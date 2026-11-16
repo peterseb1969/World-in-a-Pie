@@ -2285,8 +2285,11 @@ not tell who asked. Now:
   platform admin restore, since an admin's restore always applies the
   archive's settings, and any restore into a namespace that does not exist.
   The error says to use an API key or a direct login.
-- **The Registry records who asked**: the upsert carries the requester as
-  `updated_by`, so a namespace a restore creates has a `created_by`.
+- **The Registry records who asked**: the upsert goes out with the
+  requester's own credential, so a namespace a restore creates has the
+  requester's identity as its `created_by` (and one it configures, as its
+  `updated_by`). The requester's name, which the upsert also sends, is
+  kept as `actor_note`.
 - Creating and configuring a namespace never uses document-store's own key
   for a request: only when the service acts as itself (tests and tooling
   inside the service). The restore's other Registry calls (provisioning,

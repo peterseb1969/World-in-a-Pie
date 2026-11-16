@@ -725,8 +725,10 @@ async def _merge_pair(
 ) -> tuple[RegistryEntry, RegistryEntry, bool] | MergeResponse:
     """The (preferred, deprecated) entries a merge item names and whether they
     are already merged, or its answer when either is not there to merge: not
-    found (or unreadable). A pair already merged is flagged, not answered: the
-    retry is a success, and a success is only for a caller that could merge."""
+    found (or unreadable), or a deprecated entry that is no longer active
+    without being merged into the preferred one (deprecated_not_found). A
+    pair already merged is flagged, not answered: the retry is a success, and
+    a success is only for a caller that could merge."""
     preferred = await RegistryEntry.find_one({"entry_id": item.preferred_id, "status": "active"})
     if not preferred or not await access.allows(preferred.namespace, "read"):
         return MergeResponse(index=i, status="preferred_not_found", preferred_id=item.preferred_id)
@@ -771,9 +773,11 @@ def _merge_refusal(
     deprecated: RegistryEntry,
     identity: UserIdentity,
 ) -> MergeResponse | None:
-    """A merge the Registry refuses whoever asks: an entry with itself, two
-    entries of different namespaces or entity types, or terms (which only
-    def-store merges)."""
+    """A merge the Registry refuses whatever the caller's permissions: an
+    entry with itself, or two entries of different namespaces or entity
+    types. Terms are refused too (def-store merges them), except an
+    owner_merge from a privileged caller, which is how def-store merges the
+    entries after moving the term's names."""
     if str(preferred.id) == str(deprecated.id):
         return MergeResponse(
             index=i, status="error",

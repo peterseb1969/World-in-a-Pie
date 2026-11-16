@@ -83,6 +83,8 @@ curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   }' | jq .
 ```
 
+The namespace's `created_by` is the identity your key authenticates as (e.g. `apikey:<name>`); the `created_by` you send is kept as its `actor_note`.
+
 ### List namespaces
 
 ```bash
@@ -890,6 +892,8 @@ curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 # }
 ```
 
+The entry's `created_by` is the identity your key authenticates as; the `created_by` you send is kept as its `actor_note`.
+
 **Empty composite key = always generates a new ID** (no dedup):
 ```bash
 curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
@@ -964,6 +968,8 @@ curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 
 # Now "VENDOR-X-42" resolves to the same document via lookup/by-id
 ```
+
+The synonym's `created_by` is the identity your key authenticates as; the `created_by` you send is kept as the entry's `actor_note`.
 
 ### Remove a synonym
 
@@ -1043,6 +1049,8 @@ curlk -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
     "updated_by": "migration"
   }]' | jq .
 ```
+
+`updated_by` is recorded as the identity your key authenticates as; the `updated_by` you send is kept as the entry's `actor_note`.
 
 ### Delete registry entries (soft)
 

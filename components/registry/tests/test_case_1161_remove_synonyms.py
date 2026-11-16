@@ -44,19 +44,27 @@ async def test_a_caller_without_write_is_forbidden_and_an_item_that_raises_is_an
     a_tag, b_tag = _tag(), _tag()
     a = await _with_synonym(client, auth_headers, a_tag)
     b = await _with_synonym(client, auth_headers, b_tag)
+    # A real caller with read, not write, on the entries' namespace.
+    r = await client.post("/api/registry/api-keys", headers=auth_headers, json={
+        "name": _tag(), "namespaces": ["default"], "grant_permission": "read",
+    })
+    assert r.status_code == 201, r.text
+    reader = {"X-API-Key": r.json()["plaintext_key"]}
 
-    async def refusal(access, *namespaces):
-        raise_for = getattr(refusal, "raise_next", False)
-        if raise_for:
-            refusal.raise_next = False
+    # The second item's permission check raises; the first is the real one.
+    real = synonyms_api._write_refusal
+    calls: list[int] = []
+
+    async def raise_second(access, *namespaces):
+        calls.append(1)
+        if len(calls) == 2:
             raise RuntimeError("item failed")
-        refusal.raise_next = True
-        return "no write on 'default'"
+        return await real(access, *namespaces)
 
-    monkeypatch.setattr(synonyms_api, "_write_refusal", refusal)
-    body = await _post(client, auth_headers, "remove", [_rm(a, {"alias": a_tag}), _rm(b, {"alias": b_tag})])
+    monkeypatch.setattr(synonyms_api, "_write_refusal", raise_second)
+    body = await _post(client, reader, "remove", [_rm(a, {"alias": a_tag}), _rm(b, {"alias": b_tag})])
     assert [(r["status"], r.get("error")) for r in body["results"]] == [
-        ("forbidden", "no write on 'default'"), ("error", "item failed"),
+        ("forbidden", "Requires write permission on namespace 'default'"), ("error", "item failed"),
     ]
     assert (body["succeeded"], body["failed"]) == (0, 2)
     assert await _synonyms(a) == [{"alias": a_tag}] and await _synonyms(b) == [{"alias": b_tag}]

@@ -7,13 +7,14 @@ The archive is sensitive: keep it like the install's own secrets.
 """
 
 import logging
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from wip_auth import get_current_identity, get_identity_string
+from wip_auth import APIKeyProvider, get_current_identity, get_identity_string
 
+from ..models.api_key import StoredAPIKey
 from ..services import key_import, key_salt, key_shadowing
 from ..services.auth import require_admin_key
 from ..services.system_backup import (
@@ -229,9 +230,9 @@ def _restore_conflict(e: Exception) -> JSONResponse:
 
 
 async def _bring_provider_in_step(
-    provider: Any,
-    report: Any,
-    written: list[tuple[str | None, Any]],
+    provider: APIKeyProvider,
+    report: SystemRestoreReport,
+    written: list[tuple[str | None, StoredAPIKey]],
     removed: list[str],
     *,
     dry_run: bool,
@@ -256,7 +257,9 @@ async def _bring_provider_in_step(
         await _load_written_keys(provider, written)
 
 
-async def _load_written_keys(provider: Any, written: list[tuple[str | None, Any]]) -> None:
+async def _load_written_keys(
+    provider: APIKeyProvider, written: list[tuple[str | None, StoredAPIKey]],
+) -> None:
     """Replace each written key's record in the provider. A restored key with
     a config key's plaintext must be withheld before the Registry's provider
     learns the record."""
@@ -270,7 +273,7 @@ async def _load_written_keys(provider: Any, written: list[tuple[str | None, Any]
                 provider.add_key(key_shadowing.runtime_record(doc))
 
 
-def _log_restore(report: Any) -> None:
+def _log_restore(report: SystemRestoreReport) -> None:
     logger.warning(
         "System restore by %s: keys +%d ~%d, grants +%d ~%d, reservations +%d ~%d, "
         "attachments +%d ~%d",

@@ -683,8 +683,10 @@ class RestoreRequester(NamedTuple):
       cannot create or configure a namespace.
     - ``platform_admin``: whether the requester is in the platform admin
       groups — the restore then applies the archive's namespace settings.
-    - ``actor``: who the requester is, recorded by the Registry as the
-      namespace's creator or last updater.
+    - ``actor``: who the requester is, sent with the upsert as a note. The
+      Registry keeps it as the namespace's ``actor_note``; its
+      ``created_by`` / ``updated_by`` name the identity the credential
+      authenticates.
     - ``service``: the engine acting as the service itself (tests, tooling
       inside the service); the only requester presented by the service's
       key. The API never builds one.
@@ -7836,7 +7838,9 @@ class DirectRestoreEngine:
         return dict(self._requester.credential)
 
     def _actor_field(self) -> dict[str, str]:
-        """Who the Registry records as the namespace's creator or updater."""
+        """The requester's name, sent as the upsert's ``updated_by``. The
+        Registry keeps it as the namespace's ``actor_note``; ``created_by`` /
+        ``updated_by`` are the caller the credential authenticates."""
         return {"updated_by": self._requester.actor} if self._requester.actor else {}
 
     @staticmethod

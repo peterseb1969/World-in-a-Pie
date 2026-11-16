@@ -827,6 +827,7 @@ async def initialize_wip_namespace(
         description="Default World In a Pie namespace",
         isolation_mode="open",
         id_config={},  # Empty = defaults to UUID7 for everything
+        created_by=get_identity_string(),
     )
     winner = await _create_or_lost_race(ns)
 

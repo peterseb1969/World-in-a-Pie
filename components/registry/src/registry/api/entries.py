@@ -2829,9 +2829,10 @@ async def _resolve_one(
     Canonical ID verification: with entity_type given, an id resolves only
     as its own type (a template's id is not a terminology). A miss falls
     through to the composite key, so a value equal to another type's id
-    still finds its own entry. Namespace stays out: canonical ids are
-    namespace-free. The id of an entry merged into another resolves to that
-    entry.
+    still finds its own entry. The id query carries no namespace (canonical
+    ids are namespace-free), but an entry it finds in a namespace the caller
+    cannot read is dropped, and the item falls through to the composite key.
+    The id of an entry merged into another resolves to that entry.
     """
     refused = _resolve_request_error(i, item)
     if refused is not None:

@@ -161,6 +161,7 @@ async def _ensure_wip_namespace() -> None:
             description="Default World In a Pie namespace",
             isolation_mode="open",
             id_config={},
+            created_by="system:bootstrap",
         )
         await wip_ns.create()
         print("Created 'wip' system namespace.")
@@ -192,12 +193,15 @@ async def _ensure_wip_namespace() -> None:
 
 
 async def _startup_maintenance() -> None:
-    """One-time and idempotent fix-ups of stored records, before anything
-    creates or matches a namespace. A failure of the later ones is reported
-    and startup goes on."""
+    """One-time and idempotent fix-ups of stored records, before the service
+    takes requests. They run after the 'wip' namespace is ensured, and beside
+    the deletion recovery started just before them; neither needs them: 'wip'
+    is created with its own id and its grants are matched by name, and the
+    recovery compares namespace ids only where both sides hold one. A failure
+    of the later ones is reported and startup goes on."""
     # Give namespaces and reservations stored before namespace ids their id,
     # and delete orphaned grants that have none (nothing says which namespace
-    # they were made for). Before anything that creates or matches a namespace.
+    # they were made for). First, so the steps after it see every id.
     from .services.namespace_identity import migrate_namespace_ids
     await migrate_namespace_ids()
 

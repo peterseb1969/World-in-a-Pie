@@ -91,3 +91,18 @@ async def test_a_write_without_a_note_clears_the_previous_one(client, auth_heade
     await client.put(f"{BASE}/{prefix}", headers=auth_headers, json={"updated_by": "first"})
     await client.put(f"{BASE}/{prefix}", headers=auth_headers, json={"description": "x"})
     assert (await _stored(prefix)).actor_note is None
+
+
+@pytest.mark.asyncio
+async def test_initialize_wip_records_the_caller(client, auth_headers):
+    # The same caller's ordinary create shows the identity it records.
+    prefix = _p()
+    r = await client.post(BASE, headers=auth_headers, json={"prefix": prefix})
+    assert r.status_code in (200, 201), r.text
+    caller = (await _stored(prefix)).created_by
+    assert caller
+
+    await Namespace.find({"prefix": "wip"}).delete()
+    r = await client.post(f"{BASE}/initialize-wip", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert (await _stored("wip")).created_by == caller
