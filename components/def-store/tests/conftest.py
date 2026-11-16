@@ -50,8 +50,8 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "grants": {"wip": "write"},
 }, {
     # The authorization matrix's refused callers (test_case_845_authz): no
-    # grant anywhere; a reader of 'xns-closed' only, nothing on 'wip'; and
-    # an admin on 'wip' that is no privileged group.
+    # grant anywhere; a reader of 'xns-closed' only, nothing on 'wip'; an
+    # admin on 'wip' that is no privileged group; and a wip-services key.
     "name": "test-scoped",
     "key": "test_scoped_key",
     "owner": "test-scoped",
@@ -71,6 +71,13 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "groups": [],
     "namespaces": ["wip"],
     "grants": {"wip": "admin"},
+}, {
+    # A peer service's key: passes the privileged gates, refused by the
+    # wip-admins-only ones (test_case_845_authz's admin group).
+    "name": "test-services",
+    "key": "test_services_key",
+    "owner": "test-services",
+    "groups": ["wip-services"],
 }]))
 
 # Def-store models and app (must be after env var setup)

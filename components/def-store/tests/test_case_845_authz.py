@@ -12,7 +12,8 @@ Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 - OTHER    read on 'xns-closed' only, nothing on 'wip';
 - WRITER   write on 'wip';
 - WIPADMIN admin on 'wip';
-- ADMIN    the admin master key.
+- SERVICES wip-services (no namespace scope);
+- ADMIN    the admin master key (wip-admins).
 
 Groups:
 - public:     answered without a key.
@@ -25,6 +26,7 @@ Groups:
 - ns_admin:   admin on 'wip' (or the privileged groups); a writer gets 403,
               a caller who cannot read 'wip' 404.
 - privileged: wip-admins / wip-services only (403 for everyone else).
+- admin:      wip-admins only; a wip-services key gets 403 too.
 - filtered:   a listing that shows a caller only what it can read.
 
 "Passes the gate" is asserted as "not refused" (not 401/403/404, or for a
@@ -41,12 +43,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from def_store.main import app
+from wip_auth.testing import api_route_methods
 
 P = "/api/def-store"
 NOGRANT = "test_scoped_key"
 OTHER = "test_xns_only_key"
 WRITER = "test_xns_writer_key"
 WIPADMIN = "test_wip_admin_key"
+SERVICES = "test_services_key"
 ADMIN = "test_api_key"
 TL = "MATRIX_845"
 
@@ -76,6 +80,7 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", "/health", "public", _get("/health")),
     ("GET", f"{P}/health", "public", _get(f"{P}/health")),
     ("GET", "/ready", "public", _get("/ready")),
+    ("GET", "/livez", "public", _get("/livez")),
     ("GET", f"{P}/health/events", "privileged", _get(f"{P}/health/events")),
     # terminologies
     ("POST", f"{P}/terminologies", "ns",
@@ -108,6 +113,9 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("POST", f"{P}/terms/merge", "ns_bulk",
      _json(P + "/terms/merge", lambda c: [{"survivor_term_id": c["t1"], "absorbed_term_id": c["t2"]}])),
     # validation
+    # Neither validate door permission-checks its namespace parameter: it only
+    # says where the terminology identifier resolves, and read is checked
+    # against the terminology's own namespace.
     # Every refusal stays in the 200 answer: a terminology the caller cannot
     # read answers as one that names nothing (error_code not_found).
     ("POST", f"{P}/validate", "ns_item",
@@ -123,9 +131,10 @@ ROUTES: list[tuple[str, str, str, Req]] = [
      _json(P + "/import-export/import?namespace=wip&format=json", EXPORT)),
     ("POST", f"{P}/import-export/import-ontology", "ns",
      _json(P + f"/import-export/import-ontology?namespace=wip&terminology_value={TL}_OBO", OBO)),
-    # Fetches a URL server-side, so no per-namespace check can run on what it
-    # brings: wip-admins / wip-services only.
-    ("POST", f"{P}/import-export/import/url", "privileged",
+    # Fetches a URL server-side, so what it brings cannot be checked against
+    # any namespace before it is fetched: wip-admins only (is_superadmin). A
+    # namespace the caller names is still write-checked.
+    ("POST", f"{P}/import-export/import/url", "admin",
      _json(P + "/import-export/import/url?namespace=wip&url=http://127.0.0.1:9/none.json", None)),
     # audit
     ("GET", f"{P}/audit/terms/{{term_id}}", "ns", _get(P + "/audit/terms/{t1}")),
@@ -192,13 +201,10 @@ def _permitted(route, *keys: str) -> tuple[str, ...]:
 
 
 def test_matrix_lists_every_route():
-    """A route missing from ROUTES fails here, so the matrix stays complete."""
-    in_app = {
-        (method.upper(), template)
-        for template, item in app.openapi()["paths"].items()
-        for method in item if method in ("get", "put", "post", "delete", "patch")
-    }
-    in_app.add(("GET", f"{P}/"))  # a root hidden from the schema
+    """A route missing from ROUTES fails here, so the matrix stays complete.
+    Schema-hidden routes (/livez, the service root) count too: a route kept
+    out of the OpenAPI schema does not skip the matrix."""
+    in_app = api_route_methods(app)
     in_matrix = {(m, t) for m, t, _, _ in ROUTES}
     assert in_app - in_matrix == set(), "routes missing from the matrix"
     assert in_matrix - in_app == set(), "matrix rows for routes that no longer exist"
@@ -258,6 +264,18 @@ async def test_namespace_admin_routes(route, ctx):
 async def test_privileged_routes(route, ctx):
     assert (await _call(route, ctx, None)).status_code == 401
     for key in (NOGRANT, OTHER, WRITER, WIPADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 403, (key, resp.status_code, resp.text[:200])
+    for key in (SERVICES, ADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code not in (401, 403), (key, resp.status_code, resp.text[:200])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _of("admin"))
+async def test_admin_routes(route, ctx):
+    assert (await _call(route, ctx, None)).status_code == 401
+    for key in (NOGRANT, OTHER, WRITER, WIPADMIN, SERVICES):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 403, (key, resp.status_code, resp.text[:200])
     assert (await _call(route, ctx, ADMIN)).status_code not in (401, 403)

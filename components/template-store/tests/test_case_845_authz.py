@@ -37,6 +37,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from template_store.main import app
+from wip_auth.testing import api_route_methods
 
 P = "/api/template-store"
 NOGRANT = "test_scoped_key"
@@ -73,6 +74,7 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", "/health", "public", _get("/health")),
     ("GET", f"{P}/health", "public", _get(f"{P}/health")),
     ("GET", "/ready", "public", _get("/ready")),
+    ("GET", "/livez", "public", _get("/livez")),
     ("GET", f"{P}/health/events", "privileged", _get(f"{P}/health/events")),
     ("GET", "/health/integrity", "privileged", _get("/health/integrity")),
     ("POST", f"{P}/templates", "ns", _json(P + "/templates", [_template("MATRIX_845_NEW")])),
@@ -140,13 +142,10 @@ def _permitted(route, *keys: str) -> tuple[str, ...]:
 
 
 def test_matrix_lists_every_route():
-    """A route missing from ROUTES fails here, so the matrix stays complete."""
-    in_app = {
-        (method.upper(), template)
-        for template, item in app.openapi()["paths"].items()
-        for method in item if method in ("get", "put", "post", "delete", "patch")
-    }
-    in_app.add(("GET", f"{P}/"))  # a root hidden from the schema
+    """A route missing from ROUTES fails here, so the matrix stays complete.
+    Schema-hidden routes (/livez, the service root) count too: a route kept
+    out of the OpenAPI schema does not skip the matrix."""
+    in_app = api_route_methods(app)
     in_matrix = {(m, t) for m, t, _, _ in ROUTES}
     assert in_app - in_matrix == set(), "routes missing from the matrix"
     assert in_matrix - in_app == set(), "matrix rows for routes that no longer exist"

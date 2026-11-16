@@ -37,6 +37,7 @@ from httpx import ASGITransport, AsyncClient
 
 from reporting_sync.main import app
 from wip_auth import clear_permission_cache
+from wip_auth.testing import api_route_methods
 
 ADMIN = os.environ["WIP_AUTH_LEGACY_API_KEY"]
 READER = "rs_reader_key"  # read on ns-a
@@ -53,6 +54,7 @@ ROUTES = [
     ("GET", "/health", "public", None),
     ("GET", f"{P}/health", "public", None),
     ("GET", f"{P}/", "public", None),
+    ("GET", "/livez", "public", None),
     ("GET", f"{P}/status", "authenticated", None),
     ("GET", f"{P}/health/events", "privileged", None),
     ("GET", f"{P}/parity", "ns_read", f"{P}/parity?namespace={{ns}}"),
@@ -144,13 +146,10 @@ def _of(group: str):
 
 
 def test_matrix_lists_every_route():
-    """A route missing from ROUTES fails here, so the matrix stays complete."""
-    in_app = set()
-    for template, item in app.openapi()["paths"].items():
-        for method in item:
-            if method in ("get", "put", "post", "delete", "patch"):
-                in_app.add((method.upper(), template))
-    in_app.add(("GET", f"{P}/"))  # hidden-from-schema roots are not listed there
+    """A route missing from ROUTES fails here, so the matrix stays complete.
+    Schema-hidden routes (/livez, the service root) count too: a route kept
+    out of the OpenAPI schema does not skip the matrix."""
+    in_app = api_route_methods(app)
     in_matrix = {(m, t) for m, t, _, _ in ROUTES}
     assert in_app - in_matrix == set(), "routes missing from the matrix"
     assert in_matrix - in_app == set(), "matrix rows for routes that no longer exist"

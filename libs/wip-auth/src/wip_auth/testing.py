@@ -108,6 +108,52 @@ def _iter_api_routes(routes: Any):
             yield from _iter_api_routes(sub)
 
 
+def _walk_route_paths(routes: Any, prefix: str = ""):
+    """Yield (method, full path) for every APIRoute under ``routes``,
+    carrying each include's prefix (``_iter_api_routes`` yields the routes
+    themselves, without the prefix an ``include_router`` put on them)."""
+    for route in routes:
+        if isinstance(route, APIRoute):
+            for method in route.methods:
+                yield method, prefix + route.path
+            continue
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            context = getattr(route, "include_context", None)
+            yield from _walk_route_paths(inner.routes, prefix + getattr(context, "prefix", ""))
+            continue
+        sub = getattr(route, "routes", None)
+        if sub:
+            yield from _walk_route_paths(sub, prefix + getattr(route, "path", ""))
+
+
+def api_route_methods(app: Any) -> set[tuple[str, str]]:
+    """Every (METHOD, path template) an app serves, schema-hidden routes
+    included.
+
+    For completeness gates: ``app.openapi()`` leaves out a route registered
+    with ``include_in_schema=False`` (``/livez``, a service root), so a gate
+    built from it lets such a route skip whatever it guards. Paths are the
+    OpenAPI templates (``/api/x/items/{item_id}``). Raises when no route under
+    an ``include_router`` is found, or when a path the schema lists is
+    missing: either means this walk no longer matches FastAPI's routing shape,
+    and an empty or partial set would pass a gate while checking nothing.
+    """
+    found = set(_walk_route_paths(app.routes))
+    schema = {
+        (method.upper(), template)
+        for template, item in app.openapi()["paths"].items()
+        for method in item if method in ("get", "put", "post", "delete", "patch")
+    }
+    missing = schema - found
+    if missing or not schema:
+        raise AssertionError(
+            f"api_route_methods missed {sorted(missing)[:5]} of the app's schema paths: "
+            "FastAPI's routing shape changed; update _walk_route_paths"
+        )
+    return found
+
+
 def collect_lax_request_models(app: Any) -> tuple[list[tuple[str, str, Any]], int]:
     """Return (offenders, collected_count) over every top-level
     request-body model reachable on ``app``.
