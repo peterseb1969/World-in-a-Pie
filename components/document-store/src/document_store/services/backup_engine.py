@@ -793,6 +793,50 @@ def _version_requirements(
     return links
 
 
+def _is_unset_or(value: Any, kind: type) -> bool:
+    """Whether a stored slot is absent (None) or of the type it is read as;
+    a bool is not an int here."""
+    return value is None or (isinstance(value, kind) and not isinstance(value, bool))
+
+
+def _has_unreadable_slots(row: dict[str, Any]) -> bool:
+    """Whether a template row holds a ref or version slot the requirement
+    scan cannot read: ``fields`` not a list, a field that is not an object,
+    or a ref that is not a string, or a version that is not an integer.
+    _version_requirements skips such a slot, so whatever it pins is not
+    kept for it."""
+    fields = row.get("fields")
+    if not (_is_unset_or(row.get("extends"), str) and _is_unset_or(row.get("extends_version"), int)
+            and _is_unset_or(fields, list)):
+        return True
+    return any(
+        not isinstance(field, dict)
+        or not all(
+            _is_unset_or(field.get(ref_key), str) and _is_unset_or(field.get(version_key), int)
+            for ref_key, version_key in _NESTED_PIN_SLOTS
+        )
+        for field in fields or []
+    )
+
+
+def _left_out_and_unreadable(
+    rows: list[dict[str, Any]], needed: set[_TemplateKey],
+) -> tuple[dict[str, list[tuple[str, int]]], dict[str, list[tuple[str, int]]]]:
+    """Per namespace, the template versions not ``needed``, and the needed
+    ones with a slot the requirement scan cannot read, kept only for a
+    namespace that leaves something out (elsewhere nothing can be missing)."""
+    left_out: dict[str, list[tuple[str, int]]] = {}
+    for r in rows:
+        if (r["template_id"], r["version"]) not in needed:
+            left_out.setdefault(r["namespace"], []).append((r["template_id"], r["version"]))
+    unreadable: dict[str, list[tuple[str, int]]] = {}
+    for r in rows:
+        key = (r["template_id"], r["version"])
+        if key in needed and r["namespace"] in left_out and _has_unreadable_slots(r):
+            unreadable.setdefault(r["namespace"], []).append(key)
+    return left_out, unreadable
+
+
 def _close_over_requirements(
     needed: set[_TemplateKey],
     requires: dict[_TemplateKey, list[_TemplateLink]],
@@ -1016,8 +1060,21 @@ class DirectBackupEngine:
         """The inactive template versions this backup leaves out, per
         namespace (see ``_template_versions_to_leave_out``), announced in a
         progress event when there are any and recorded on the job result by
-        ``run_backup``."""
-        left_out = await self._template_versions_to_leave_out(namespaces, skip_documents)
+        ``run_backup``. A carried version whose ref slots cannot be read, in a
+        namespace that leaves something out, is a warning: what it pins may
+        be among what is left out."""
+        left_out, unreadable = await self._template_versions_to_leave_out(
+            namespaces, skip_documents,
+        )
+        for ns, keys in sorted(unreadable.items()):
+            named = ", ".join(f"{tid} v{v}" for tid, v in sorted(keys))
+            self._emit(
+                "warning",
+                f"[{ns}] {len(keys)} carried template version(s) hold a template "
+                f"reference the backup cannot read ({named}); a version they "
+                "depend on may be among the inactive versions left out. Back up "
+                "with include_inactive_templates to keep every version.",
+            )
         dropped = sum(len(v) for v in left_out.values())
         if dropped:
             self._emit(
@@ -1209,9 +1266,11 @@ class DirectBackupEngine:
 
     async def _template_versions_to_leave_out(
         self, namespaces: list[str], skip_documents: bool,
-    ) -> dict[str, list[tuple[str, int]]]:
+    ) -> tuple[dict[str, list[tuple[str, int]]], dict[str, list[tuple[str, int]]]]:
         """Per namespace, the inactive template versions nothing in the
-        archive needs.
+        archive needs, and the carried versions whose ref slots cannot be
+        read (see ``_has_unreadable_slots``) in a namespace that leaves
+        something out.
 
         A version is carried when it is not inactive (drafts are carried), when
         an exported document row is pinned to it (any status — an inactive
@@ -1258,12 +1317,7 @@ class DirectBackupEngine:
                 needed.add((tid, max(vs)))
         _close_over_requirements(needed, requires, versions)
 
-        left_out: dict[str, list[tuple[str, int]]] = {}
-        for r in rows:
-            key = (r["template_id"], r["version"])
-            if key not in needed:
-                left_out.setdefault(r["namespace"], []).append(key)
-        return left_out
+        return _left_out_and_unreadable(rows, needed)
 
     async def _document_template_pins(
         self, namespaces: list[str], versions: dict[str, list[int]],

@@ -168,3 +168,56 @@ async def test_a_malformed_legacy_row_does_not_stop_the_backup(session_mongo_cli
     finally:
         await session_mongo_client[db_t][coll_t].delete_many({"namespace": ns})
     assert {("B1", 1), ("B2", 1), ("B3", 1)} <= carried
+
+
+async def _warnings(mongo, ns: str, path) -> list[str]:
+    events: list = []
+    await DirectBackupEngine(mongo, None, events.append).run_backup([ns], path)
+    return [e.message for e in events if e.phase == "warning"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_beside_a_left_out_version_is_a_warning(
+    session_mongo_client, tmp_path,
+):
+    """f78f9fca R6 (CASE-1347): an unreadable ref slot pins nothing the scan
+    can follow, so a version it depends on may be left out. When the
+    namespace leaves something out, the backup says which carried rows it
+    could not read."""
+    ns = f"itv-warn-{uuid.uuid4().hex[:8]}"
+    db_t, coll_t = COLLECTION_MAP["templates"]
+    await session_mongo_client[db_t][coll_t].insert_many([
+        {**_template(ns, "B1", 1, "active"), "fields": [{"name": "x", "template_ref": 7}]},
+        {**_template(ns, "B2", 1, "active"), "fields": {"x": {"template_ref": "C"}}},
+        {**_template(ns, "B3", 1, "active"), "extends": 42, "extends_version": 1},
+        _template(ns, "B4", 1, "active", _object("C", "1")),  # a version that is not an int
+        _template(ns, "OK", 1, "active", _object("C", 2)),
+        _template(ns, "C", 1, "inactive"),  # pinned by nothing readable: left out
+        _template(ns, "C", 2, "active"),
+    ])
+    try:
+        warnings = await _warnings(session_mongo_client, ns, tmp_path / "w.zip")
+    finally:
+        await session_mongo_client[db_t][coll_t].delete_many({"namespace": ns})
+    [warning] = warnings
+    assert warning.startswith(f"[{ns}] 4 carried template version(s)"), warning
+    assert "(B1 v1, B2 v1, B3 v1, B4 v1)" in warning
+    assert "include_inactive_templates" in warning
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_with_nothing_left_out_is_not_a_warning(
+    session_mongo_client, tmp_path,
+):
+    """Nothing is left out, so nothing can be missing: no warning."""
+    ns = f"itv-quiet-{uuid.uuid4().hex[:8]}"
+    db_t, coll_t = COLLECTION_MAP["templates"]
+    await session_mongo_client[db_t][coll_t].insert_many([
+        {**_template(ns, "B1", 1, "active"), "fields": [{"name": "x", "template_ref": 7}]},
+        _template(ns, "C", 1, "active"),
+    ])
+    try:
+        warnings = await _warnings(session_mongo_client, ns, tmp_path / "q.zip")
+    finally:
+        await session_mongo_client[db_t][coll_t].delete_many({"namespace": ns})
+    assert warnings == []
