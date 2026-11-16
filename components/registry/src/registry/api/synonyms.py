@@ -409,17 +409,11 @@ _SYNONYM_FIELDS = ("synonyms", "search_values", *STAMP_FIELDS)
 _LANDED = ("added", "removed")
 
 #: After a first write whose outcome is unknown, a change the re-read finds
-#: already made is this request's own write landing before the error, so these
-#: answers mean landed too — the reading the items are settled with.
+#: already made is answered as this request's own (its write may have landed
+#: before the error). The mapping shapes the answers only: whether to write
+#: again, and which text the entry is noted with, follow what the re-read
+#: itself changes.
 _OWNED_AFTER_UNKNOWN = {"already_exists": "added", "not_found": "removed"}
-
-
-def _as_settled(decided: SynonymOutcomes, unknown: BaseException | None) -> SynonymOutcomes:
-    """Re-read outcomes as the items will be answered: an exception left the
-    first write's outcome unknown, and what the re-read then finds already
-    made is this request's own change."""
-    owned = _OWNED_AFTER_UNKNOWN if unknown else {}
-    return {h: owned.get(st, st) for h, st in decided.items()}
 
 
 def _landing_note(pairs: Sequence[tuple[str, str | None]], landed: Collection[str] | None) -> str | None:
@@ -493,12 +487,14 @@ async def _write_synonym_lists(
         unknown = outcome if isinstance(outcome, BaseException) else None
         decided: SynonymOutcomes = {}
 
-        def mutate(
-            entry: RegistryEntry, entry_id: str = entry_id, decided: dict = decided,
-            unknown: BaseException | None = unknown,
-        ) -> Any:
+        def mutate(entry: RegistryEntry, entry_id: str = entry_id, decided: dict = decided) -> Any:
+            # One entry write is atomic, so a first write whose outcome is
+            # unknown landed whole or not at all. Whole: the re-read finds
+            # every change made and nothing is written again (the first
+            # write's stamp stands). Not at all: what the re-read applies is
+            # what lands now, and the note comes from those changes.
             decided.clear()
-            decided.update(_as_settled(reapply(entry_id, entry), unknown))
+            decided.update(reapply(entry_id, entry))
             if not any(status in _LANDED for status in decided.values()):
                 return UNCHANGED
             finish(entry, [h for h, status in decided.items() if status in _LANDED])
@@ -516,6 +512,8 @@ async def _write_synonym_lists(
                 "error": f"Entry {entry_id} is no longer active", "error_code": "not_found",
             }
             continue
+        if unknown is not None:
+            decided = {h: _OWNED_AFTER_UNKNOWN.get(st, st) for h, st in decided.items()}
         redecided[entry_id] = dict(decided)
     return failed, redecided
 

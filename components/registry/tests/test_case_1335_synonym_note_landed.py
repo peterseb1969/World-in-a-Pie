@@ -151,7 +151,8 @@ async def test_a_write_that_landed_before_its_error_keeps_the_note_of_its_own_fi
 ):
     """The first write raises without saying whether it landed. The re-read
     finds both additions made, which are this request's own: both items answer
-    added, and the note is the first of them."""
+    added, the note is the first of them, and the entry is not written a
+    second time (the first write's stamp stands)."""
     headers, who = caller
     entry_id = await _entry(client, auth_headers, await _namespace(client, auth_headers))
     a, b = {"ext": uuid.uuid4().hex}, {"ext": uuid.uuid4().hex}
@@ -162,6 +163,8 @@ async def test_a_write_that_landed_before_its_error_keeps_the_note_of_its_own_fi
         if not first:
             first.append(entry.entry_id)
             await real(entry, fields, guard)
+            landed = await RegistryEntry.find_one(RegistryEntry.entry_id == entry.entry_id)
+            first.append(landed.revision)
             raise RuntimeError("the answer was lost")
         return await real(entry, fields, guard)
 
@@ -174,6 +177,8 @@ async def test_a_write_that_landed_before_its_error_keeps_the_note_of_its_own_fi
     assert [x["status"] for x in r.json()["results"]] == ["added", "added"], r.text
     assert await _held(entry_id) == [a, b]
     assert await _stamp(entry_id) == (who, "alice")
+    after = await RegistryEntry.find_one(RegistryEntry.entry_id == entry_id)
+    assert after.revision == first[1], "the re-read wrote the entry again"
 
 
 @pytest.mark.asyncio
