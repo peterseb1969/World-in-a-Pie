@@ -20,6 +20,12 @@ export interface FileEntity {
   metadata: FileMetadata
   status: FileStatus
   reference_count: number
+  /**
+   * The canonical template ids whose documents may reference this file, or null
+   * when the file is open to every template. Entries are stored as ids: a
+   * restriction given as a template value is resolved in the file's namespace
+   * on write.
+   */
   allowed_templates: string[] | null
   uploaded_at: string
   uploaded_by: string | null
@@ -32,6 +38,15 @@ export interface FileUploadMetadata {
   tags?: string[]
   category?: string
   custom?: Record<string, unknown>
+  /**
+   * Restrict the file to the templates whose documents may reference it: each
+   * entry names a template (value, NS:VALUE, id or synonym) and is resolved to
+   * its canonical id in the file's namespace. An entry that names no template
+   * refuses the upload. Omit it, or send an empty list, for no restriction.
+   * Re-uploading stored bytes returns the existing file: if that file carries a
+   * different restriction the upload is refused (409) rather than silently
+   * ignoring what was asked for.
+   */
   allowed_templates?: string[]
 }
 
@@ -40,6 +55,10 @@ export interface UpdateFileMetadataRequest {
   tags?: string[]
   category?: string
   custom?: Record<string, unknown>
+  /**
+   * Replaces the restriction (see FileUploadMetadata.allowed_templates); an
+   * empty list clears it, and omitting the field leaves it unchanged.
+   */
   allowed_templates?: string[]
 }
 

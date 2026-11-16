@@ -68,15 +68,23 @@ class _AsyncIter:
 
 
 def _make_mongo_mock(*, docs_per_collection=None, counts_per_collection=None,
-                     namespace_config_doc=None):
+                     namespace_config_doc=None, aggregate_rows=None):
     """Build a mock AsyncIOMotorClient that supports client[db][coll].
 
     docs_per_collection: dict mapping coll_name → list of docs to yield via find().
     counts_per_collection: dict mapping coll_name → int returned by count_documents().
     namespace_config_doc: dict-or-None returned by namespaces.find_one().
+    aggregate_rows: dict mapping coll_name → list of rows returned by
+        aggregate(). The backup's leave-out scan reads templates with a plain
+        projected find and the documents' pins through an aggregation; a cursor
+        that only answers .sort() would make a unit run of run_backup look like
+        it exercised those reads while it saw nothing, so find() is iterable on
+        its own and aggregate() answers rows configured per collection (empty
+        when a collection configures none).
     """
     docs_per_collection = docs_per_collection or {}
     counts_per_collection = counts_per_collection or {}
+    aggregate_rows = aggregate_rows or {}
 
     collection_mocks: dict[str, MagicMock] = {}
 
@@ -84,14 +92,17 @@ def _make_mongo_mock(*, docs_per_collection=None, counts_per_collection=None,
         if coll_name in collection_mocks:
             return collection_mocks[coll_name]
         coll = MagicMock()
-        # find() returns a cursor mock whose .sort() yields the configured
-        # docs — mirroring the engine's find(...).sort(natural_key) chain;
-        # the sort spec lands in cursor_mock.sort.call_args for assertions
-        cursor = MagicMock()
-        cursor.sort = MagicMock(
-            return_value=_AsyncIter(docs_per_collection.get(coll_name, []))
-        )
+        rows = docs_per_collection.get(coll_name, [])
+        # find() returns a cursor mock that is iterable directly and whose
+        # .sort() yields the configured docs — mirroring both shapes the engine
+        # reads (find(...).sort(natural_key) for a dump, a bare projected find
+        # for the leave-out scan); the sort spec lands in cursor_mock.sort.call_args
+        # for assertions. Each pass gets its own iterator, so one collection can
+        # be read twice in one run.
+        cursor = MagicMock(__aiter__=lambda _self: _AsyncIter(rows))
+        cursor.sort = MagicMock(side_effect=lambda *_a, **_k: _AsyncIter(rows))
         coll.find = MagicMock(return_value=cursor)
+        coll.aggregate = MagicMock(return_value=_AsyncIter(aggregate_rows.get(coll_name, [])))
         # count_documents is async, returns int
         coll.count_documents = AsyncMock(
             return_value=counts_per_collection.get(coll_name, 0)

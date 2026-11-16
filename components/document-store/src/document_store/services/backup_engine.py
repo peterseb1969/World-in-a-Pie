@@ -924,7 +924,14 @@ class DirectBackupEngine:
             # download path.
             await asyncio.to_thread(writer.write, manifest)
 
-            self._emit("complete", "Backup complete", percent=100)
+            # The omissions ride on the terminal event so they land on the job
+            # record: a progress line is gone once the job is, and the archive's
+            # manifest — which holds the same in full — has to be downloaded to
+            # be read.
+            self._emit(
+                "complete", "Backup complete", percent=100,
+                details=_backup_job_result(namespaces, left_out),
+            )
 
         except Exception:
             # ArchiveWriter cleans up temp files in __del__, but let's be explicit
@@ -1006,7 +1013,8 @@ class DirectBackupEngine:
     ) -> dict[str, list[tuple[str, int]]]:
         """The inactive template versions this backup leaves out, per
         namespace (see ``_template_versions_to_leave_out``), announced in a
-        progress event when there are any."""
+        progress event when there are any and recorded on the job result by
+        ``run_backup``."""
         left_out = await self._template_versions_to_leave_out(namespaces, skip_documents)
         dropped = sum(len(v) for v in left_out.values())
         if dropped:
@@ -1151,10 +1159,7 @@ class DirectBackupEngine:
                 "hash_version": 1,
             },
             include_files=include_files,
-            # Every version of every document is carried, unless the backup
-            # skipped documents and carries none: the backup has no
-            # latest-only export (the API refuses latest_only).
-            include_all_versions=include_documents,
+            include_all_versions=_archive_holds_every_version(ns_entries, include_documents),
             counts=EntityCounts(**agg),
             referents=referent_count,
         )
@@ -1277,11 +1282,12 @@ class DirectBackupEngine:
         return pinned
 
     def _build_query(self, namespace: str) -> dict[str, Any]:
-        # Every entity, every status: live data references inactive and
-        # archived entities (documents pin inactive template versions, edges
-        # point at archived documents), so an archive missing them would be a
-        # restore trap. The one exception — inactive template versions nothing
-        # in the archive needs — is applied per entity type by _entity_query.
+        # Every entity, every status: live data references retired entities
+        # (documents pin superseded template versions, edges point at
+        # soft-deleted documents, entries outlive the terms they name), so an
+        # archive missing them would be a restore trap. The one exception —
+        # inactive template versions nothing in the archive needs — is applied
+        # per entity type by _entity_query.
         # The retired include_inactive flag's status filter matched a status
         # no persisted entity ever carried.
         return {"namespace": namespace}
@@ -1665,6 +1671,42 @@ def _archived_template_rows(reader: Any, sources: list[str]) -> dict[str, Templa
 def _left_out_record(left_out: list[tuple[str, int]]) -> list[dict[str, Any]] | None:
     """The manifest's record of the template versions a backup left out."""
     return [{"template_id": tid, "version": v} for tid, v in sorted(left_out)] or None
+
+
+def _archive_holds_every_version(
+    ns_entries: list[NamespaceEntry], include_documents: bool,
+) -> bool:
+    """Whether the manifest may claim full fidelity: every version of every
+    entity is in the archive.
+
+    Not when documents were skipped (it then carries no document versions at
+    all), and not when template versions were left out because nothing in the
+    archive needs them — each namespace records its own omissions in
+    ``template_versions_left_out``."""
+    return include_documents and not any(e.template_versions_left_out for e in ns_entries)
+
+
+def _backup_job_result(
+    namespaces: list[str], left_out: dict[str, list[tuple[str, int]]],
+) -> dict[str, Any]:
+    """A backup's structured outcome, recorded on its job: how many inactive
+    template versions it left out, in total and per namespace.
+
+    The manifest inside the archive names the versions themselves
+    (``NamespaceEntry.template_versions_left_out``); this is the same fact at
+    counting size, so "what did this backup skip" is answered by the job
+    record alone, without downloading the archive. Only namespaces that left
+    something out appear under ``namespaces``; ``template_versions_left_out``
+    is always there, 0 when the archive holds every version."""
+    per_namespace = {ns: len(left_out.get(ns, [])) for ns in namespaces}
+    return {
+        "mode": "backup",
+        "template_versions_left_out": sum(per_namespace.values()),
+        "namespaces": {
+            ns: {"template_versions_left_out": count}
+            for ns, count in per_namespace.items() if count
+        },
+    }
 
 
 def _dry_run_blob_scope(

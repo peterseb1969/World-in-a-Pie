@@ -13,11 +13,14 @@ Run from the repository root:
     PYTHONPATH=components/def-store/src:components/template-store/src:libs/wip-auth/src \\
         .venv/bin/python components/document-store/scripts/generate_definition_defaults.py
 
-Pass --check to compare instead of write (exit 1 on a difference).
+Pass --check to compare instead of write (exit 1 on a difference). The compare is
+on the defaults as data, not on the text: how pprint breaks the lines is the
+interpreter's business, not the merge's.
 """
 
 from __future__ import annotations
 
+import ast
 import datetime
 import enum
 import pprint
@@ -121,11 +124,28 @@ def render(spec: dict[str, Any]) -> str:
     )
 
 
+def parse_definition_defaults(text: str) -> dict[str, Any]:
+    """The `DEFINITION_DEFAULTS` value a generated module states, as data.
+
+    A contract compares data: pprint's line breaking belongs to the interpreter,
+    so two runs holding every default in common can render different text.
+    """
+    for node in ast.parse(text).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(node, ast.Assign) and node.targets:
+            target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == "DEFINITION_DEFAULTS":
+            return ast.literal_eval(node.value)
+    raise ValueError("no DEFINITION_DEFAULTS assignment in this module")
+
+
 def main() -> int:
     text = render(build())
     if "--check" in sys.argv:
-        current = OUT.read_text() if OUT.exists() else ""
-        if current != text:
+        if not OUT.exists():
+            print(f"{OUT} is missing — generate it", file=sys.stderr)
+            return 1
+        if parse_definition_defaults(OUT.read_text()) != parse_definition_defaults(text):
             print(f"{OUT} is out of date — regenerate it", file=sys.stderr)
             return 1
         return 0

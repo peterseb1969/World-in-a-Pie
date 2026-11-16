@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 # How long an unconsumed replay event stays in its NATS stream.
 REPLAY_STREAM_MAX_AGE_SECONDS = 24 * 60 * 60
+# Every stream this service owns carries this prefix; the startup sweep only
+# ever deletes streams it starts.
+REPLAY_STREAM_PREFIX = "WIP_REPLAY_"
 # Finished sessions kept readable (status, error) before the oldest are forgotten.
 KEEP_FINISHED_SESSIONS = 50
 
@@ -23,6 +26,7 @@ class ReplayService:
         self._sessions: dict[str, Any] = {}  # session_id -> ReplaySession
         self._tasks: dict[str, asyncio.Task] = {}
         self._pause_flags: dict[str, asyncio.Event] = {}  # cleared = paused
+        self._stream_deletes: set[asyncio.Task] = set()
 
     @staticmethod
     def _latest_docs_pipeline(
@@ -95,7 +99,7 @@ class ReplayService:
         session_id = str(uuid.uuid4())[:8]
         replay_filter = ReplayFilter(**filter_config) if isinstance(filter_config, dict) else filter_config
 
-        stream_name = f"WIP_REPLAY_{session_id.upper()}"
+        stream_name = f"{REPLAY_STREAM_PREFIX}{session_id.upper()}"
         subject_prefix = f"wip.replay.{session_id}"
 
         # Count matching documents — distinct document_ids whose latest
@@ -121,19 +125,27 @@ class ReplayService:
 
         # Create NATS stream for replay
         from nats.js.api import RetentionPolicy, StorageType, StreamConfig
-        await _jetstream.add_stream(
-            StreamConfig(
-                name=stream_name,
-                subjects=[f"{subject_prefix}.>"],
-                retention=RetentionPolicy.WORK_QUEUE,
-                storage=StorageType.MEMORY,
-                max_msgs=total_count + 10,
-                # Unconsumed replay events expire on their own, so a stream
-                # nobody drains (or one a pod restart orphaned, out of reach
-                # of cancel) does not hold its documents in NATS memory.
-                max_age=REPLAY_STREAM_MAX_AGE_SECONDS,
+        try:
+            await _jetstream.add_stream(
+                StreamConfig(
+                    name=stream_name,
+                    subjects=[f"{subject_prefix}.>"],
+                    retention=RetentionPolicy.WORK_QUEUE,
+                    storage=StorageType.MEMORY,
+                    max_msgs=total_count + 10,
+                    # Unconsumed replay events expire on their own, so a stream
+                    # nobody drains (or one a pod restart orphaned, out of reach
+                    # of cancel) does not hold its documents in NATS memory.
+                    max_age=REPLAY_STREAM_MAX_AGE_SECONDS,
+                )
             )
-        )
+        except Exception as e:
+            # The replay cannot run without its stream: an outage of NATS,
+            # reported as one (the route answers 503), never a session that
+            # will publish into nothing.
+            raise RuntimeError(
+                f"NATS could not create the replay stream {stream_name}: {e}"
+            ) from e
 
         session = ReplaySession(
             session_id=session_id,
@@ -162,16 +174,70 @@ class ReplayService:
     def _evict_finished(self) -> None:
         """Forget finished sessions beyond the newest KEEP_FINISHED_SESSIONS:
         state kept for every session ever started grew without bound. A
-        session that just finished stays readable for a while."""
+        session that just finished stays readable for a while.
+
+        Forgetting a session also frees its NATS stream: once the session is
+        gone from the API's reach no one can list, drain or cancel it, so
+        leaving the stream behind would hold its name and any undelivered
+        events until the age-out. Completion does not delete the stream —
+        the point of a replay is that a consumer can still drain it."""
         from ..models.replay import ReplayStatus
         finished = [
             sid for sid, s in self._sessions.items()
             if s.status in (ReplayStatus.COMPLETED, ReplayStatus.CANCELLED, ReplayStatus.FAILED)
         ]
         for sid in finished[: max(0, len(finished) - KEEP_FINISHED_SESSIONS)]:
-            self._sessions.pop(sid, None)
+            session = self._sessions.pop(sid, None)
             self._tasks.pop(sid, None)
             self._pause_flags.pop(sid, None)
+            if session is not None:
+                self._schedule_stream_delete(session.stream_name)
+
+    def _schedule_stream_delete(self, stream_name: str) -> None:
+        """Delete a stream from this synchronous path; the delete itself logs
+        and swallows its own failure, so eviction never breaks a start. With
+        no running loop (a synchronous caller) there is nothing to schedule
+        into, and the coroutine is closed rather than left dangling."""
+        pending = self._cleanup_stream(stream_name)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pending.close()
+            return
+        task = loop.create_task(pending)
+        # Held so the task is not garbage-collected mid-flight (RUF006); the
+        # done-callback keeps the set from growing with finished deletes.
+        self._stream_deletes.add(task)
+        task.add_done_callback(self._stream_deletes.discard)
+
+    async def sweep_orphan_streams(self) -> int:
+        """Delete replay streams left behind by an earlier run of this process.
+
+        Session state lives only in memory: after a restart no session can be
+        listed, resumed or cancelled, so every WIP_REPLAY_* stream NATS still
+        holds is unreachable. Cancel is the only other delete, so without this
+        sweep those streams accumulate for the whole age-out window. Streams of
+        sessions this process still knows are left alone. Returns how many were
+        deleted; a NATS that cannot be asked is reported and skipped — startup
+        does not fail on it."""
+        from .nats_client import get_jetstream
+
+        js = get_jetstream()
+        if js is None:
+            return 0
+        live = {session.stream_name for session in self._sessions.values()}
+        try:
+            names = [info.config.name async for info in js.streams_info()]
+        except Exception as e:
+            logger.warning(f"Replay stream sweep could not list NATS streams: {e}")
+            return 0
+        orphans = [
+            name for name in names
+            if name and name.startswith(REPLAY_STREAM_PREFIX) and name not in live
+        ]
+        for name in orphans:
+            await self._cleanup_stream(name)
+        return len(orphans)
 
     def get_session(self, session_id: str) -> dict | None:
         """Get replay session state."""

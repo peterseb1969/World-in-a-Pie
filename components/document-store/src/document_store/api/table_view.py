@@ -19,13 +19,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import UserIdentity, check_readable, resolve_namespace_filter, resolve_or_404
+from wip_auth import (
+    UserIdentity,
+    check_readable,
+    miss_detail,
+    resolve_namespace_filter,
+    resolve_or_404,
+)
 from wip_auth.csv_cells import escape_cell
-from wip_auth.fastapi_helpers import unresolved_detail
 
 from ..models.document import Document, DocumentStatus
 from ..services.document_service import DocumentService
 from ..services.file_validation import content_disposition
+from ..services.namespace_scope import and_namespace
 from ..services.template_store_client import get_template_store_client
 from .auth import require_api_key
 
@@ -81,8 +87,10 @@ class TableViewResponse(BaseModel):
     array_handling: Literal["flattened", "json", "none"] = Field(
         ...,
         description=(
-            "How arrays were handled on this page: 'flattened', 'json' (at "
-            "least one document's arrays exceeded max_cross_product), or "
+            "How arrays were handled on this page: 'json' (at least one "
+            "document's arrays exceeded max_cross_product, so some array cells "
+            "hold JSON — other documents on the page may still be expanded), "
+            "'flattened' (every array on the page was expanded into rows), or "
             "'none' (no arrays on this page)"
         )
     )
@@ -115,17 +123,26 @@ async def _template_not_found(template_id: str, namespace: str | None) -> str:
     """The 404 detail of a template this route cannot find: with
     ``namespace``, the resolver's (the identifier is resolved there first),
     else the route's own. A template in a namespace the caller cannot read
-    answers with it too, so the answer does not confirm the template exists."""
-    if namespace:
-        return await unresolved_detail(template_id, "template", namespace, "template_id")
-    return "Template not found"
+    answers with it too, so the answer does not confirm the template exists —
+    and a caller whose key implies no single namespace gets the route's own
+    text, which is what an unknown id gets there as well."""
+    return await miss_detail(
+        template_id, "template", namespace, "Template not found", "template_id",
+    )
+
+
+async def _readable_namespaces(identity: UserIdentity, namespace: str | None) -> dict[str, Any]:
+    """The caller's readable-namespace clause, asked before anything is
+    resolved in ``namespace``: naming a namespace the caller cannot read is
+    refused here, as on ``GET /documents``, and not only once the template has
+    been looked up there."""
+    return (await resolve_namespace_filter(identity, namespace)).query
 
 
 async def _documents_query(
     template_id: str,
     status: DocumentStatus | None,
-    identity: UserIdentity,
-    namespace: str | None,
+    ns_filter: dict[str, Any],
 ) -> dict[str, Any]:
     """The documents a table shows: each document's latest version on this
     template, with ``status`` judged on that version, in the namespaces the
@@ -137,8 +154,7 @@ async def _documents_query(
     older_versions: keep leaves several active), so a status filter alone
     would list one document several times.
     """
-    base: dict[str, Any] = {"template_id": template_id}
-    base.update((await resolve_namespace_filter(identity, namespace)).query)
+    base = and_namespace({"template_id": template_id}, ns_filter)
     try:
         return await DocumentService._latest_versions_query(base, status)
     except ValueError as e:  # more documents than the filter can name
@@ -221,6 +237,23 @@ def _count_array_cross_product(data: dict[str, Any], array_fields: list[str]) ->
     for size in sizes:
         result *= size
     return result
+
+
+def _page_array_handling(handlings: set[str]) -> Literal["flattened", "json", "none"]:
+    """One label for the whole page, from what each of its documents did.
+
+    The label has to hold for every row on the page, so 'json' outranks
+    'flattened': a page with any JSON array cell is not a flattened page,
+    however many of its documents were expanded. Taking the last document's
+    handling instead — which a plain overwrite does — let a page whose first
+    document overflowed max_cross_product report 'flattened' while its cells
+    held JSON.
+    """
+    if "json" in handlings:
+        return "json"
+    if "flattened" in handlings:
+        return "flattened"
+    return "none"
 
 
 def _flatten_document(
@@ -376,6 +409,9 @@ async def get_table_view(
 ):
     """Get flattened table view for a template."""
 
+    # Read on the namespace is decided before anything is resolved in it.
+    ns_filter = await _readable_namespaces(identity, namespace)
+
     # Fetch template (resolve synonym first)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(
@@ -401,7 +437,7 @@ async def get_table_view(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    query_filter = await _documents_query(canonical_template_id, status, identity, namespace)
+    query_filter = await _documents_query(canonical_template_id, status, ns_filter)
 
     # Count total documents
     total_documents = await Document.find(query_filter).count()
@@ -428,7 +464,7 @@ async def get_table_view(
     documents = await Document.find(query_filter).skip(skip).limit(page_size).to_list()
 
     all_rows = []
-    array_handling: Literal["flattened", "json", "none"] = "none"
+    handlings: set[str] = set()
 
     for doc in documents:
         rows, handling = _flatten_document(doc, columns, array_fields, max_cross_product)
@@ -442,8 +478,11 @@ async def get_table_view(
                     "cells; the CSV export streams any size."
                 ),
             )
-        if handling != "none":
-            array_handling = handling
+        handlings.add(handling)
+
+    # One label for a page of documents, and it must hold for every row on it
+    # (see _page_array_handling).
+    array_handling = _page_array_handling(handlings)
 
     # Update column metadata based on actual handling
     if array_handling == "flattened":
@@ -520,6 +559,9 @@ async def export_table_csv(
     import csv
     import io
 
+    # Read on the namespace is decided before anything is resolved in it.
+    ns_filter = await _readable_namespaces(identity, namespace)
+
     # Fetch template (resolve synonym via template-store client)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(
@@ -544,7 +586,7 @@ async def export_table_csv(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    query_filter = await _documents_query(canonical_template_id, status, identity, namespace)
+    query_filter = await _documents_query(canonical_template_id, status, ns_filter)
 
     metadata_cols = ["_document_id", "_version", "_identity_hash", "_status", "_created_at", "_updated_at"]
     data_cols = [col.name for col in columns]

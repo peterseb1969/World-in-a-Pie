@@ -256,7 +256,8 @@ export class DocumentStoreService extends BaseService {
     templateId: string,
     params?: {
       status?: string
-      /** Only documents in this namespace; without it, every readable one. */
+      /** Only documents in this namespace, which is also where a bare
+       * template value resolves; without it, every readable namespace. */
       namespace?: string
       include_metadata?: boolean
       max_cross_product?: number

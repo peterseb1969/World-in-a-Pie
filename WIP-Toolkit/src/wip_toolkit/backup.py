@@ -1,8 +1,10 @@
 """Thin client for the server backup engine.
 
 The toolkit no longer collects a namespace itself: the document-store's
-backup engine reads the databases directly and writes a complete,
-restorable archive. This module starts that job, follows it, and downloads
+backup engine reads the databases directly and writes a restorable archive —
+every entity in every status, and every template version the archive needs
+(an inactive version nothing pins is left out unless the request asks for
+them). This module starts that job, follows it, and downloads
 the archive it produced. Everything selective happens afterwards, offline,
 in the transform verbs (`filter`, `prune`, `latest-only`, `strip-blobs`).
 """
@@ -21,6 +23,7 @@ def build_request(
     all_namespaces: bool = False,
     include_files: bool = False,
     skip_documents: bool = False,
+    include_inactive_templates: bool = False,
 ) -> dict[str, Any]:
     """The JSON body of one backup request: the engine's live options only.
     The endpoint refuses the retired toolkit-export options with a 400."""
@@ -28,6 +31,7 @@ def build_request(
         "all_namespaces": all_namespaces,
         "include_files": include_files,
         "skip_documents": skip_documents,
+        "include_inactive_templates": include_inactive_templates,
     }
     if namespaces:
         body["namespaces"] = namespaces

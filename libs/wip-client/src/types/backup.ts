@@ -207,8 +207,8 @@ export interface ValidateNamespaceParams {
  * Only the options the direct backup engine consumes are typed — the
  * endpoint rejects the retired fields (`skip_closure`, `skip_synonyms`,
  * `latest_only`, `template_prefixes`, `dry_run`, `include_inactive`) with a
- * 400 when set. Backups contain every entity in every status: inactive and
- * archived entities are referenced by live data, so an archive missing them
+ * 400 when set. Backups contain every entity in every status: an inactive
+ * entity is still referenced by live data, so an archive missing them
  * would be a restore trap. The one exception is inactive template versions
  * nothing in the archive needs, which are left out unless
  * `include_inactive_templates` is set: a version a document is pinned to, or

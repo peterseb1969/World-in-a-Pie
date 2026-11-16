@@ -308,11 +308,31 @@ async def lifespan(app: FastAPI):
         try:
             summary = await convert_allowed_templates_to_ids()
             if summary["converted"] or summary["unresolved"]:
-                logger.info(f"allowed_templates stored as template ids: {summary}")
+                logger.info(
+                    "allowed_templates ids: %s of %s file(s) rewritten, %s kept an "
+                    "entry that names no template",
+                    summary["converted"], summary["checked"], summary["unresolved"],
+                )
         except Exception as e:
             logger.warning(f"Converting files' allowed_templates to template ids failed: {e}")
 
     allowed_templates_task = asyncio.create_task(_convert_allowed_templates())
+
+    # Replay sessions live in memory: a stream left by an earlier run of this
+    # process belongs to no session anyone can address any more. Delete them
+    # once NATS is up, in the background — a slow or refusing NATS must not
+    # hold up serving, and the sweep reports rather than failing.
+    async def _sweep_replay_streams() -> None:
+        from .services.replay_service import get_replay_service
+
+        try:
+            swept = await get_replay_service().sweep_orphan_streams()
+            if swept:
+                logger.info(f"Deleted {swept} orphaned replay stream(s) from an earlier run")
+        except Exception as e:
+            logger.warning(f"Replay stream sweep failed: {e}")
+
+    replay_sweep_task = asyncio.create_task(_sweep_replay_streams())
 
     # Start key sync (picks up runtime API keys from Registry)
     key_sync = await setup_key_sync(
@@ -327,7 +347,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down WIP Document Store Service...")
-    for task in (integrity_task, allowed_templates_task):
+    for task in (integrity_task, allowed_templates_task, replay_sweep_task):
         if not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -590,23 +610,26 @@ async def get_timing_stats():
     """
     Get timing statistics for document creation and validation.
 
-    Returns aggregated timing for:
+    A stage appears once it has a sample; the keys are the ones the two
+    services record:
 
-    **Creation stages:**
-    - 1_validation: Full validation pipeline
-    - 2_find_existing: MongoDB query for existing identity
-    - 3_create_new: Create new document (includes 3a + 3b)
-    - 3a_registry_id: Registry HTTP call for document ID
-    - 3b_mongo_insert: MongoDB insert
-    - total: End-to-end creation time
+    **Single-document creation:**
+    - 1_validation: the validation pipeline for the write
+    - 2_registry: the Registry call that claims the identity
+    - 3_create_new / 3_create_version / 3_restore: the write itself, by shape
+    - total: end-to-end creation time
 
-    **Validation stages:**
-    - 1_structural: Basic dict validation
-    - 2_template_resolution: Fetch template (cached)
-    - 3_field_validation: Field type and constraint checking
-    - 4_term_validation: Term validation (local with cached terminologies)
-    - 5_rule_evaluation: Cross-field rule checking
-    - 6_identity_computation: Identity hash computation
+    **Bulk creation:** 0_cache_warmup, 0t_term_prefetch, 1b_reference_gates,
+    2_registry_bulk, 3_find_existing, 4_create_documents, 4a_retire_versions,
+    4b_insert_documents, 4c_auto_synonyms, total.
+
+    **Validation:** 1_structural, 2_template_resolution, 3_field_validation,
+    4_term_validation, 5_reference_validation, 5b_file_validation,
+    6_rule_evaluation, 7_identity_computation, total.
+
+    Each stage reports count, avg, min, max and p50/p95/p99 over the recent
+    window; a run that stops at an early refusal records nothing, so counts
+    cover the runs that reached the stage.
     """
     from .services.document_service import DocumentService
     from .services.validation_service import ValidationService

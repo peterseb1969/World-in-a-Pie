@@ -6,6 +6,10 @@ document-store cannot import them at runtime. A model default changed
 without regenerating would let the merge comparison judge definitions by
 stale defaults. Provenance: CASE-1146 — the generated file named this test
 before it existed.
+
+The compare is on the defaults as data, not on the module's text: pprint's line
+breaking belongs to the interpreter, so two runs holding every default in common
+can render differently, and that is not a difference in what the merge compares.
 """
 
 import importlib.util
@@ -26,9 +30,9 @@ def test_definition_defaults_contract():
     generator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generator)
 
-    expected = generator.render(generator.build())
-    current = generator.OUT.read_text()
-    assert current == expected, (
+    fresh = generator.parse_definition_defaults(generator.render(generator.build()))
+    committed = generator.parse_definition_defaults(generator.OUT.read_text())
+    assert committed == fresh, (
         f"{generator.OUT} is out of date — run "
         "components/document-store/scripts/generate_definition_defaults.py"
     )

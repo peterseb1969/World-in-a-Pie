@@ -22,20 +22,27 @@ CANDIDATE = "/api/document-store/validation/validate-candidate"
 FILES = "/api/document-store/files"
 
 
-def _candidate() -> dict:
+def _candidate(template_id: str | None = None) -> dict:
+    """A candidate definition. Its template_id names a stored template by
+    default, because a file's allowed_templates compares canonical ids: a
+    placeholder has no subject for that comparison (CASE-1275)."""
+    from .conftest import SAMPLE_TEMPLATES
+
     return {
-        "template_id": "candidate", "value": "CANDIDATE_1153", "label": "C",
+        "template_id": template_id or SAMPLE_TEMPLATES["PERSON"]["template_id"],
+        "value": "CANDIDATE_1153", "label": "C",
         "version": 1, "status": "active", "namespace": "wip", "identity_fields": [],
         "fields": [{"name": "f", "label": "f", "type": "file"}], "rules": [],
     }
 
 
-async def _file_errors(client, headers, file_id: str) -> list[dict]:
+async def _file_errors(client, headers, file_id: str, template_id: str | None = None) -> list[dict]:
     # Validation skips file checks when storage is off; the file_client
     # fixture enables it only for the files API.
     with patch("document_store.services.file_storage_client.is_file_storage_enabled", return_value=True):
         resp = await client.post(CANDIDATE, headers=headers, json={
-            "namespace": "wip", "template_definition": _candidate(), "documents": [{"f": file_id}],
+            "namespace": "wip", "template_definition": _candidate(template_id),
+            "documents": [{"f": file_id}],
         })
     assert resp.status_code == 200, resp.text
     return [e for e in resp.json()["results"][0]["validation"]["errors"] if e["code"] == "invalid_file"]
@@ -46,17 +53,21 @@ async def _file_errors(client, headers, file_id: str) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_a_file_restricted_to_another_template_is_refused(file_client, auth_headers):  # noqa: F811
+    from .conftest import SAMPLE_TEMPLATES
+
     restricted = await _insert_file(allowed_templates=["some-other-template-id"])
 
     errors = await _file_errors(file_client, auth_headers, restricted.file_id)
 
     assert len(errors) == 1, errors
-    assert "candidate" in errors[0]["message"]
+    assert SAMPLE_TEMPLATES["PERSON"]["template_id"] in errors[0]["message"]
 
 
 @pytest.mark.asyncio
 async def test_a_file_restricted_to_the_documents_template_is_accepted(file_client, auth_headers):  # noqa: F811
-    allowed = await _insert_file(allowed_templates=["candidate"])
+    from .conftest import SAMPLE_TEMPLATES
+
+    allowed = await _insert_file(allowed_templates=[SAMPLE_TEMPLATES["PERSON"]["template_id"]])
 
     assert await _file_errors(file_client, auth_headers, allowed.file_id) == []
 

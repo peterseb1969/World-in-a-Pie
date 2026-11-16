@@ -504,9 +504,9 @@ class FieldDefinition(BaseModel):
         None,
         description="How to resolve reference versions: latest (default) or pinned"
     )
-    # Unset (null) means latest: a document's references[].version_strategy
-    # records the declaration as is, so it is null rather than "latest" when
-    # the field declares none.
+    # Unset (null) means latest on the field declaration. A document's
+    # references[].version_strategy records the strategy that was applied, so it
+    # reads "latest" there — including when the field declared none.
 
     # For type=file
     file_config: FileFieldConfig | None = None
@@ -543,7 +543,8 @@ class FieldValidation(BaseModel):
     max_length: int | None = None
     minimum: float | None = None    # Minimum numeric value
     maximum: float | None = None    # Maximum numeric value
-    enum: list[Any] | None = None   # Allowed values (not term-based)
+    enum: list[Any] | None = None   # Allowed values (not term-based); an empty
+                                   # list admits nothing — omit the key for no constraint
 
 
 class FileFieldConfig(BaseModel):
@@ -1340,7 +1341,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | `min_length` | String is shorter than `min_length` |
 | `max_length` | String is longer than `max_length` |
 | `pattern` | String does not match the field's regex `pattern` |
-| `invalid_enum` | Value is not one of the field's allowed `enum` values |
+| `invalid_enum` | Value is not one of the field's allowed `enum` values; a declared empty `enum` admits nothing |
 | `minimum` | Numeric value is below `minimum` |
 | `maximum` | Numeric value is above `maximum` |
 
@@ -1364,7 +1365,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | `invalid_term` | Value is not valid for the field's terminology |
 | `invalid_term_reference` | Term value not found in the allowed terminologies |
 | `ambiguous_term` | An identity field's value is a name several terms bear (an ordinary field resolves to the first bearer with a warning) |
-| `invalid_terminology_reference` | The referenced terminology was not found |
+| `invalid_terminology_reference` | The referenced terminology was not found; for a bare value the message names the namespace searched (the document's own) and how to name another namespace's copy |
 
 **References**
 
@@ -1385,7 +1386,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 |------|-------------|
 | `invalid_file` | File reference failed validation (type/size/etc.) |
 | `file_validation_error` | The file field could not be validated |
-| `max_files` | A multi-file field holds more files than its `file_config.max_files` |
+| `max_files` | A multi-file field holds more files than its `file_config.max_files`, or an array-of-files field more than its `array_file_config.max_files` |
 
 **Cross-field rules**
 

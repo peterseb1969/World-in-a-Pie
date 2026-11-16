@@ -255,7 +255,7 @@ On `create_document` (or `update_document`) against a `usage: "relationship"` te
 
 | `error_code` | When |
 |---|---|
-| `cross_namespace_relationship` | `source_ref` or `target_ref` resolves to a document in a different namespace than the relationship document. Cross-namespace relationships are deferred to post-v2 — note that `allowed_external_refs` does **not** lift this: it governs plain reference fields only. Model a cross-namespace link as a plain document reference field instead (losing the relationship/traverse endpoints and edge reporting columns). |
+| `cross_namespace_relationship` | `source_ref` resolves to a document in a different namespace than the relationship document. An edge lives in its **source's** namespace: write it there. `target_ref` may point into another namespace — that side follows the ordinary reference gates (the edge namespace's `isolation_mode` / `allowed_external_refs` outbound, the target namespace's `inbound_references` plus the writer's read). `allowed_external_refs` does **not** lift the `source_ref` rule: it lists what a namespace may reference outbound, not where its edges live. |
 
 Both codes are the item's `error_code` on the one-item and the bulk create path alike; the `error` message still starts with the code for readers of the text. Branch on `error_code`.
 

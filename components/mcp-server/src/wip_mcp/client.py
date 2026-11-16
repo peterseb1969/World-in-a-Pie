@@ -1786,9 +1786,17 @@ class WipClient:
         throttle_ms: int = 10,
         batch_size: int = 100,
     ) -> dict:
-        """Start a document replay session."""
+        """Start a document replay session.
+
+        The filter always names the namespace it replays: the server refuses a
+        filter without one, so the defaulting every other namespace-taking call
+        applies here too, and a caller that can resolve none is refused here
+        with the reason instead of by the server with a 422.
+        """
+        replay_filter = dict(filter_config or {})
+        replay_filter["namespace"] = self._ns(replay_filter.get("namespace"))
         body = {
-            "filter": filter_config or {},
+            "filter": replay_filter,
             "throttle_ms": throttle_ms,
             "batch_size": batch_size,
         }

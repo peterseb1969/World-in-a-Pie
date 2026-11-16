@@ -55,6 +55,7 @@ from .errors import DocumentStoreError, dependency_unavailable, error_fields
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .inbound_gate import InboundGate, carried_ids, placement_batch
+from .namespace_scope import and_namespace
 from .nats_client import EventType, publish_document_event
 from .reference_validator import (
     ReferenceValidationError,
@@ -661,11 +662,11 @@ def _hop_query(
     return {**base, "$or": [by_source, by_target]}
 
 
-def _hop_endpoints(rel: Document, frontier: set[str], direction: str) -> list[tuple[str, str]]:
+def _hop_endpoints(rel: Any, frontier: set[str], direction: str) -> list[tuple[str, str]]:
     """(endpoint, parent) pairs an edge leads to from the frontier. For
     "both", an edge touched by the frontier could be reached via either
-    endpoint; every endpoint is reported."""
-    rel_data = rel.data or {}
+    endpoint; every endpoint is reported. ``rel`` is a projected edge row."""
+    rel_data = rel.get("data") or {}
     src_ref = rel_data.get("source_ref")
     tgt_ref = rel_data.get("target_ref")
     candidates: list[tuple[str, str]] = []
@@ -676,6 +677,23 @@ def _hop_endpoints(rel: Document, frontier: set[str], direction: str) -> list[tu
     return candidates
 
 
+def _narrow_to_edge_types(supplied: list[str] | None, edge_ids: list[str]) -> list[str]:
+    """The template ids a listing or hop may match: edge types (usage
+    ='relationship') among the templates that hold documents where the query
+    points, cut further by the caller's type filter when it gave one.
+
+    Only documents of edge types are edges — an entity template may declare a
+    source_ref field too, and reading its documents as relationships would
+    report non-edges as edges — so a filter naming something outside that set
+    contributes nothing rather than widening the query. A filter naming only
+    such templates answers an empty page, which is the truth: no edge of that
+    type reaches here.
+    """
+    if not supplied:
+        return edge_ids
+    return [template_id for template_id in supplied if template_id in edge_ids]
+
+
 async def _collect_hop(
     hop_query: dict[str, Any],
     frontier: set[str],
@@ -684,18 +702,28 @@ async def _collect_hop(
     room: int,
 ) -> tuple[list[tuple[str, str, str]], bool]:
     """New endpoints of this hop, in discovery order: (other, parent, edge).
-    Reading stops once ``room`` (the node cap less the nodes found) is used;
-    returns the endpoints and whether the cap cut the hop short."""
+    Reading stops once ``room`` (the node cap less the nodes recorded) is
+    used; returns the endpoints and whether the cap cut the hop short.
+
+    Only the fields an endpoint pair needs come back, and the cursor is closed
+    on the way out — a scan abandoned at the cap would otherwise hold its
+    server-side slot until the idle timeout frees it."""
     found: list[tuple[str, str, str]] = []
     claimed: set[str] = set()
-    async for rel in Document.find(hop_query):
-        for other_id, parent_id in _hop_endpoints(rel, frontier, direction):
-            if other_id in visited or other_id in claimed:
-                continue
-            if len(found) >= room:
-                return found, True
-            claimed.add(other_id)
-            found.append((other_id, parent_id, rel.document_id))
+    cursor = Document.get_motor_collection().find(
+        hop_query, {"document_id": 1, "data.source_ref": 1, "data.target_ref": 1},
+    )
+    try:
+        async for rel in cursor:
+            for other_id, parent_id in _hop_endpoints(rel, frontier, direction):
+                if other_id in visited or other_id in claimed:
+                    continue
+                if len(found) >= room:
+                    return found, True
+                claimed.add(other_id)
+                found.append((other_id, parent_id, str(rel.get("document_id") or "")))
+    finally:
+        await cursor.close()
     return found, False
 
 
@@ -861,15 +889,22 @@ async def _add_latest_of_retired(
         doc_id for doc_id in dict.fromkeys(registry_doc_ids)
         if isinstance(doc_id, str) and doc_id not in existing_by_doc_id
     ]
-    # One query per chunk, as for the active rows above; the newest row
-    # of each comes first.
+    # One query per chunk, as for the active rows above. The pipeline is the
+    # one _latest_peer_documents uses: it keeps only each document's newest
+    # row, so a chunk costs one row per document rather than every version of
+    # every id it names.
     for first in range(0, len(retired_ids), BULK_WRITE_CHUNK):
-        rows = await Document.find({
-            "namespace": namespace,
-            "document_id": {"$in": retired_ids[first:first + BULK_WRITE_CHUNK]},
-        }).sort([("version", SortDirection.DESCENDING)]).to_list()
-        for row in rows:
-            existing_by_doc_id.setdefault(row.document_id, row)
+        pipeline = [
+            {"$match": {
+                "namespace": namespace,
+                "document_id": {"$in": retired_ids[first:first + BULK_WRITE_CHUNK]},
+            }},
+            {"$sort": {"document_id": 1, "version": -1}},
+            {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$doc"}},
+        ]
+        for row in await Document.aggregate(pipeline).to_list():
+            existing_by_doc_id.setdefault(row["document_id"], Document(**row))
 
 
 async def _publish_bulk_events(
@@ -2612,10 +2647,9 @@ class DocumentService:
         query: dict[str, Any] = {"identity_hash": identity_hash}
         if not include_inactive:
             query["status"] = DocumentStatus.ACTIVE.value
-        if namespace_filter:
-            query.update(namespace_filter)
+        query = and_namespace(query, namespace_filter)
         if namespace:
-            query["namespace"] = namespace
+            query = and_namespace(query, {"namespace": namespace})
         if template_id:
             query["template_id"] = template_id
 
@@ -2665,7 +2699,16 @@ class DocumentService:
         client = get_template_store_client()
         edge_ids: list[str] = []
         for template_id in candidate_ids:
-            template = await client.get_template_resolved(template_id)
+            try:
+                template = await client.get_template_resolved(template_id)
+            except TemplateStoreError as e:
+                # An outage is not "this document has no edges": the answer is
+                # unavailable, and an empty list would report it as one.
+                if e.unavailable:
+                    raise dependency_unavailable(
+                        "template-store", f"edge type {template_id!r}", e,
+                    ) from e
+                continue
             if template and template.get("usage") == "relationship":
                 edge_ids.append(template_id)
         return edge_ids
@@ -2691,8 +2734,10 @@ class DocumentService:
         (template_id, data.target_ref) Mongo indexes that Phase 2's
         DocumentService._ensure_relationship_indexes laid down. Only
         documents of edge types (usage='relationship') count: an entity
-        template may declare a field named source_ref too. Without a type
-        filter the query is narrowed to the edge types among its matches.
+        template may declare a field named source_ref too. The query is
+        narrowed to the edge types among its matches, with a type filter cut
+        against the same set — naming something that carries no edges answers
+        an empty page.
 
         When include_peers=True, each item is decorated with the peer
         entity at the OTHER end of the edge — direction-agnostic, its latest
@@ -2738,9 +2783,8 @@ class DocumentService:
                 {"data.target_ref": document_id},
             ]
 
-        query["template_id"] = {
-            "$in": template_ids if template_ids else await self._edge_type_ids(query)
-        }
+        candidate_edge_ids = await self._edge_type_ids(query)
+        query["template_id"] = {"$in": _narrow_to_edge_types(template_ids, candidate_edge_ids)}
 
         total = await Document.find(query).count()
         skip = (page - 1) * page_size
@@ -2819,20 +2863,74 @@ class DocumentService:
 
     @staticmethod
     async def _latest_rows(document_ids: list[str]) -> dict[str, "Document"]:
-        """Each document's latest row (active first), in one query per chunk."""
+        """Each document's latest row (active first), in one query per chunk.
+
+        The aggregation keeps only the row a caller gets — sorting status
+        before version puts 'active' first, so the newest active row wins and
+        the newest inactive one follows — instead of transferring every
+        version of every id and discarding all but one here."""
         out: dict[str, Document] = {}
         for first in range(0, len(document_ids), 1000):
             chunk = document_ids[first:first + 1000]
-            rows = await Document.find({"document_id": {"$in": chunk}}).sort(
-                [("version", SortDirection.DESCENDING)]
-            ).to_list()
+            rows = await Document.aggregate([
+                {"$match": {"document_id": {"$in": chunk}}},
+                {"$sort": {"document_id": 1, "status": 1, "version": -1}},
+                {"$group": {"_id": "$document_id", "row": {"$first": "$$ROOT"}}},
+                {"$replaceRoot": {"newRoot": "$row"}},
+            ]).to_list()
             for row in rows:
-                held = out.get(row.document_id)
-                if held is None or (
-                    held.status != DocumentStatus.ACTIVE and row.status == DocumentStatus.ACTIVE
-                ):
-                    out[row.document_id] = row
+                out[row["document_id"]] = Document(**row)
         return out
+
+    #: How many times one hop re-reads for endpoints the cap has room for.
+    HOP_REFILL_PASSES = 4
+
+    async def _walk_hop(
+        self,
+        hop_query: dict[str, Any],
+        frontier: set[str],
+        direction: str,
+        visited: set[str],
+        path_by_id: dict[str, list[str]],
+        nodes: list[TraverseNode],
+        *,
+        room: int,
+        depth: int,
+        fallback_namespace: str,
+        namespace: str | None,
+        allowed_namespaces: list[str] | None,
+    ) -> tuple[set[str], bool]:
+        """One BFS hop: read the edges off the frontier, then add the nodes at
+        their other ends. Returns (next frontier, truncated).
+
+        The node cap counts nodes, not candidates. An endpoint in a namespace
+        the caller cannot read is dropped by _record_hop without adding a node,
+        so a hop that hit the cap but recorded fewer re-reads the edge scan
+        for more — otherwise the walk stopped short of max_nodes by exactly the
+        number of filtered peers. Each pass marks what it saw visited, so the
+        next pass walks past it; HOP_REFILL_PASSES bounds the retries."""
+        if room <= 0:
+            return set(), True
+        next_frontier: set[str] = set()
+        truncated = False
+        for _ in range(self.HOP_REFILL_PASSES):
+            found, truncated = await _collect_hop(
+                hop_query, frontier, direction, visited, room,
+            )
+            if not found:
+                truncated = False
+                break
+            endpoint_docs = await self._latest_rows([other for other, _, _ in found])
+            before = len(nodes)
+            next_frontier |= _record_hop(
+                found, endpoint_docs, nodes, visited, path_by_id,
+                depth=depth, fallback_namespace=fallback_namespace,
+                namespace=namespace, allowed_namespaces=allowed_namespaces,
+            )
+            room -= len(nodes) - before
+            if room <= 0 or not truncated:
+                break
+        return next_frontier, truncated
 
     async def traverse_relationships(
         self,
@@ -2888,16 +2986,13 @@ class DocumentService:
                 break
             hop_query = _hop_query(frontier, direction, namespace, allowed_namespaces)
             hop_query["template_id"] = {
-                "$in": type_ids if type_ids else await self._edge_type_ids(hop_query)
+                "$in": _narrow_to_edge_types(type_ids, await self._edge_type_ids(hop_query)),
             }
-            found, truncated = await _collect_hop(
-                hop_query, frontier, direction, visited, max_nodes - len(nodes),
-            )
-            endpoint_docs = await self._latest_rows([other for other, _, _ in found])
-            frontier = _record_hop(
-                found, endpoint_docs, nodes, visited, path_by_id,
-                depth=current_depth, fallback_namespace=ns,
-                namespace=namespace, allowed_namespaces=allowed_namespaces,
+            frontier, truncated = await self._walk_hop(
+                hop_query, frontier, direction, visited, path_by_id, nodes,
+                room=max_nodes - len(nodes), depth=current_depth,
+                fallback_namespace=ns, namespace=namespace,
+                allowed_namespaces=allowed_namespaces,
             )
             if truncated:
                 break
@@ -2945,9 +3040,7 @@ class DocumentService:
         """
         from bson import ObjectId
 
-        query: dict = {}
-        if ns_filter:
-            query.update(ns_filter)
+        query: dict = and_namespace({}, ns_filter)
         if template_id:
             query["template_id"] = template_id
         if template_value:
@@ -3564,9 +3657,7 @@ class DocumentService:
         ns_filter: dict | None = None,
     ) -> DocumentQueryResponse:
         """Query documents with complex filters."""
-        query = self._build_query(request)
-        if ns_filter:
-            query.update(ns_filter)
+        query = and_namespace(self._build_query(request), ns_filter)
 
         # Count total
         total = await Document.find(query).count()

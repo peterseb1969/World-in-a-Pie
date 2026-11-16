@@ -12,6 +12,13 @@ resolves to nothing is kept, and logged: it then matches no template, so the
 file stays restricted rather than becoming open to every template. An empty
 list becomes None (no restriction). Idempotent — an id resolves to itself —
 and harmless to interrupt.
+
+The task runs once, and a file can still be stored with values afterwards (a
+restore from an older archive, a start where the Registry was not up yet).
+Enforcement therefore does not depend on it: reading a file's restriction
+resolves what is stored (`file_service.stored_allowed_templates`) and writes
+the repaired list back, so a row enforces what it names the first time it is
+used.
 """
 
 from __future__ import annotations

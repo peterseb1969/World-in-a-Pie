@@ -59,22 +59,28 @@ class SyncStrategy(StrEnum):
 
 
 class DocumentEvent(BaseModel):
-    """Event payload for document changes."""
+    """A document change as published: the standard envelope.
 
-    event_id: str
+    The envelope has no id of its own — every producer publishes
+    `event_type`, `timestamp`, `changed_by` and the entity — so consumers
+    deduplicate by the stream's message id.
+    """
+
     event_type: EventType
     timestamp: datetime
+    changed_by: str | None = None
     document: dict[str, Any] = Field(
         ..., description="Full document including data, term_references, metadata"
     )
 
 
 class TemplateEvent(BaseModel):
-    """Event payload for template changes."""
+    """A template change as published, in the same envelope as document
+    events (`event_type`, `timestamp`, `changed_by`, the entity)."""
 
-    event_id: str
     event_type: EventType
     timestamp: datetime
+    changed_by: str | None = None
     template: dict[str, Any] = Field(..., description="Full template definition")
 
 

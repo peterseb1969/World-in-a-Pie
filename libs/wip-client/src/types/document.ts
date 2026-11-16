@@ -278,13 +278,18 @@ export interface TableViewResponse {
   page: number
   page_size: number
   pages: number
+  /** How arrays were handled on this page: 'json' when at least one document's
+   * arrays exceeded max_cross_product (some array cells hold JSON, while other
+   * documents on the page may still be expanded), 'flattened' when every array
+   * on the page became rows, 'none' when the page has no arrays. */
   array_handling: 'none' | 'flattened' | 'json'
 }
 
 export interface TableViewParams {
   status?: DocumentStatus
-  /** Only documents in this namespace. Without it, the documents of every
-   * namespace the caller can read. */
+  /** Only documents in this namespace, which is also where a bare template
+   * value resolves (a shared template is named `wip:PERSON` or by its id).
+   * Without it, the documents of every namespace the caller can read. */
   namespace?: string
   page?: number
   page_size?: number
@@ -463,9 +468,9 @@ export interface DocumentTraverseNode {
   template_id: string
   template_value?: string | null
   namespace: string
-  /** Hops from the seed, 1 or more: the seed itself is never a node. */
+  /** Hops from the seed (1 = a direct neighbour). The seed itself is not a node. */
   depth: number
-  /** Document_id of the relationship doc traversed to reach this node. */
+  /** Document_id of the relationship doc traversed to reach this node; every node has one, since the seed is not listed. */
   via_relationship?: string | null
   /** Chain of document_ids from seed (exclusive) to this node (inclusive). */
   path: string[]

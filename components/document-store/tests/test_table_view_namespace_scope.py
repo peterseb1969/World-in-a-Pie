@@ -78,9 +78,17 @@ async def test_a_reader_of_both_sees_both_and_namespace_narrows(client, two_name
 
 @pytest.mark.asyncio
 async def test_naming_a_namespace_the_caller_cannot_read_is_refused(client, two_namespaces):
-    for path in ("table/PERSON", "table/PERSON/csv"):
-        resp = await client.get(f"{API}/{path}", headers=WIP_READER, params={"namespace": "xns-closed"})
-        assert resp.status_code in (403, 404), (path, resp.text)
+    """`wip:PERSON` resolves in any context, so this refusal can only come from
+    the namespace. A bare `PERSON` would have failed the name lookup first and
+    answered 404 whatever the route thought about 'xns-closed'."""
+    documents = await client.get(
+        f"{API}/documents", headers=WIP_READER, params={"namespace": "xns-closed"},
+    )
+    for path in ("table/wip:PERSON", "table/wip:PERSON/csv"):
+        resp = await client.get(
+            f"{API}/{path}", headers=WIP_READER, params={"namespace": "xns-closed"},
+        )
+        assert resp.status_code == documents.status_code, (path, resp.text)
         assert two_namespaces["xns-closed"] not in resp.text
 
 

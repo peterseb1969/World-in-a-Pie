@@ -544,6 +544,60 @@ class TestRelationshipTemplateRow:
         assert row["source_ref_id"] == "src-id"
         assert row["target_ref_id"] == "tgt-id"
 
+    def _batch_doc(self, *, source="src-id", target: object = "tgt-id"):
+        """An edge as batch sync reads it from GET /documents: no `_resolved`
+        enrichment, but the document's own references array."""
+        return {
+            "document_id": "rel-1",
+            "template_id": "tpl-rel",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "hash-rel",
+            "namespace": "wip",
+            "data": {"source_ref": source, "target_ref": target, "role": "input"},
+            "references": [
+                {"field_path": "source_ref", "reference_type": "document",
+                 "lookup_value": str(source), "version_strategy": None,
+                 "resolved": {"document_id": "src-doc-id", "namespace": "wip"}},
+                {"field_path": "target_ref", "reference_type": "document",
+                 "lookup_value": str(target), "version_strategy": None,
+                 "resolved": {"document_id": "tgt-doc-id", "namespace": "wip"}},
+            ],
+            "term_references": [],
+            "file_references": [],
+        }
+
+    def test_batch_read_resolves_endpoints_from_the_references_array(self):
+        """A batch-synced row carries the same endpoint ids an event-written
+        one does: the references array holds the resolved referent."""
+        transformer = DocumentTransformer()
+        rows = transformer.transform(self._batch_doc(), self._rel_template())
+        row = rows[0]
+        assert row["source_ref_id"] == "src-doc-id"
+        assert row["target_ref_id"] == "tgt-doc-id"
+
+    def test_business_key_endpoint_lands_as_the_canonical_id(self):
+        """An endpoint written as a business key stores a dict, not an id. The
+        id column takes the resolved referent; the raw dict never reaches a
+        text column, which is what lost the row."""
+        transformer = DocumentTransformer()
+        rows = transformer.transform(
+            self._batch_doc(target={"code": "B2"}), self._rel_template())
+        row = rows[0]
+        assert row["target_ref_id"] == "tgt-doc-id"
+        assert row["source_ref_id"] == "src-doc-id"
+
+    def test_endpoint_without_any_resolution_is_no_id(self):
+        """Nothing resolved it and the stored value is not a string: the column
+        stays empty rather than claiming the dict is an id."""
+        transformer = DocumentTransformer()
+        document = self._batch_doc(target={"code": "B2"})
+        document["references"] = []
+        row = transformer.transform(document, self._rel_template())[0]
+        assert row["target_ref_id"] is None
+        assert row["source_ref_id"] == "src-id"
+
     def test_entity_template_does_not_get_endpoint_columns(self):
         transformer = DocumentTransformer()
         template = {

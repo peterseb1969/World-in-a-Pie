@@ -176,7 +176,9 @@ class BackupJob(BeanieDocument):
         default=None,
         description=(
             "Structured outcome for jobs that produce one: a validation's "
-            "findings, a restore dry run's plan, or a refused merge's every "
+            "findings, a restore dry run's plan, a backup's omissions "
+            "(how many inactive template versions it left out, per namespace), "
+            "or a refused merge's every "
             "incompatibility (result_kind: merge_refused)"
         )
     )

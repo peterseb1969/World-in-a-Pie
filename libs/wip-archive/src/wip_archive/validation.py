@@ -37,6 +37,7 @@ the recorded bearer differ from live's (both warn).
 from __future__ import annotations
 
 import contextlib
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -76,6 +77,91 @@ def _is_iso_datetime(value: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+# The rule types whose target is one named field.
+_RULE_TYPES_NEEDING_TARGET = frozenset({
+    "conditional_required", "conditional_value", "dependency", "pattern", "range",
+})
+
+
+def _condition_shape_error(rule: dict[str, Any]) -> str | None:
+    """A condition that cannot be evaluated: not an object, or an 'in' /
+    'not_in' whose value is not a list."""
+    for condition in rule.get("conditions") or []:
+        if not isinstance(condition, dict):
+            return f"a condition must be an object, got {type(condition).__name__}"
+        operator = condition.get("operator")
+        if operator in ("in", "not_in") and not isinstance(condition.get("value"), list):
+            return (
+                f"condition on '{condition.get('field')}' with operator "
+                f"'{operator}' needs a list value"
+            )
+    return None
+
+
+def _conditional_value_shape_error(rule: dict[str, Any]) -> str | None:
+    return None if rule.get("allowed_values") else "allowed_values is required"
+
+
+def _dependency_shape_error(rule: dict[str, Any]) -> str | None:
+    if rule.get("conditions"):
+        return None
+    return "conditions are required: they name what the target depends on"
+
+
+def _mutual_exclusion_shape_error(rule: dict[str, Any]) -> str | None:
+    if len(rule.get("target_fields") or []) >= 2:
+        return None
+    return "target_fields must name at least two fields"
+
+
+def _pattern_shape_error(rule: dict[str, Any]) -> str | None:
+    pattern = rule.get("pattern")
+    if not pattern:
+        return "pattern is required"
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        return f"pattern does not compile: {e}"
+    return None
+
+
+def _range_shape_error(rule: dict[str, Any]) -> str | None:
+    """A range needs one finite bound, and the two must not cross."""
+    bounds = [b for b in (rule.get("minimum"), rule.get("maximum")) if b is not None]
+    if not bounds:
+        return "minimum or maximum is required"
+    if not all(
+        isinstance(b, (int, float)) and not isinstance(b, bool) and math.isfinite(b)
+        for b in bounds
+    ):
+        return "minimum and maximum must be finite numbers"
+    if len(bounds) == 2 and bounds[0] > bounds[1]:
+        return "minimum is greater than maximum"
+    return None
+
+
+_RULE_TYPE_SHAPE_CHECKS: dict[str, Any] = {
+    "conditional_value": _conditional_value_shape_error,
+    "dependency": _dependency_shape_error,
+    "mutual_exclusion": _mutual_exclusion_shape_error,
+    "pattern": _pattern_shape_error,
+    "range": _range_shape_error,
+}
+
+
+def _rule_shape_error(rule: dict[str, Any]) -> str | None:
+    """Why this rule cannot be evaluated, or None when it can — the shapes
+    template-store refuses at write time, as the live validator reads them."""
+    rule_type = rule.get("type")
+    if rule_type in _RULE_TYPES_NEEDING_TARGET and not rule.get("target_field"):
+        return "target_field is required"
+    why = _condition_shape_error(rule)
+    if why:
+        return why
+    check = _RULE_TYPE_SHAPE_CHECKS.get(rule_type)
+    return check(rule) if check else None
 
 
 @dataclass
@@ -268,11 +354,7 @@ class OfflineValidator:
                     code="pattern", message=f"Field '{path}' does not match required pattern",
                     field=path, details={"pattern": pattern},
                 )
-        if validation.get("enum") and value not in validation["enum"]:
-            result.add_error(
-                code="invalid_enum", message=f"Field '{path}' must be one of {validation['enum']}",
-                field=path,
-            )
+        self._enum(value, path, validation, result)
 
     def _validate_number(self, value, f, path, result, validation, template_ns) -> None:
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -286,8 +368,7 @@ class OfflineValidator:
             return
         self._numeric_constraints(value, path, validation, result)
 
-    @staticmethod
-    def _numeric_constraints(value, path, validation, result) -> None:
+    def _numeric_constraints(self, value, path, validation, result) -> None:
         if validation.get("minimum") is not None and value < validation["minimum"]:
             result.add_error(
                 code="minimum", message=f"Field '{path}' must be at least {validation['minimum']}",
@@ -298,28 +379,47 @@ class OfflineValidator:
                 code="maximum", message=f"Field '{path}' must be at most {validation['maximum']}",
                 field=path,
             )
+        self._enum(value, path, validation, result)
+
+    @staticmethod
+    def _enum(value, path, validation, result) -> None:
+        """A declared enum holds for every scalar type, as live: an enum
+        declared empty admits nothing, omitting the key is 'no constraint'."""
+        allowed = validation.get("enum")
+        if allowed is not None and value not in allowed:
+            result.add_error(
+                code="invalid_enum", message=f"Field '{path}' must be one of {allowed}",
+                field=path,
+            )
 
     def _validate_boolean(self, value, f, path, result, validation, template_ns) -> None:
         if not isinstance(value, bool):
             result.add_error(code="invalid_type", message=f"Field '{path}' must be a boolean", field=path)
+            return
+        self._enum(value, path, validation, result)
 
     def _validate_date(self, value, f, path, result, validation, template_ns) -> None:
         if isinstance(value, date) and not isinstance(value, datetime):
+            self._enum(value, path, validation, result)
             return
         if isinstance(value, str):
             try:
                 datetime.strptime(value, "%Y-%m-%d")
-                return
             except ValueError:
                 pass
+            else:
+                self._enum(value, path, validation, result)
+                return
         result.add_error(
             code="invalid_type", message=f"Field '{path}' must be a valid date (YYYY-MM-DD)", field=path,
         )
 
     def _validate_datetime(self, value, f, path, result, validation, template_ns) -> None:
         if isinstance(value, datetime):
+            self._enum(value, path, validation, result)
             return
         if isinstance(value, str) and _is_iso_datetime(value):
+            self._enum(value, path, validation, result)
             return
         result.add_error(
             code="invalid_type", message=f"Field '{path}' must be a valid datetime (ISO 8601)", field=path,
@@ -364,7 +464,8 @@ class OfflineValidator:
             )
 
     def _validate_file(self, value, f, path, result, validation, template_ns) -> None:
-        if (f.get("file_config") or {}).get("multiple", False):
+        file_config = f.get("file_config") or {}
+        if file_config.get("multiple", False):
             if not isinstance(value, list):
                 result.add_error(
                     code="invalid_type", message=f"Field '{path}' must be an array of file IDs", field=path,
@@ -376,6 +477,14 @@ class OfflineValidator:
                         code="invalid_type", message=f"Item at '{path}[{i}]' must be a string (file ID)",
                         field=f"{path}[{i}]",
                     )
+            max_files = file_config.get("max_files")
+            if max_files is not None and len(value) > max_files:
+                result.add_error(
+                    code="max_files",
+                    message=f"Field '{path}' holds at most {max_files} file(s), got {len(value)}",
+                    field=path,
+                    details={"max_files": max_files, "count": len(value)},
+                )
         elif not isinstance(value, str):
             result.add_error(
                 code="invalid_type", message=f"Field '{path}' must be a string (file ID)", field=path,
@@ -399,7 +508,18 @@ class OfflineValidator:
         if not isinstance(value, list):
             result.add_error(code="invalid_type", message=f"Field '{path}' must be an array", field=path)
             return
-        item_type = f.get("array_item_type", "string")
+        # As live: an array that declares no item type has untyped items,
+        # checked against nothing. The field model declares no default type.
+        item_type = f.get("array_item_type")
+        if item_type == "file":
+            max_files = (f.get("array_file_config") or {}).get("max_files")
+            if max_files is not None and len(value) > max_files:
+                result.add_error(
+                    code="max_files",
+                    message=f"Field '{path}' holds at most {max_files} file(s), got {len(value)}",
+                    field=path,
+                    details={"max_files": max_files, "count": len(value)},
+                )
         for i, item in enumerate(value):
             item_path = f"{path}[{i}]"
             if item_type == "term":
@@ -830,27 +950,37 @@ class OfflineValidator:
         # document, never skipped — an offline check must not pass what a
         # live write refuses.
         for index, rule in enumerate(template.get("rules") or []):
+            if not isinstance(rule, dict):
+                self._refuse_rule(
+                    result, index, None,
+                    f"a rule must be an object, got {type(rule).__name__}",
+                )
+                continue
             rule_type = rule.get("type")
             evaluator = evaluators.get(rule_type)
             if evaluator is None:
-                self._refuse_rule(result, index, rule, f"unknown rule type {rule_type!r}")
+                self._refuse_rule(result, index, rule_type, f"unknown rule type {rule_type!r}")
+                continue
+            why = _rule_shape_error(rule)
+            if why:
+                self._refuse_rule(result, index, rule_type, why)
                 continue
             try:
                 evaluator(data, rule, result)
             except (TypeError, AttributeError, KeyError, re.error) as e:
-                self._refuse_rule(result, index, rule, f"cannot be evaluated: {e}")
+                self._refuse_rule(result, index, rule_type, f"cannot be evaluated: {e}")
 
     @staticmethod
     def _refuse_rule(
-        result: ValidationOutcome, index: int, rule: dict[str, Any], reason: str,
+        result: ValidationOutcome, index: int, rule_type: Any, reason: str,
     ) -> None:
         result.add_error(
             code="invalid_rule",
             message=(
-                f"Template rule {index} ({rule.get('type')}) {reason}; "
+                f"Template rule {index} ({rule_type}) {reason}; "
                 "fix the template's rules"
             ),
-            details={"rule_index": index, "rule_type": rule.get("type")},
+            details={"rule_index": index, "rule_type": rule_type},
         )
 
     def _pattern(self, data, rule, result) -> None:
@@ -957,6 +1087,10 @@ class OfflineValidator:
             )
 
     def _mutual_exclusion(self, data, rule, result) -> None:
+        """When the conditions hold (none = always), at most one of the
+        rule's target_fields has a value."""
+        if not self._conditions(data, rule.get("conditions") or []):
+            return
         targets = rule.get("target_fields") or []
         present = [f for f in targets if _get_nested_value(data, f) is not None]
         if len(present) > 1:

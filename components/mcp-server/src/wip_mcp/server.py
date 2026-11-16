@@ -5105,13 +5105,15 @@ async def start_backup(
 
     Backups run in the background; poll get_backup_job to track progress until
     status is 'complete' or 'failed', then download_backup_archive to fetch
-    the .zip. The archive contains every entity in every status and every
-    version — inactive entities included, since live data references them —
-    plus term relations and the registry entries (synonyms travel inside
-    them). The one exception: inactive template versions nothing in the
-    archive needs are left out by default. Every version a document is pinned
-    to, or a carried template extends or pins as a nested template, is kept, and a template whose versions
-    are all inactive keeps its highest. Blob bytes are staged to the server's
+    the .zip. The archive contains every entity in every status — inactive
+    entities included, since live data references them — plus term relations and
+    the registry entries (synonyms travel inside them). Template versions are the
+    qualified part: inactive versions nothing in the archive needs are left out by
+    default, while every version a document is pinned to, or a carried template
+    extends or pins as a nested template, is kept, and a template whose versions
+    are all inactive keeps its highest. Pass include_inactive_templates to carry
+    every version; a completed job records how many it left out, so the answer is
+    on the job without opening the archive. Blob bytes are staged to the server's
     backup scratch dir, not RAM.
 
     Args:

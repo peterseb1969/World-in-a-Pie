@@ -316,7 +316,7 @@ class TraverseNode(BaseModel):
     depth: int = Field(..., ge=1, le=10, description="Hops from the seed (1 = a direct neighbour)")
     via_relationship: str | None = Field(
         default=None,
-        description="document_id of the relationship document that was traversed to reach this node (None for the seed)."
+        description="document_id of the relationship document that was traversed to reach this node. Every node returned has one: the seed document is not listed as a node."
     )
     path: list[str] = Field(
         default_factory=list,

@@ -189,6 +189,39 @@ _RELATIONSHIP_ENRICHMENT = (
 )
 
 
+def _text_id(value: Any) -> str | None:
+    """A non-empty string, else None: an id column holds an id, never a dict
+    or an empty stand-in for one."""
+    return value if isinstance(value, str) and value else None
+
+
+def _resolved_reference_id(document: dict[str, Any], field: str) -> str | None:
+    """The canonical id this document's `references` array resolved for the
+    endpoint field, when it carries one."""
+    for ref in document.get("references") or []:
+        if isinstance(ref, dict) and ref.get("field_path") == field:
+            resolved = ref.get("resolved")
+            return _text_id(resolved.get("document_id") if isinstance(resolved, dict) else None)
+    return None
+
+
+def _endpoint_ref_id(document: dict[str, Any], data: dict[str, Any], field: str) -> str | None:
+    """The canonical document_id of an edge endpoint, or None when nothing says.
+
+    Two producers reach this column and they carry the fact in different places:
+    an event's payload is enriched with `data.<field>_resolved`, while a batch
+    read has no enrichment but the document's own `references` array, whose
+    `resolved.document_id` is the same id. Neither path may fall back to the
+    stored value blindly: an endpoint written as a business key stores a dict,
+    which is no id and would lose the row on insert, and any other spelling is a
+    synonym whose id the columns are supposed to hold.
+    """
+    enriched = _text_id(data.get(f"{field}_resolved"))
+    if enriched:
+        return enriched
+    return _resolved_reference_id(document, field) or _text_id(data.get(field))
+
+
 @dataclass
 class _FieldMaps:
     """What a template's fields tell the transform: each field's type, its
@@ -516,18 +549,13 @@ class DocumentTransformer:
         base_row["file_references_json"] = json.dumps(file_references_list)
 
         # Relationship templates carry source_ref_id and target_ref_id columns
-        # populated from the enriched event payload (data.source_ref_resolved
-        # / data.target_ref_resolved). They fall back to the raw refs: an
-        # older producer sends no resolved keys, and the columns are still
-        # useful for JOINs against documents whose document_id equals the
-        # source_ref / target_ref value.
+        # holding the canonical document_id of each endpoint — from the event's
+        # enrichment, or from the document's references array on a batch read
+        # (see _endpoint_ref_id). A row with neither keeps its raw string ref,
+        # which still joins against documents whose document_id equals it.
         if is_relationship:
-            base_row["source_ref_id"] = (
-                data.get("source_ref_resolved") or data.get("source_ref")
-            )
-            base_row["target_ref_id"] = (
-                data.get("target_ref_resolved") or data.get("target_ref")
-            )
+            base_row["source_ref_id"] = _endpoint_ref_id(document, data, "source_ref")
+            base_row["target_ref_id"] = _endpoint_ref_id(document, data, "target_ref")
 
         # Expand arrays if configured
         return self._expand_arrays(base_row, data, term_references)

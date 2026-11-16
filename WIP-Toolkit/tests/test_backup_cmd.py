@@ -33,10 +33,19 @@ def test_starts_follows_and_downloads(tmp_path):
     body = client.post.call_args.kwargs["json"]
     assert path == "/backup/namespaces/library/backup"
     assert body == {"all_namespaces": False, "include_files": True,
-                    "skip_documents": False, "namespaces": ["kb"]}
+                    "skip_documents": False, "include_inactive_templates": False,
+                    "namespaces": ["kb"]}
     assert client.stream_to_file.call_args.args[1] == "/backup/jobs/bkp-1/download"
     assert out.read_bytes() == b"PK-archive"
     assert "bkp-1: complete" in result.output
+
+
+def test_the_verb_can_ask_for_every_template_version(tmp_path):
+    client = _client()
+    result = _invoke(client, "library", tmp_path / "lib.zip", "--include-inactive-templates")
+    assert result.exit_code == 0, result.output
+    body = client.post.call_args.kwargs["json"]
+    assert body["include_inactive_templates"] is True
 
 
 def test_a_failed_job_writes_nothing_and_exits_1(tmp_path):
