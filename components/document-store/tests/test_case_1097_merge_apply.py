@@ -175,6 +175,44 @@ async def test_a_failed_merge_still_recounts_what_it_wrote(mongo, monkeypatch):
     assert (await _counts(mongo))["F1"] == 1
 
 
+
+@pytest.mark.asyncio
+async def test_a_failed_recount_after_a_complete_merge_is_a_warning(mongo, monkeypatch):
+    """CASE-1342 (review of a3893e1a, R6): every write landed and only the
+    recount failed. The merge is complete, so the job does not fail on it:
+    a warning says the counts may be stale, and the phases after the write
+    (provenance among them) still run."""
+    await _seed_namespace(mongo)
+    await _seed(mongo, "templates", [_template()])
+    await _seed(mongo, "files", [_file("F1")])
+    from document_store.services import backup_engine
+
+    async def recount_fails(self, namespace):
+        raise RuntimeError("mongo blip")
+
+    provenance: list[str] = []
+    real_provenance = backup_engine.DirectRestoreEngine._write_restore_provenance
+
+    async def record_provenance(self, *args, **kwargs):
+        provenance.append("written")
+        return await real_provenance(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        backup_engine.DirectRestoreEngine, "_recount_file_references", recount_fails,
+    )
+    monkeypatch.setattr(
+        backup_engine.DirectRestoreEngine, "_write_restore_provenance", record_provenance,
+    )
+    events: list = []
+    await _run_merge(mongo, _archive({
+        "documents": [_doc(1, doc_id="D2", ident="h2", files=["F1"])],
+    }), events)
+
+    warnings = [e.message for e in events if e.phase == "warning"]
+    assert any("recount after the merge failed (mongo blip)" in w for w in warnings), warnings
+    assert provenance == ["written"]
+
+
 ELSEWHERE = "merge-elsewhere-ns"
 
 

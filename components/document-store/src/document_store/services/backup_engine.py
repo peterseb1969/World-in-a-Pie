@@ -6455,7 +6455,20 @@ class DirectRestoreEngine:
                     )
             raise
         if recount:
-            await self._recount_file_references(namespace)
+            # Every write landed. The recount only corrects counts (a file's
+            # status follows its count, and nothing removes a file for being
+            # orphaned), so its failure is a warning: failing the job would
+            # skip the claims, the synonym release and the provenance of a
+            # merge that is complete, and send the operator to re-apply it.
+            try:
+                await self._recount_file_references(namespace)
+            except Exception as exc:
+                self._emit(
+                    "warning",
+                    f"[{namespace}] the file reference recount after the merge "
+                    f"failed ({exc}); counts may be stale until the next write to "
+                    "each file's documents",
+                )
 
         held = self._held_claims.pop(namespace, (0, 0))
         claimed, taken_by_other = (
