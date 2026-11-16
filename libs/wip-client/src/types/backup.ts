@@ -238,16 +238,17 @@ export interface BackupRequest {
  * Form fields accompanying a multipart restore upload.
  *
  * `'restore'` and `'merge'` are ID-preserving and write each namespace in
- * the archive back to itself (a merge may target a differently-named
- * namespace). `'fresh'` re-mints every identity: it takes
- * `target_namespace` (single-namespace archive) or `namespace_map`
- * (multi-namespace). `dry_run` is real, and for a merge it is exact: the
- * plan is computed before anything is written, so the report is what a real
- * run would do — and it still fails on what a real run would refuse. The
- * retired toolkit-era params are gone from this type: `register_synonyms`
- * was removed from the API entirely (fresh means fresh — no old→new id
- * back-ties), and `continue_on_error` is a tombstone the endpoint 400s
- * when set.
+ * the archive back to itself, except where a merge is redirected —
+ * `target_namespace` for a single-namespace archive, `namespace_map` to give
+ * each namespace of a multi-namespace archive its own target. `'fresh'`
+ * re-mints every identity: it takes `target_namespace` (single-namespace
+ * archive) or `namespace_map` (multi-namespace). `dry_run` is real, and for a
+ * merge it is exact: the plan is computed before anything is written, so the
+ * report is what a real run would do — and it still fails on what a real run
+ * would refuse. The retired toolkit-era params are gone from this type:
+ * `register_synonyms` was removed from the API entirely (fresh means fresh —
+ * no old→new id back-ties), and `continue_on_error` is a tombstone the
+ * endpoint 400s when set.
  *
  * The clash policies apply to `mode: 'merge'` only. Sending a non-default
  * one with a plain restore is a 400 rather than a silent no-op: a restore
@@ -259,19 +260,20 @@ export interface RestoreOptions {
   /**
    * Where to write. Required for `mode: 'fresh'` on a single-namespace
    * archive, which is placing new identities somewhere. For the other modes
-   * the archive manifest decides, except that a merge may use it to write
-   * into a differently-named namespace.
+   * the archive manifest decides, except that a merge may use it to write a
+   * single-namespace archive into a differently-named namespace — a
+   * multi-namespace one redirects with `namespace_map` instead.
    */
   target_namespace?: string
   /**
-   * Fresh only — explicit `{source: target}` for EVERY namespace in a
-   * multi-namespace archive; there is no implicit default, because an
-   * unmapped namespace restored to its old name would collide with the live
-   * original. Several sources may share one target (Registry-key collisions
-   * between them refuse at plan time); a target may equal its source name
-   * only when that namespace is empty or absent. `'fresh'` needs this or
-   * `target_namespace`; when both are sent, the map decides where each
-   * namespace goes.
+   * Merge and fresh only — explicit `{source: target}` for EVERY namespace in
+   * the archive, e.g. `{ kb: 'kb2', library: 'library2' }`. A merge keeps
+   * every id and writes each namespace into its own target, rewriting the
+   * arriving rows and the references between them to carry the new names; each
+   * target must exist, and one destination per source. `'fresh'` needs this or
+   * `target_namespace`, and there several sources may share one target
+   * (Registry-key collisions between them refuse at plan time); a target may
+   * equal its source name only when that namespace is empty or absent.
    */
   namespace_map?: Record<string, string>
   /** Merge only — resolution for a document identity the target already holds. */

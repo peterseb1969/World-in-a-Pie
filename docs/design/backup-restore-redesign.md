@@ -65,7 +65,10 @@ POST /api/document-store/backup/namespaces/{namespace}/backup
   `run_remap` in `backup_engine.py` and `restore-modes-merge-and-new-namespace.md`.)*
 - A **single-namespace** archive may still be redirected to an explicit
   `target_namespace` (the pre-existing behaviour); a multi-namespace archive rejects a
-  target override.
+  target override — that stays true. What a multi-namespace archive redirects with is
+  `namespace_map`, on a **merge** (one destination per source, so `kb` + `library`
+  merge into `kb2` + `library2` in one job and keep their ids) and on a **fresh**
+  restore; see `restore-modes-merge-and-new-namespace.md`.
 
 ### ⚠️ Migrating old archives — `convert_archive`
 

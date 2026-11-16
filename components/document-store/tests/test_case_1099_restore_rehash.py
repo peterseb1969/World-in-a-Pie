@@ -264,7 +264,7 @@ def test_a_redirect_renames_the_reference_snapshots():
         {"field_path": "a", "resolved": {"document_id": "X", "namespace": "src"}},
         {"field_path": "b", "resolved": {"document_id": "Y", "namespace": "third"}},
     ]}
-    moved = engine._rewrite_namespace("documents", doc, "src", "tgt")
+    moved = engine._rewrite_namespace("documents", doc, {"src": "tgt"})
     assert moved["namespace"] == "tgt"
     assert [r["resolved"]["namespace"] for r in moved["references"]] == ["tgt", "third"]
     assert doc["references"][0]["resolved"]["namespace"] == "src"  # input untouched

@@ -66,6 +66,11 @@ from .merge_definitions import (
     TemplateAlignment,
 )
 from .merge_plan import MERGE_ENTITY_SPECS, Clash, EntityPlan, MergePlanner
+from .namespace_map import (
+    NamespaceMapError,
+    merge_map_targets,
+    validated_namespace_map,
+)
 from .referent_resolution import resolve_referents
 from .remap_restore import (
     REMAP_ENTITY_ORDER,
@@ -2007,10 +2012,15 @@ class _AligningRemapper(IDRemapper):
     ARCHIVED row's (template_id, template_version), so it rides every rewrite
     of a document — heads, in-memory chains, streamed chains — while the
     archived row itself, which the identity rehash reads, is left alone.
+
+    ``namespace_map`` is the merge's redirect ({source: target}, empty for a
+    merge into itself): reference snapshots and qualified reference strings
+    naming a namespace this merge moves follow it to its target, exactly as
+    they do for a fresh restore.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, namespace_map: dict[str, str] | None = None) -> None:
+        super().__init__(namespace_map=namespace_map)
         self.version_map: dict[tuple[str, int], int] = {}
 
     def remap_document(self, document: dict[str, Any]) -> dict[str, Any]:
@@ -2050,13 +2060,17 @@ def registry_search_values(entry: dict[str, Any]) -> list[str]:
     return sorted(values)
 
 
-def _resolved_in(ref: Any, source: str, target: str) -> Any:
-    """A document reference whose snapshot names ``source``, naming ``target``."""
+def _resolved_in(ref: Any, redirects: dict[str, str]) -> Any:
+    """A document reference whose snapshot names a namespace this merge
+    moves, naming that namespace's target instead."""
     if not isinstance(ref, dict):
         return ref
     resolved = ref.get("resolved")
-    if isinstance(resolved, dict) and resolved.get("namespace") == source:
-        return {**ref, "resolved": {**resolved, "namespace": target}}
+    if isinstance(resolved, dict) and resolved.get("namespace") in redirects:
+        return {
+            **ref,
+            "resolved": {**resolved, "namespace": redirects[resolved["namespace"]]},
+        }
     return ref
 
 
@@ -3547,36 +3561,22 @@ class DirectRestoreEngine:
     ) -> dict[str, str]:
         """Settle where every archived namespace goes.
 
+        With a map, its coverage rules are :func:`validated_namespace_map`'s;
+        a target equal to the source name is legal precisely when that
+        namespace is absent (the per-target emptiness check enforces it).
         Without a map, only a single-namespace archive is unambiguous and
-        target_namespace names its destination. With a map, EVERY archived
-        namespace must be mapped — restoring an unmapped namespace to its old
-        name by default would silently collide with the live original, which
-        is the exact accident this mode exists to avoid. A target equal to
-        the source name is legal precisely when that namespace is absent (the
-        per-target emptiness check enforces it). Several sources may share
-        one target; key collisions refuse at plan time.
+        ``target_namespace`` names its destination — a multi-namespace archive
+        must be mapped explicitly, since an unmapped namespace restored to its
+        old name would collide with the live original. Several sources may
+        share one target here; key collisions refuse at plan time.
         """
         if namespace_map:
-            unknown = sorted(set(namespace_map) - set(sources))
-            unmapped = sorted(set(sources) - set(namespace_map))
-            if unknown or unmapped:
-                problems = []
-                if unmapped:
-                    problems.append(f"unmapped archive namespace(s) {unmapped}")
-                if unknown:
-                    problems.append(f"mapped but not in the archive: {unknown}")
-                raise RestoreEngineError(
-                    "namespace_map must cover exactly the archive's "
-                    f"namespaces {sorted(sources)} — " + "; ".join(problems)
-                )
-            invalid = {s: t for s, t in namespace_map.items() if not t}
-            if invalid:
-                raise RestoreEngineError(
-                    f"namespace_map has empty target(s) for {sorted(invalid)}"
-                )
             # Preserve archive order, not caller order — provisioning order
             # and the N:1 first-source-config rule both key off it.
-            return {s: namespace_map[s] for s in sources}
+            try:
+                return validated_namespace_map(sources, namespace_map)
+            except NamespaceMapError as exc:
+                raise RestoreEngineError(str(exc)) from exc
 
         if not target_namespace:
             raise RestoreEngineError(
@@ -4920,6 +4920,7 @@ class DirectRestoreEngine:
         allow_failed_verify: bool = False,
         align_templates: bool = False,
         carry_retirements: bool = False,
+        namespace_map: dict[str, str] | None = None,
     ) -> None:
         """Merge an archive into an existing, possibly non-empty namespace.
 
@@ -4948,6 +4949,17 @@ class DirectRestoreEngine:
         version whose schema can take its documents, documents are re-pinned
         accordingly, and a document whose versions map nowhere is listed and
         left out (docs/design/merge-template-version-alignment.md).
+
+        The merge writes each archived namespace back to itself, except where
+        it is redirected: ``target_namespace`` sends a single-namespace
+        archive's one namespace elsewhere, ``namespace_map`` gives every
+        namespace of a multi-namespace archive its own target, so ``kb`` +
+        ``library`` merge into ``kb2`` + ``library2`` in one job. A redirect
+        rewrites the namespace on every arriving row, its composite keys, and
+        every reference into a namespace this merge moves — a reference left
+        naming ``library`` would point at a namespace this install does not
+        have. The redirected namespaces' IDs must be free here, per pair
+        (:meth:`_check_ids_are_free`).
 
         Both passes, and the reference check, run for every namespace in the
         archive before anything is written to any of them, so ``dry_run`` is
@@ -4981,12 +4993,23 @@ class DirectRestoreEngine:
             )
             await self._refuse_bare_identity_synonyms(reader, manifest)
             targets = self._resolve_targets(
-                reader, manifest, target_namespace, allow_redirect=True
+                reader, manifest, target_namespace, allow_redirect=True,
+                namespace_map=namespace_map,
             )
+            # The namespaces this merge actually moves. Every arriving row is
+            # rewritten through the whole mapping, not just its own pair's
+            # half: a document in 'kb' referencing 'library' has to follow
+            # 'library' to 'library2', or the merge lands a reference to a
+            # namespace this install does not have.
+            redirects = {src: tgt for src, tgt in targets if src != tgt}
 
             self._emit(
                 "start",
-                f"Starting merge into {len(targets)} namespace(s)",
+                "Starting merge into "
+                + ", ".join(
+                    f"'{src}' → '{tgt}'" if src != tgt else f"'{src}'"
+                    for src, tgt in targets
+                ),
                 percent=0,
             )
 
@@ -5008,6 +5031,7 @@ class DirectRestoreEngine:
                     reader, manifest, targets, src, tgt, entry_by_prefix.get(src),
                     policy=policy, skip_documents=skip_documents, skip_files=skip_files,
                     drop_unresolved_edges=drop_unresolved_edges, dry_run=dry_run,
+                    redirects=redirects,
                 )
                 for src, tgt in targets
             ]
@@ -5051,9 +5075,15 @@ class DirectRestoreEngine:
         skip_files: bool,
         drop_unresolved_edges: bool,
         dry_run: bool,
+        redirects: dict[str, str],
     ) -> _StagedMerge:
         """Plan the merge of one archived namespace into its target, writing
-        nothing: both passes, the gates, and what its writes will need."""
+        nothing: both passes, the gates, and what its writes will need.
+
+        ``redirects`` is every namespace this merge moves ({source: target},
+        empty for a merge into itself); it is applied whole, so a reference
+        into any moved namespace follows it to its target.
+        """
         ns_config = entry.namespace_config if entry else manifest.namespace_config
         await self._report_namespace_config_drift(tgt, ns_config)
 
@@ -5062,15 +5092,16 @@ class DirectRestoreEngine:
             reader, src, skip_documents=skip_documents,
             skip_files=skip_files,
         )
-        if src != tgt:
-            doc_groups = await self._rescope_merge_inputs(archive_entities, doc_groups, src, tgt)
+        doc_groups = await self._rescope_merge_inputs(
+            archive_entities, doc_groups, src, tgt, redirects
+        )
 
         # References to entities the archive does not carry (another
         # namespace's terminology, say) are mapped first: the
         # definitions pass compares a template's references by what
         # they name here, and these are some of them. They never
         # overlap with pass 1's mappings, which are archived entities.
-        remapper = _AligningRemapper()
+        remapper = _AligningRemapper(namespace_map=dict(redirects))
         referents = await self._map_external_referents(
             reader, manifest, remapper, tgt
         )
@@ -5097,6 +5128,7 @@ class DirectRestoreEngine:
         # ---- Pass 2: everything else ---------------------------
         built, rewritten, chain_transform, doc_groups, rehash = await self._plan_merge_entities(
             reader, manifest, targets, src, tgt, archive_entities, doc_groups, remapper,
+            redirects=redirects,
         )
         self._record_merge_plan(
             src, tgt, built, rewritten, definitions, referents, rehash, alignment_report,
@@ -5120,23 +5152,34 @@ class DirectRestoreEngine:
         doc_groups: dict[str, list[dict[str, Any]]] | None,
         src: str,
         tgt: str,
+        redirects: dict[str, str],
     ) -> dict[str, list[dict[str, Any]]] | None:
         """Redirected merge: the IDs must be free here, and every entity has
         to be moved to the target namespace before it is matched — the keys
         it matches on embed the namespace. Rewrites ``archive_entities`` in
-        place and returns the re-scoped held document groups."""
-        await self._check_ids_are_free(
-            archive_entities.get("registry_entries") or [], src, tgt
-        )
+        place and returns the re-scoped held document groups.
+
+        The rewrite takes the WHOLE mapping, not this pair's half: rows
+        arriving from a namespace this merge leaves alone still reference the
+        ones that move, and a reference naming a namespace this merge retires
+        would land dangling. Nothing moves when ``redirects`` is empty, which
+        is an ordinary merge into itself.
+        """
+        if not redirects:
+            return doc_groups
+        if src != tgt:
+            await self._check_ids_are_free(
+                archive_entities.get("registry_entries") or [], src, tgt
+            )
         for entity_type, entities in archive_entities.items():
             archive_entities[entity_type] = [
-                self._rewrite_namespace(entity_type, entity, src, tgt)
+                self._rewrite_namespace(entity_type, entity, redirects)
                 for entity in entities
             ]
         if doc_groups is not None:
             doc_groups = {
                 doc_id: [
-                    self._rewrite_namespace("documents", row, src, tgt)
+                    self._rewrite_namespace("documents", row, redirects)
                     for row in rows
                 ]
                 for doc_id, rows in doc_groups.items()
@@ -5144,7 +5187,9 @@ class DirectRestoreEngine:
         self._emit(
             "phase_merge_plan",
             f"[{tgt}] merging from namespace '{src}' — entities "
-            "and composite keys re-scoped to the target",
+            "and composite keys re-scoped to the target, references into "
+            + ", ".join(f"'{s}'" for s in sorted(redirects))
+            + " following their namespaces",
         )
         return doc_groups
 
@@ -5236,6 +5281,8 @@ class DirectRestoreEngine:
         archive_entities: dict[str, list[dict[str, Any]]],
         doc_groups: dict[str, list[dict[str, Any]]] | None,
         remapper: _AligningRemapper,
+        *,
+        redirects: dict[str, str],
     ) -> tuple[dict[str, EntityPlan], int, Any, Any, _IdentityRehash]:
         """Pass 2: plan every non-definition type against the target.
 
@@ -5276,7 +5323,7 @@ class DirectRestoreEngine:
                     entity_type, raw_entities, remapper
                 )
                 entities, doc_groups, chain_transform = await self._rehash_merge_round(
-                    entity_type, reader, src, tgt, raw_entities, entities,
+                    entity_type, reader, src, redirects, raw_entities, entities,
                     archived_doc_groups, remapper, rehash, doc_groups, chain_transform,
                 )
                 plan = await planner.plan(entity_type, entities, tgt)
@@ -5320,7 +5367,7 @@ class DirectRestoreEngine:
         entity_type: str,
         reader: ArchiveReader,
         src: str,
-        tgt: str,
+        redirects: dict[str, str],
         raw_entities: list[dict[str, Any]],
         entities: list[dict[str, Any]],
         archived_doc_groups: dict[str, list[dict[str, Any]]] | None,
@@ -5334,7 +5381,7 @@ class DirectRestoreEngine:
         pass through. Returns (entities, doc_groups, chain_transform)."""
         if entity_type == "documents":
             return await self._rewrite_merge_documents(
-                reader, src, tgt, raw_entities, entities, archived_doc_groups,
+                reader, src, redirects, raw_entities, entities, archived_doc_groups,
                 remapper, rehash, doc_groups, chain_transform,
             )
         if entity_type == "registry_entries":
@@ -5345,7 +5392,7 @@ class DirectRestoreEngine:
         self,
         reader: ArchiveReader,
         src: str,
-        tgt: str,
+        redirects: dict[str, str],
         raw_entities: list[dict[str, Any]],
         entities: list[dict[str, Any]],
         archived_doc_groups: dict[str, list[dict[str, Any]]] | None,
@@ -5368,7 +5415,7 @@ class DirectRestoreEngine:
             )
             return entities, doc_groups, chain_transform
         chain_transform = self._chain_transform(
-            copy.deepcopy(remapper), src, tgt, rehash
+            copy.deepcopy(remapper), redirects, rehash
         )
         if remapper.total_mappings:
             # Compact heads carry no references: one
@@ -5791,14 +5838,14 @@ class DirectRestoreEngine:
         )
 
     def _chain_transform(
-        self, remapper: IDRemapper, source: str, target: str, rehash: _IdentityRehash
+        self, remapper: IDRemapper, redirects: dict[str, str], rehash: _IdentityRehash
     ) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]]]:
         """What the in-memory path does to a document chain, as a function:
         the namespace rewrite of a redirected merge, then the reference
         rewrite onto the target's definitions and the rehash it implies."""
         def transform(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            if source != target:
-                rows = [self._rewrite_namespace("documents", r, source, target) for r in rows]
+            if redirects:
+                rows = [self._rewrite_namespace("documents", r, redirects) for r in rows]
             return [rehash.rehash(r, remapper.remap_document(r)) for r in rows]
         return transform
 
@@ -5806,10 +5853,9 @@ class DirectRestoreEngine:
         self,
         entity_type: str,
         entity: dict[str, Any],
-        source: str,
-        target: str,
+        redirects: dict[str, str],
     ) -> dict[str, Any]:
-        """Move one entity from the source namespace to the target.
+        """Move one entity out of every namespace this merge retires.
 
         The ``namespace`` field is the easy half. The load-bearing half is the
         Registry composite key, which embeds the namespace as ``ns`` and is
@@ -5817,12 +5863,13 @@ class DirectRestoreEngine:
         on: left alone, the imported entry would claim a key naming the old
         namespace and collide with nothing, silently opting out of the gate.
 
-        Only ``ns`` components equal to the SOURCE namespace are rewritten. A
-        synonym legitimately scoped to some third namespace keeps its own.
+        Only a namespace this merge actually moves is rewritten, and a
+        synonym legitimately scoped to some namespace that stays is left on
+        its own.
         """
         result = dict(entity)
-        if result.get("namespace") == source:
-            result["namespace"] = target
+        if result.get("namespace") in redirects:
+            result["namespace"] = redirects[result["namespace"]]
         if entity_type == "documents":
             # A document reference snapshots its referent's namespace. The
             # referents that moved with this one name the target now; left on
@@ -5831,15 +5878,15 @@ class DirectRestoreEngine:
             references = result.get("references")
             if isinstance(references, list):
                 result["references"] = [
-                    _resolved_in(ref, source, target) for ref in references
+                    _resolved_in(ref, redirects) for ref in references
                 ]
             return result
         if entity_type != "registry_entries":
             return result
 
         key = result.get("primary_composite_key")
-        if isinstance(key, dict) and key.get("ns") == source:
-            new_key = {**key, "ns": target}
+        if isinstance(key, dict) and key.get("ns") in redirects:
+            new_key = {**key, "ns": redirects[key["ns"]]}
             result["primary_composite_key"] = new_key
             result["primary_composite_key_hash"] = compute_composite_key_hash(new_key)
 
@@ -5851,11 +5898,11 @@ class DirectRestoreEngine:
                     rewritten.append(synonym)
                     continue
                 syn = dict(synonym)
-                if syn.get("namespace") == source:
-                    syn["namespace"] = target
+                if syn.get("namespace") in redirects:
+                    syn["namespace"] = redirects[syn["namespace"]]
                 syn_key = syn.get("composite_key")
-                if isinstance(syn_key, dict) and syn_key.get("ns") == source:
-                    new_syn_key = {**syn_key, "ns": target}
+                if isinstance(syn_key, dict) and syn_key.get("ns") in redirects:
+                    new_syn_key = {**syn_key, "ns": redirects[syn_key["ns"]]}
                     syn["composite_key"] = new_syn_key
                     syn["composite_key_hash"] = compute_composite_key_hash(new_syn_key)
                 rewritten.append(syn)
@@ -7304,6 +7351,7 @@ class DirectRestoreEngine:
         target_namespace: str,
         *,
         allow_redirect: bool = False,
+        namespace_map: dict[str, str] | None = None,
     ) -> list[tuple[str, str]]:
         """Validate the archive's shape and pair each source namespace with
         its target. Shared by every mode that reads an archive.
@@ -7313,13 +7361,20 @@ class DirectRestoreEngine:
         entities and composite keys embed the source namespace, so writing
         them elsewhere would produce records still carrying it.
 
-        A merge may redirect (``allow_redirect``). It rewrites the namespace
-        on every entity and rehashes the composite keys that embed it, which
-        is what makes "fold NS2's archive into NS1" work. The IDs still have
-        to be free — see :meth:`_check_ids_are_free`.
+        A merge may redirect (``allow_redirect``): ``target_namespace`` names
+        the one destination of a single-namespace archive, ``namespace_map``
+        a destination per namespace of a multi-namespace archive (see
+        :meth:`_mapped_targets`). A redirect rewrites the namespace on every
+        entity and rehashes the composite keys that embed it, which is what
+        makes "fold NS2's archive into NS1" work. The IDs still have to be
+        free — see :meth:`_check_ids_are_free`.
         """
         source_namespaces = self._archive_namespaces(reader, manifest)
 
+        if namespace_map:
+            return self._mapped_targets(
+                source_namespaces, target_namespace, namespace_map, allow_redirect
+            )
         if target_namespace:
             if len(source_namespaces) > 1:
                 raise RestoreEngineError(
@@ -7338,6 +7393,31 @@ class DirectRestoreEngine:
                     "the namespace you want it in."
                 )
         return [(ns, ns) for ns in source_namespaces]
+
+    def _mapped_targets(
+        self,
+        sources: list[str],
+        target_namespace: str,
+        namespace_map: dict[str, str],
+        allow_redirect: bool,
+    ) -> list[tuple[str, str]]:
+        """The (source, target) pairs a namespace_map asks for.
+
+        Only a mode that can re-namespace may use one: an id-preserving
+        restore writes the archived rows verbatim, and they carry their
+        namespace in their entities and composite keys. What a map then has to
+        satisfy — one destination per source, exact coverage — is
+        :func:`merge_map_targets`, shared with the HTTP door.
+        """
+        if not allow_redirect:
+            raise RestoreEngineError(
+                "namespace_map redirects namespaces, which an id-preserving "
+                "restore cannot do — it writes each namespace to itself."
+            )
+        try:
+            return merge_map_targets(sources, target_namespace, namespace_map)
+        except NamespaceMapError as exc:
+            raise RestoreEngineError(str(exc)) from exc
 
     @staticmethod
     def _claim_rows_for(

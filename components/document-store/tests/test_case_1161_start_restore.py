@@ -1,9 +1,9 @@
 """The restore route's refusals, pinned before start_restore's refactor.
 
 Provenance: CASE-1161. These branches of POST /backup/namespaces/{ns}/restore
-had no test: namespace_map sent with a mode other than fresh, namespace_map
-that is not JSON or not a {source: target} object, an upload that cannot be
-written to disk, and a job the runner refuses to start (409).
+had no test: namespace_map sent with a mode that cannot honour it, a
+namespace_map that is not JSON or not a {source: target} object, an upload that
+cannot be written to disk, and a job the runner refuses to start (409).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from tests.test_case_1098_restore_target import RESTORE_URL, _archive, _post_res
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("data", "detail"), [
-    ({"mode": "restore", "namespace_map": '{"wip": "copy"}'}, "namespace_map applies only to mode='fresh'"),
+    ({"mode": "restore", "namespace_map": '{"wip": "copy"}'}, "mode='restore' writes each to itself"),
     ({"mode": "fresh", "namespace_map": "{not json"}, "namespace_map is not valid JSON"),
     ({"mode": "fresh", "namespace_map": '["wip"]'}, "namespace_map must be a non-empty JSON object"),
     ({"mode": "fresh", "namespace_map": "{}"}, "namespace_map must be a non-empty JSON object"),

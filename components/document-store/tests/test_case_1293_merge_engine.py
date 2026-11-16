@@ -130,7 +130,7 @@ async def test_mappings_that_never_settle_refuse_instead_of_looping():
             pytest.raises(RestoreEngineError, match="did not settle"):
         await engine._plan_merge_entities(
             MagicMock(), MagicMock(), [("src", "tgt")], "src", "tgt",
-            archive, None, _AligningRemapper(),
+            archive, None, _AligningRemapper(), redirects={"src": "tgt"},
         )
 
 
@@ -160,7 +160,7 @@ async def test_a_cycle_is_refused_when_it_repeats_not_after_every_document():
             pytest.raises(RestoreEngineError, match="did not settle"):
         await engine._plan_merge_entities(
             MagicMock(), MagicMock(), [("src", "tgt")], "src", "tgt",
-            archive, None, _AligningRemapper(),
+            archive, None, _AligningRemapper(), redirects={"src": "tgt"},
         )
 
     assert len(rounds) == 3
@@ -190,7 +190,7 @@ async def test_mappings_that_settle_are_planned_once_more_and_kept():
             patch.object(backup_engine, "_archived_template_ids", lambda *a: set()):
         await engine._plan_merge_entities(
             MagicMock(), MagicMock(), [("src", "tgt")], "src", "tgt",
-            archive, None, remapper,
+            archive, None, remapper, redirects={"src": "tgt"},
         )
 
     assert remapper.document_map == {"D1": "X", "D2": "Z"}

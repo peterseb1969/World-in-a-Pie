@@ -1149,7 +1149,8 @@ _MERGE_ONLY_OPTIONS = (
 @click.option("--target-namespace", default=None,
               help="Where to write (required for a single-namespace fresh restore).")
 @click.option("--map", "namespace_map", multiple=True, metavar="SOURCE=TARGET",
-              help="Fresh only: map an archived namespace to a new one (repeatable).")
+              help="Merge and fresh: where an archived namespace goes (repeatable). "
+                   "For a multi-namespace archive, name every namespace it carries.")
 @click.option("--on-clash", type=click.Choice(["skip", "overwrite", "newer"]), default=None,
               help="Merge only: for a document the target already holds, keep the target's "
                    "(skip, default), take the archive's (overwrite), or take it only where "
@@ -1229,6 +1230,9 @@ def restore(
           --older-versions keep
 
       wip-toolkit restore other-install.zip --mode merge --align-templates --dry-run
+
+      wip-toolkit restore kb-library.zip --mode merge \\
+          --map kb=kb2 --map library=library2 --dry-run
     """
     from pathlib import Path
 
@@ -1244,8 +1248,12 @@ def restore(
         if misplaced:
             flags = ", ".join("--" + n.replace("_", "-") for n in misplaced)
             raise click.UsageError(f"{flags} apply to --mode merge only.")
-    if namespace_map and mode != "fresh":
-        raise click.UsageError("--map applies to --mode fresh only.")
+    if namespace_map and mode == "restore":
+        raise click.UsageError(
+            "--map redirects where the archived namespaces are written, and "
+            "--mode restore writes each to itself. Use --mode merge (ids kept) "
+            "or --mode fresh (ids re-minted)."
+        )
     if allow_missing_identity and mode != "restore":
         raise click.UsageError("--allow-missing-identity applies to --mode restore only.")
 

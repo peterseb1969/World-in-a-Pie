@@ -199,6 +199,25 @@ class TestRestoreVerb:
         assert result.exit_code == 0, result.output
         assert _form(client)["namespace_map"] == '{"aa": "bb"}'
 
+    def test_a_merge_map_names_every_namespace_of_the_archive(self, tmp_path):
+        """A merge keeps ids and writes each archived namespace to its own
+        target, so one --map per namespace is how a two-namespace archive is
+        redirected in one job."""
+        client = _mock_client()
+        result = _invoke(
+            tmp_path, client,
+            "--mode", "merge", "--map", "kb=kb2", "--map", "library=library2",
+        )
+        assert result.exit_code == 0, result.output
+        assert _form(client)["namespace_map"] == '{"kb": "kb2", "library": "library2"}'
+
+    def test_a_map_on_an_id_preserving_restore_is_refused(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--mode", "restore", "--map", "aa=bb")
+        assert result.exit_code == 2, result.output
+        assert "--mode restore" in result.output
+        client.post_form.assert_not_called()
+
 
 def test_wait_stops_at_the_timeout():
     client = MagicMock()

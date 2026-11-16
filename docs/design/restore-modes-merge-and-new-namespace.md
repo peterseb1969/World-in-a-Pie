@@ -64,6 +64,20 @@ The archive is a delta against a namespace that already holds data. Two
 passes, because documents cannot be merged under definitions the two sides
 disagree on.
 
+**Where it writes.** Each archived namespace merges into its own name, except
+where the request redirects it: `target_namespace` for the one namespace of a
+single-namespace archive, `namespace_map` for a multi-namespace archive,
+naming a target for EVERY namespace it carries and giving each source its own
+target. A redirect re-scopes the arriving rows — namespace fields, Registry
+composite keys and their hashes — and rewrites the references between the
+moved namespaces to the names they now have, so nothing lands pointing at a
+namespace this install does not hold. Each target must exist (a merge never
+creates one) and the caller must be admin on it, as on every namespace the
+archive carries. Because ids are preserved, the redirected namespaces' ids
+must be free here: the redirect serves an archive from another install, or
+from namespaces since deleted. N:1 collapse stays fresh's, where ids are
+re-minted and a collision pass can compare the folded sources.
+
 **Pass 1 — definitions, matched by content.** Terminologies, terms and
 templates are compared by content, not id, so an archive from another
 install works with no extra parameter; the pass also learns which

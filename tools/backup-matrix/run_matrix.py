@@ -287,9 +287,10 @@ def _start_restore(
     if skip_files:
         data["skip_files"] = "true"
     if namespace_map:
-        # Fresh only, and mandatory for a multi-namespace archive: there is no
-        # implicit default, because an unmapped namespace restored to its old
-        # name would collide with the live original.
+        # Merge and fresh. Mandatory for a multi-namespace archive in either
+        # mode: there is no implicit default, because an unmapped namespace
+        # restored to its old name would collide with the live original. A
+        # merge takes one target per source; fresh may fold several into one.
         data["namespace_map"] = json.dumps(namespace_map)
     if mode == "merge":
         data["on_clash"] = on_clash

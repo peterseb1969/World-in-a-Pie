@@ -398,6 +398,28 @@ class RestoreFromJobRequest(StrictModel):
             "possibly non-empty namespace."
         ),
     )
+    target_namespace: str | None = Field(
+        None,
+        description=(
+            "Where to write. Honoured or refused, never ignored: 'restore' "
+            "writes each archived namespace to itself and refuses a different "
+            "target; a 'merge' of a single-namespace archive writes into this "
+            "namespace. A multi-namespace archive takes no target here — "
+            "redirect its namespaces with namespace_map."
+        ),
+    )
+    namespace_map: dict[str, str] | None = Field(
+        None,
+        description=(
+            "Merge only — explicit {source: target} for EVERY namespace the "
+            "archive carries, e.g. {\"kb\": \"kb2\", \"library\": "
+            "\"library2\"}. Each target must exist and the caller must be "
+            "admin on it; ids are preserved, so the archive's ids must be "
+            "free on this install, and every namespace and reference arriving "
+            "with them is rewritten to carry the target's name. One "
+            "destination per source. Pass this or target_namespace, not both."
+        ),
+    )
     on_clash: str = Field(
         "skip",
         description=(
