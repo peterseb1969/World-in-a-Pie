@@ -91,7 +91,9 @@ not your spec.
 - **Backend services**: each service's `src/` and `libs/wip-auth/src` are
   bind-mounted read-only; uvicorn runs `--reload`. Source edits land on
   save or at worst `podman restart <install>_wip-<svc>` (~3 s). Model/route changes
-  sometimes need the restart even with `--reload`.
+  sometimes need the restart even with `--reload`. mcp-server and app-edge are
+  mounted but do not run under uvicorn: they never reload, so every edit
+  takes a restart (the render prints a `note:` for each).
 - **Apps**: built locally from `--app-source NAME=PATH` checkouts
   (Dockerfile.dev), source bind-mounted rw, deps in a named volume. Details
   in the APP playbook. **The path must be the app directory, not

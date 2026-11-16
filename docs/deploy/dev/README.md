@@ -4,7 +4,7 @@
 
 # WIP Dev Deployment — Hot-Reload (podman, local source)
 
-Run WIP in **hot-reload development mode** on one machine: the **backend runs from this repo's source** (bind-mounted, `uvicorn --reload`) and **apps run from your local checkouts** (`--app-source`, built from each app's `Dockerfile.dev`, source bind-mounted). Edit code, see it live — no image pulls, no tags.
+Run WIP in **hot-reload development mode** on one machine: the **backend runs from this repo's source** (bind-mounted; its uvicorn services run `--reload`, and mcp-server and app-edge take a restart) and **apps run from your local checkouts** (`--app-source`, built from each app's `Dockerfile.dev`, source bind-mounted). Edit code, see it live — no image pulls, no tags.
 
 > **Just want to *run* WIP (not develop it)?** Use the **[single-host quickstart (podman + GHCR images)](../podman/README.md)** instead — that's the production-style path.
 >
@@ -18,7 +18,7 @@ Run WIP in **hot-reload development mode** on one machine: the **backend runs fr
 
 ## What you'll end up with
 
-- The WIP backend running from **this repo's `components/*/src`** (bind-mounted, hot-reloads on edit)
+- The WIP backend running from **this repo's `components/*/src`** (bind-mounted; the uvicorn services hot-reload on edit, mcp-server and app-edge need a restart)
 - Any apps you pass via `--app-source`, each built from its **local checkout** and hot-reloading on edit (e.g. React Console at `https://rc.wip.localhost:8443/`, WIP-KB at `https://kb.wip.localhost:8443/`)
 - HTTPS via Caddy on `https://wip.localhost:8443` (self-signed)
 - A starter API key + Dex users, on disk under `~/.wip-deploy/wip/`
@@ -31,7 +31,7 @@ Run WIP in **hot-reload development mode** on one machine: the **backend runs fr
 |---|---|
 | **podman** + **podman-compose**, running | `podman info` should succeed (macOS: `podman machine start`, ≥4 GB). |
 | **git** + **Python 3.11+** | For this repo and the `wip-deploy` CLI. |
-| **This repo** (`develop`) | Its `components/*/src` is what the backend bind-mounts and hot-reloads. |
+| **This repo** (`develop`) | Its `components/*/src` is what the backend bind-mounts; its uvicorn services hot-reload. |
 | **A local clone of each app** you want to run | e.g. `WIP-RC` (the React Console), `WIP-KB`. App builds happen *inside* containers — **no Node needed on the host** (confirmed). |
 
 > The examples below assume the app clones sit **next to** `World-in-a-Pie` (all under one `Development/` folder), so `--app-source` can use relative paths like `../WIP-RC`. Absolute paths work too.
@@ -88,7 +88,7 @@ wip-deploy install \
 
 On success you'll see something like `Services: 13 active, 2 apps` … `✓ Install complete. https://wip.localhost:8443`.
 
-- `--target dev` — bind-mounts backend `src/` + `libs/wip-auth/src` (read-only) and runs `uvicorn --reload`; builds + force-recreates on install and clears stale `wip-*` containers first.
+- `--target dev` — bind-mounts backend `src/` + `libs/wip-auth/src` (read-only) and runs each uvicorn service with `--reload`; builds + force-recreates on install and clears stale `wip-*` containers first.
 - `--app-source NAME=PATH` — `NAME` is the app name (`react-console`, `wip-kb`); `PATH` is its app directory. The app is built from that checkout's `Dockerfile.dev`, its source bind-mounted **rw**, deps in a named volume. **Dev-target only.** (To pull an app from a registry image instead of building it, use `--app-from-registry NAME`.)
 - `--privileged-app react-console` — the React Console's manifest asks for the install's master key (`privileged_key: true`); the install refuses it unless the operator grants that by name.
 - **No `--registry`/`--tag`** — nothing is pulled by tag; the backend runs from this repo's source and the apps from your checkouts. The exception is an app run from its published image (`--app-from-registry`): it is pulled from `--registry`, so an install with such an app needs one.
@@ -108,7 +108,8 @@ Then open the app UIs: **`https://rc.wip.localhost:8443/`** (React Console) and 
 
 ## 6. The hot-reload loop (the whole point)
 
-- **Backend source** — edit `components/<svc>/src/...` in this repo → `uvicorn --reload` picks it up. Dev stacks inject `WATCHFILES_FORCE_POLLING=1` so reload works across the podman bind mount. If a change doesn't take (model/route edits sometimes don't), fall back to `podman restart wip-<svc>` (~3 s).
+- **Backend source** — edit `components/<svc>/src/...` in this repo → `uvicorn --reload` picks it up. Dev stacks inject `WATCHFILES_FORCE_POLLING=1` so reload works across the podman bind mount. If a change doesn't take (model/route edits sometimes don't), fall back to `podman restart <install>_wip-<svc>` (~3 s).
+- **Mounted but not reloading: mcp-server and app-edge.** Their source is bind-mounted too, but neither runs under uvicorn, so nothing watches it: after an edit, `podman restart <install>_wip-mcp-server` or `<install>_wip-app-edge`. The render says so in a `note:` line for each.
 - **App source** — edit files in your checkout → the app's own dev server (vite / tsx watch) reloads. No deployer involvement.
 - **The boundary — when a reload is *not* enough:**
   - Dependency / `Dockerfile.dev` changes: the app's `node_modules` lives in a named volume and does **not** see a host `npm install` → `wip-deploy rebuild <name> --name wip`.
