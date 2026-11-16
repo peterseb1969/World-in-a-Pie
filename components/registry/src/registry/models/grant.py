@@ -123,7 +123,8 @@ class GrantCreate(BaseModel):
     expires_at: datetime | None = Field(
         default=None,
         description=EXPIRES_AT_DESCRIPTION + " An expiry already past is refused "
-        "(error_code validation_failed, details.rule expired).",
+        "(error_code validation_failed, details.rule expired). On an existing "
+        "grant it replaces the stored expiry; left out, the grant no longer expires.",
     )
 
 

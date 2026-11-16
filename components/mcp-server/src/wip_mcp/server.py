@@ -1687,8 +1687,9 @@ async def create_grant(
     permission: str,
     expires_at: str | None = None,
 ) -> str:
-    """Grant a permission on a namespace (requires admin on it). Upserts —
-    an existing grant for the same subject is updated to the new level.
+    """Grant a permission on a namespace (requires admin on it). Upserts:
+    an existing grant for the same subject is replaced, with the new level
+    and the expiry sent (leaving expires_at out makes it permanent).
 
     Args:
         namespace: Namespace prefix.
@@ -1697,7 +1698,8 @@ async def create_grant(
         subject_type: 'user' | 'api_key' | 'group'.
         permission: 'read' | 'write' | 'admin'.
         expires_at: ISO 8601 expiry, UTC (a value without an offset is read
-            as UTC; None = never). An expiry already past is refused.
+            as UTC; None = never, which also clears an existing grant's
+            expiry). An expiry already past is refused.
     """
     try:
         item: dict = {

@@ -1,6 +1,6 @@
 ---
 section: action-required
-cases: [1268]
+cases: [1268, 1338]
 ---
 
 ### A grant whose expiry has already passed is refused
@@ -11,7 +11,9 @@ Such an item is now an error (`error_code` `validation_failed`,
 `details.rule` `expired`), and an existing grant it names is left as it was.
 `expires_at` is UTC; a value without an offset is read as UTC (the API
 descriptions now say so). A grant's expiry is not announced to the other
-services: the Registry stops honouring it at once, the others within 30 s.
+services: the Registry stops honouring it at once, the others within 30 s
+(an accepted window, the project owner's call). Granting again replaces the
+stored expiry: a re-grant without `expires_at` makes the grant permanent.
 
 **Action:** a script that re-grants with a lapsed expiry, expecting
 `created`, must send a future expiry or none.
