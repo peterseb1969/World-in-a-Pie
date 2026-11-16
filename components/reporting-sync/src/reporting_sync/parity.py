@@ -7,10 +7,19 @@ would build from the template (single oracle — no parallel schema
 derivation), the bookkeeping row landed, and (optionally) the row count
 matches the same document-store query the batch sync consumes.
 
-Two consumers, one code path: the restore orchestrator calls it at phase
-boundaries (structure-only after templates restore, counts after documents),
-and operators/agents call it ad hoc — the one-request answer to "why does
-the reporting layer look empty".
+Two consumers, one code path: the restore orchestrator calls it after the
+documents to settle its reporting verdict, and operators/agents call it ad hoc
+— the one-request answer to "why does the reporting layer look empty".
+
+The answer is one of three verdicts (``verdict``), each with the per-surface
+findings that produced it (``reasons``): ``verified`` — every check ran and
+found nothing missing; ``failed`` — a check found rows or tables absent, so the
+namespace needs the batch sync it names; ``unverified`` — nothing could be
+settled: a store did not answer, the namespace's sync is still running, or
+there was nothing to check. The counters (``structural_issues``,
+``count_mismatches``, ``derived_issues``) and ``ok`` stay what they were: what
+ran and whether it was clean. A verdict goes further and refuses to call a
+check it could not run a clean one.
 
 Beyond the document tables it covers everything else reporting derives for
 a namespace, because a check that passes while those are empty is the
@@ -60,9 +69,9 @@ class TemplateParity(BaseModel):
     document lives in exactly one under latest_only, so the sum is the
     entity count), leaving out rows of soft-deleted documents.
     ``expected_documents`` counts documents whose latest version is active,
-    once each. Both sides count live documents. The field names and their pass/fail meaning are stable
-    on purpose: the restore engine's structural gate and count-parity
-    phases consume them.
+    once each. Both sides count live documents. The field names and their
+    pass/fail meaning are stable on purpose: the namespace verdict is computed
+    from them, and operators read them directly.
     """
 
     template_value: str
@@ -133,6 +142,36 @@ class ViewParity(BaseModel):
     present: bool
 
 
+# The parity verdict. Stable on the wire: a restore records these verbatim,
+# so a caller can branch on them instead of reading the counters.
+VERIFIED = "verified"
+FAILED = "failed"
+UNVERIFIED = "unverified"
+
+# A finding whose own text says the check did not run. It can never make a
+# namespace "failed" — an unchecked table is not a proven gap — so it lands in
+# the unverified group instead, where a caller sees it as "could not tell".
+BLOCKED_ISSUE = "check_failed"
+
+
+class ParityReason(BaseModel):
+    """One finding of the parity check: what is missing, or why it could not
+    be told.
+
+    ``kind`` is the surface — ``template``, ``table``, ``view`` or
+    ``namespace``; ``name`` which one; ``issue`` a stable code; ``detail`` the
+    same finding in one line, for a job record or a terminal;
+    ``expected``/``actual`` the numbers where the check has them.
+    """
+
+    kind: str
+    name: str | None = None
+    issue: str
+    detail: str
+    expected: int | None = None
+    actual: int | None = None
+
+
 class NamespaceParityResult(BaseModel):
     namespace: str
     schema_name: str
@@ -147,10 +186,14 @@ class NamespaceParityResult(BaseModel):
     derived_tables: list[DerivedTableParity] = Field(default_factory=list)
     views: list[ViewParity] = Field(default_factory=list)
     # Failing derived tables plus missing registered views. Kept apart from
-    # structural_issues, which the restore's structure gate reads between
-    # phases — before the term data and views are back.
+    # structural_issues because the term data and the views land after the
+    # document tables.
     derived_issues: int = 0
     ok: bool = False
+    # verified | failed | unverified — see VERIFIED/FAILED/UNVERIFIED. The one
+    # answer a caller branches on; reasons carries what stands behind it.
+    verdict: str = UNVERIFIED
+    reasons: list[ParityReason] = Field(default_factory=list)
 
 
 async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
@@ -526,8 +569,15 @@ async def check_namespace_parity(
     pool: asyncpg.Pool,
     namespace: str,
     include_counts: bool = True,
+    *,
+    sync_running: bool = False,
 ) -> NamespaceParityResult:
-    """Run the parity check for one namespace."""
+    """Run the parity check for one namespace and settle its verdict.
+
+    ``sync_running`` — the namespace's batch sync is still in flight — comes
+    from the service that runs it, so the check can say "still syncing" itself
+    instead of letting a row the sync has not written yet read as a gap.
+    """
     sm = SchemaManager(pool)
     schema = sm.schema_for(namespace)
     result = await _schema_presence(pool, namespace, schema)
@@ -536,7 +586,9 @@ async def check_namespace_parity(
     templates = await _templates_to_check(namespace, result)
     if templates is None:
         result.ok = False
-        return result
+        return _set_verdict(
+            result, sync_running=sync_running, templates_unreadable=True,
+        )
 
     for template in templates:
         config = ReportingConfig(**(template.get("reporting") or {}))
@@ -557,7 +609,218 @@ async def check_namespace_parity(
     await _derived_parity(pool, sm, schema, namespace, result, include_counts=include_counts)
     result.derived_issues += sum(1 for t in result.templates if not t.derived_ok)
     result.ok = _all_clear(result)
+    return _set_verdict(result, sync_running=sync_running)
+
+
+def _set_verdict(
+    result: NamespaceParityResult,
+    *,
+    sync_running: bool,
+    templates_unreadable: bool = False,
+) -> NamespaceParityResult:
+    """The one verdict, with every finding that stands behind it.
+
+    ``failed`` only when a check PROVED something missing, and only once the
+    check can be trusted: a namespace whose sync has not landed, whose template
+    list could not be read, or whose bookkeeping is unusable is
+    ``unverified`` — a gap seen mid-sync is provisional, and one read through
+    unusable bookkeeping proves nothing. A check that could not run is
+    ``unverified`` too, and so is a namespace with nothing to check: a caller
+    must never read "nobody looked" as clean. Under whatever verdict, every
+    finding is listed, so none is hidden by its neighbour.
+    """
+    proven, blocked = _findings(result)
+    blockers = _blockers(result, sync_running, templates_unreadable)
+    if blockers:
+        result.verdict, result.reasons = UNVERIFIED, blockers + proven + blocked
+    elif proven:
+        result.verdict, result.reasons = FAILED, proven + blocked
+    elif blocked:
+        result.verdict, result.reasons = UNVERIFIED, blocked
+    else:
+        result.verdict, result.reasons = VERIFIED, []
     return result
+
+
+def _findings(result: NamespaceParityResult) -> tuple[list[ParityReason], list[ParityReason]]:
+    """Every per-surface finding of the check: what it proved missing, and
+    what it could not run to find out."""
+    seen = _template_findings_of(result) + _derived_findings(result) + _view_findings(result)
+    blocked = [r for r in seen if r.issue == BLOCKED_ISSUE]
+    proven = [r for r in seen if r.issue != BLOCKED_ISSUE]
+    return proven, blocked
+
+
+def _template_findings_of(result: NamespaceParityResult) -> list[ParityReason]:
+    """The findings of every template row; the bookkeeping only counts as a
+    source of truth when the check said it is one."""
+    return [
+        r for row in result.templates
+        for r in _template_findings(row, bookkeeping_ok=result.bookkeeping_tables_ok)
+    ]
+
+
+def _derived_findings(result: NamespaceParityResult) -> list[ParityReason]:
+    """The findings of the term tables, skipping the ones that matched."""
+    return [r for r in (_derived_finding(d) for d in result.derived_tables) if r]
+
+
+def _view_findings(result: NamespaceParityResult) -> list[ParityReason]:
+    """The findings of the views registered for the namespace."""
+    return [r for r in (_view_finding(v) for v in result.views) if r]
+
+
+def _blockers(
+    result: NamespaceParityResult, sync_running: bool, templates_unreadable: bool,
+) -> list[ParityReason]:
+    """Why no verdict is possible here: a store did not answer, the sync has
+    not landed, or there was nothing to check."""
+    blockers: list[ParityReason] = []
+    if templates_unreadable:
+        blockers.append(ParityReason(
+            kind="namespace", name=result.namespace, issue="templates_unreadable",
+            detail=(
+                f"the namespace's templates could not be listed"
+                f"{result.bookkeeping_error or ' — the template store did not answer'}"
+                ", so none of its tables were checked"
+            ),
+        ))
+    if not result.bookkeeping_tables_ok:
+        blockers.append(ParityReason(
+            kind="namespace", name=result.namespace, issue="bookkeeping_unusable",
+            detail=result.bookkeeping_error or "the reporting bookkeeping tables are unusable",
+        ))
+    if sync_running:
+        blockers.append(ParityReason(
+            kind="namespace", name=result.namespace, issue="sync_running",
+            detail=(
+                f"namespace '{result.namespace}' has a batch sync still running"
+            ),
+        ))
+    if not blockers and not _checked_anything(result):
+        blockers.append(ParityReason(
+            kind="namespace", name=result.namespace, issue="nothing_checked",
+            detail=(
+                "no sync-enabled template, registered view or term data to check "
+                f"in namespace '{result.namespace}'"
+            ),
+        ))
+    return blockers
+
+
+def _checked_anything(result: NamespaceParityResult) -> bool:
+    """Whether the check had any surface to look at at all."""
+    return (
+        bool(result.templates)
+        or bool(result.views)
+        or any(d.expected_rows for d in result.derived_tables)
+    )
+
+
+def _template_owner(row: TemplateParity) -> str:
+    """A template row named for the operator: qualified when another
+    namespace owns the template, since its tables are still this namespace's."""
+    return f"{row.template_namespace}:{row.template_value}" if row.template_namespace \
+        else row.template_value
+
+
+def _template_findings(row: TemplateParity, *, bookkeeping_ok: bool) -> list[ParityReason]:
+    """What a template row says about its tables: the table, its shape, its
+    rows, and the entity view and bookkeeping row the split layout needs —
+    or why the check of it could not run. Mirrors structural_ok/derived_ok,
+    which decide whether there is anything to explain.
+    """
+    owner = _template_owner(row)
+    if row.error:
+        return [ParityReason(
+            kind="template", name=row.template_value, issue=BLOCKED_ISSUE,
+            detail=f"{owner}: could not be checked — {row.error}",
+        )]
+    findings: list[ParityReason] = []
+    # A foreign template's tables are made per pinned version as its
+    # documents arrive, so for one it is enough that a version table exists
+    # (structural_ok states the same rule).
+    present = bool(row.version_tables) if row.template_namespace else row.table_present
+    if not present:
+        findings.append(ParityReason(
+            kind="template", name=row.template_value, issue="table_missing",
+            detail=f"{owner}: no reporting table in the namespace's schema",
+        ))
+    elif row.missing_columns:
+        findings.append(ParityReason(
+            kind="template", name=row.template_value, issue="columns_missing",
+            detail=f"{owner}: table is missing columns {row.missing_columns}",
+        ))
+    if row.legacy_table:
+        findings.append(ParityReason(
+            kind="template", name=row.template_value, issue="legacy_table",
+            detail=(
+                f"{owner}: a pre-split table still holds its bare name, shadowing "
+                "the entity view — drop it, then re-run the batch sync"
+            ),
+        ))
+    if row.counts_match is False:
+        findings.append(ParityReason(
+            kind="template", name=row.template_value, issue="count_mismatch",
+            expected=row.expected_documents, actual=row.actual_rows,
+            detail=(
+                f"{owner}: {row.actual_rows} of {row.expected_documents} "
+                "live documents have rows"
+            ),
+        ))
+    findings.extend(_template_derived_findings(row, owner=owner, bookkeeping_ok=bookkeeping_ok))
+    return findings
+
+
+def _template_derived_findings(
+    row: TemplateParity, *, owner: str, bookkeeping_ok: bool,
+) -> list[ParityReason]:
+    """The two things a versioned template's tables are queried through: its
+    entity view and its migration row. Only meaningful once a version table
+    exists, and the row only once the bookkeeping itself is usable."""
+    if not row.version_tables:
+        return []
+    findings: list[ParityReason] = []
+    if not row.view_present:
+        findings.append(ParityReason(
+            kind="template", name=row.template_value, issue="entity_view_missing",
+            detail=f"{owner}: its entity view is missing — re-run the batch sync",
+        ))
+    if bookkeeping_ok and not row.bookkeeping_row:
+        findings.append(ParityReason(
+            kind="template", name=row.template_value, issue="bookkeeping_row_missing",
+            detail=(
+                f"{owner}: no migration row recorded for it — re-run the batch sync"
+            ),
+        ))
+    return findings
+
+
+def _derived_finding(row: DerivedTableParity) -> ParityReason | None:
+    """A term table that does not hold what def-store has, or whose check
+    could not run."""
+    if not row.issue:
+        return None
+    if row.issue == BLOCKED_ISSUE:
+        return ParityReason(
+            kind="table", name=row.table, issue=BLOCKED_ISSUE,
+            detail=f"{row.table}: could not be checked — {row.error or 'the check did not run'}",
+        )
+    return ParityReason(
+        kind="table", name=row.table, issue=row.issue,
+        expected=row.expected_rows, actual=row.actual_rows,
+        detail=f"{row.table}: {row.actual_rows} rows where {row.expected_rows} are expected",
+    )
+
+
+def _view_finding(view: ViewParity) -> ParityReason | None:
+    """A view registered for the namespace that no longer exists."""
+    if view.present:
+        return None
+    return ParityReason(
+        kind="view", name=view.view_name, issue="view_missing",
+        detail=f"registered view '{view.view_name}' is gone — re-register it",
+    )
 
 
 def _all_clear(result: NamespaceParityResult) -> bool:

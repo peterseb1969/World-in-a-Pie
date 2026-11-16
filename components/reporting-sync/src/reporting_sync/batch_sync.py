@@ -157,6 +157,26 @@ class BatchSyncService:
         # Strong refs to fire-and-forget tasks (definitions pre-sync) so the
         # event loop cannot garbage-collect them mid-flight.
         self._background_tasks: set[asyncio.Task] = set()
+        # The namespace of every definitions sweep in flight (None = every
+        # namespace), so a parity check can tell "still syncing" from "empty".
+        self._definitions_sweeps: set[str | None] = set()
+
+    def is_namespace_sync_running(self, namespace: str) -> bool:
+        """Whether this namespace is still being synced.
+
+        A pending or running document job whose scope covers it, or a
+        definitions sweep of it. The instance-wide scope (``namespace=None``)
+        covers every namespace, as in _find_active_job's overlap rule. Parity
+        asks this so a row the sync has not written yet reads as "still
+        syncing", never as a gap the operator has to chase.
+        """
+        scopes = (namespace, None)
+        for job in self._jobs.values():
+            if job.namespace in scopes and job.status in (
+                BatchSyncStatus.PENDING, BatchSyncStatus.RUNNING,
+            ):
+                return True
+        return any(sweep in scopes for sweep in self._definitions_sweeps)
 
     async def _fetch_template(self, template_id: str) -> dict[str, Any] | None:
         """Fetch template from Template Store."""
@@ -860,6 +880,18 @@ class BatchSyncService:
                     (job.error_message + "; " if job.error_message else "") + warning
                 )
 
+    async def _sync_definitions_tracked(
+        self, namespace: str | None, page_size: int
+    ) -> None:
+        """The definitions sweep, recorded as in flight while it runs, so a
+        parity check of its namespace says "still syncing" instead of reporting
+        the term tables it has not written yet as gaps."""
+        self._definitions_sweeps.add(namespace)
+        try:
+            await self._sync_definitions(namespace, page_size)
+        finally:
+            self._definitions_sweeps.discard(namespace)
+
     async def _sync_definitions(
         self, namespace: str | None, page_size: int
     ) -> None:
@@ -923,7 +955,7 @@ class BatchSyncService:
         # do not read those tables, so there is no ordering dependency and
         # no reason to block the acknowledgement on it.
         definitions_task = asyncio.create_task(
-            self._sync_definitions(namespace, page_size)
+            self._sync_definitions_tracked(namespace, page_size)
         )
         self._background_tasks.add(definitions_task)
         definitions_task.add_done_callback(self._background_tasks.discard)

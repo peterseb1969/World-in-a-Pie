@@ -1078,7 +1078,7 @@ async def reporting_parity(
         description=(
             "Include expected-vs-actual row counts (mongo-derived, same "
             "query the batch sync consumes). Pass false for the cheap "
-            "structure-only form used between restore phases."
+            "structure-only form, which checks tables but not their rows."
         ),
     ),
     identity: UserIdentity = Depends(require_api_key),
@@ -1098,6 +1098,13 @@ async def reporting_parity(
     closure's reflexive rows against what its rebuild writes. Failures
     count in ``derived_issues``; ``ok`` holds only when every check passes.
 
+    ``verdict`` is the one answer to branch on, and ``reasons`` what stands
+    behind it: ``verified`` — every check ran and found nothing missing;
+    ``failed`` — a check proved rows or tables absent; ``unverified`` —
+    nothing could be settled, because a store did not answer, this
+    namespace's batch sync is still running, or there was nothing to check.
+    A check that could not run is never reported as a clean one.
+
     The one-request answer to "why does the reporting layer look empty":
     a stale/fossil schema shows structural issues, a dead sync worker or
     blocked doc-type sync shows count mismatches, and a pre-namespace-keying
@@ -1107,8 +1114,17 @@ async def reporting_parity(
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
     return await check_namespace_parity(
-        state.postgres_pool, namespace, include_counts=include_counts
+        state.postgres_pool, namespace, include_counts=include_counts,
+        sync_running=_namespace_sync_running(namespace),
     )
+
+
+def _namespace_sync_running(namespace: str) -> bool:
+    """Whether reporting-sync itself still has a sync in flight for this
+    namespace — its own knowledge, which the parity check cannot derive from
+    the tables."""
+    service = state.batch_sync_service
+    return bool(service and service.is_namespace_sync_running(namespace))
 
 
 @router.get("/parity/status", dependencies=[_PRIVILEGED], response_model=ParityMonitorStatus)
