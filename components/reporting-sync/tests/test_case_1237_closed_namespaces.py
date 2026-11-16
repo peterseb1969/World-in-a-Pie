@@ -15,6 +15,8 @@ that logs in as the real reader role, the one privileged SQL uses.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import uuid
 from urllib.parse import urlsplit
@@ -231,9 +233,10 @@ async def test_privileged_sql_waits_for_the_startup_check(app_on_reader, monkeyp
 
 
 async def test_scoped_reads_never_grant_a_closed_schema(pg_pool, scoped_reads):
-    """A scoped key's readable list comes from the Registry, which does not
-    list a namespace being deleted. The grant step does not rely on that: it
-    leaves a closed schema out whatever list it is handed."""
+    """A scoped key's readable list is the Registry's answer cached in-process
+    for up to 30 seconds, so a namespace whose deletion has begun can still be
+    on it. The grant step does not rely on the list: it leaves a closed schema
+    out whatever list it is handed."""
     from reporting_sync.scoped_reads import namespace_role
 
     live = "ns-still-open"
@@ -252,6 +255,65 @@ async def test_scoped_reads_never_grant_a_closed_schema(pg_pool, scoped_reads):
         async with pg_pool.acquire() as conn:
             for schema in (NS, live):
                 await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+async def _waits_on_namespace_lock(pg_pool, schema: str) -> bool:
+    """Whether a session is queued on the advisory lock closing a namespace
+    takes — the grant step being queued is what excludes the close. A
+    single-key advisory lock carries the key's high and low 32-bit words, and
+    hashtext is signed, so both words are compared."""
+    for _ in range(200):
+        if await pg_pool.fetchval(
+            """
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+              AND classid::text = ((hashtext($1)::bigint >> 32) & 4294967295)::text
+              AND objid::text = (hashtext($1)::bigint & 4294967295)::text
+            LIMIT 1
+            """,
+            f"wip-ns:{schema}",
+        ):
+            return True
+        await asyncio.sleep(0.025)
+    return False
+
+
+async def test_the_grant_step_waits_for_a_namespace_being_closed(pg_pool, scoped_reads):
+    """The grant step and a close of the same schema exclude each other, so a
+    close cannot commit between the closed check and the GRANTs and see the
+    USAGE it revoked put back."""
+    from reporting_sync.scoped_reads import namespace_role
+
+    role = namespace_role(NS)
+    async with pg_pool.acquire() as conn:
+        await conn.execute(f'CREATE SCHEMA "{NS}"')
+        await conn.execute(f'CREATE ROLE "{role}" NOLOGIN')
+        await conn.execute(f'GRANT USAGE ON SCHEMA "{NS}" TO "{role}"')
+    holder = await asyncpg.connect(POSTGRES_TEST_URI)
+    task = None
+    try:
+        trx = holder.transaction()
+        await trx.start()
+        await holder.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{NS}")
+        task = asyncio.create_task(scoped_reads._apply_grants([NS]))
+        assert await _waits_on_namespace_lock(pg_pool, NS), (
+            "the grant step ran while the close held its schema lock"
+        )
+        # The close lands while the grant step waits.
+        await holder.execute(f"COMMENT ON SCHEMA \"{NS}\" IS '{CLOSED_SCHEMA_COMMENT}'")
+        await holder.execute(f'REVOKE USAGE ON SCHEMA "{NS}" FROM "{role}"')
+        await trx.commit()
+        await asyncio.wait_for(task, 30)
+        task = None
+        assert not await _usage(pg_pool, role)
+    finally:
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncpg.PostgresError):
+                await task
+        await holder.close()
+        async with pg_pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{NS}" CASCADE')
 
 
 SYNCED = {"template_id": "t-closing", "value": "closing", "version": 1,

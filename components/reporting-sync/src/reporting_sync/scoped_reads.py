@@ -148,6 +148,17 @@ class ScopedReads:
 
     async def _apply_grants(self, schemas: list[str]) -> None:
         async with self.owner_pool.acquire() as conn, conn.transaction():
+            # The per-schema lock close_namespace and drop_namespace_schema
+            # take, held before the closed check below: a close that committed
+            # after this step started is then visible to the check, and one
+            # that has not yet run waits for the GRANTs, so a REVOKE can never
+            # be followed by the USAGE it revoked. Sorted, because a grant step
+            # takes one lock per schema and every holder takes them in this
+            # order, before the global one.
+            for schema in sorted(schemas):
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{schema}"
+                )
             await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCOPE_LOCK_KEY)
             # A schema closed for its namespace's deletion is never granted
             # again, whatever list the caller's permissions produced.
