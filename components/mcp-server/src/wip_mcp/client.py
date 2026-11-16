@@ -809,7 +809,7 @@ class WipClient:
         terminology: str | None = None,
     ) -> dict:
         return await self._get(
-            self.def_store_url, f"/api/def-store/terms/{term_id}",
+            self.def_store_url, f"/api/def-store/terms/{quote(term_id, safe='')}",
             namespace=namespace,
             terminology=terminology,
         )
@@ -958,7 +958,7 @@ class WipClient:
         # cast to the real shape.
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
-            f"/api/def-store/ontology/terms/{term_id}/children",
+            f"/api/def-store/ontology/terms/{quote(term_id, safe='')}/children",
             relation_type=relation_type,
             namespace=self._ns(namespace),
             terminology=terminology,
@@ -970,7 +970,7 @@ class WipClient:
     ) -> list[dict]:
         return cast("list[dict[str, Any]]", await self._get(
             self.def_store_url,
-            f"/api/def-store/ontology/terms/{term_id}/parents",
+            f"/api/def-store/ontology/terms/{quote(term_id, safe='')}/parents",
             relation_type=relation_type,
             namespace=self._ns(namespace),
             terminology=terminology,
@@ -985,7 +985,7 @@ class WipClient:
         walk stopped at its node limit (`truncated`)."""
         return await self._get(
             self.def_store_url,
-            f"/api/def-store/ontology/terms/{term_id}/ancestors",
+            f"/api/def-store/ontology/terms/{quote(term_id, safe='')}/ancestors",
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=self._ns(namespace),
@@ -1001,7 +1001,7 @@ class WipClient:
         walk stopped at its node limit (`truncated`)."""
         return await self._get(
             self.def_store_url,
-            f"/api/def-store/ontology/terms/{term_id}/descendants",
+            f"/api/def-store/ontology/terms/{quote(term_id, safe='')}/descendants",
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=self._ns(namespace),

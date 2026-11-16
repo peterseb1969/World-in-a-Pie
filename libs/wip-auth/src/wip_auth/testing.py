@@ -111,11 +111,13 @@ def _iter_api_routes(routes: Any):
 def _walk_route_paths(routes: Any, prefix: str = ""):
     """Yield (method, full path) for every APIRoute under ``routes``,
     carrying each include's prefix (``_iter_api_routes`` yields the routes
-    themselves, without the prefix an ``include_router`` put on them)."""
+    themselves, without the prefix an ``include_router`` put on them).
+    Paths are templates without converters (``{term_id:path}`` yields
+    ``{term_id}``), as the OpenAPI schema writes them."""
     for route in routes:
         if isinstance(route, APIRoute):
             for method in route.methods:
-                yield method, prefix + route.path
+                yield method, prefix + route.path_format
             continue
         inner = getattr(route, "original_router", None)
         if inner is not None:

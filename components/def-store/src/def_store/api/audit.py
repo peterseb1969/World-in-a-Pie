@@ -96,7 +96,7 @@ def _empty(page: int, page_size: int) -> AuditLogResponse:
 
 
 @router.get(
-    "/terms/{term_id}",
+    "/terms/{term_id:path}",
     response_model=AuditLogResponse,
     summary="Get audit log for a term",
     description="Retrieve the complete change history for a specific term."

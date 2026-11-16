@@ -243,7 +243,7 @@ async def list_all_term_relations(
 # =============================================================================
 
 @router.get(
-    "/terms/{term_id}/ancestors",
+    "/terms/{term_id:path}/ancestors",
     response_model=TraversalResponse,
     summary="Get ancestors of a term"
 )
@@ -286,7 +286,7 @@ async def get_ancestors(
 
 
 @router.get(
-    "/terms/{term_id}/descendants",
+    "/terms/{term_id:path}/descendants",
     response_model=TraversalResponse,
     summary="Get descendants of a term"
 )
@@ -328,7 +328,7 @@ async def get_descendants(
 
 
 @router.get(
-    "/terms/{term_id}/parents",
+    "/terms/{term_id:path}/parents",
     response_model=list[TermRelationResponse],
     summary="Get direct parents of a term"
 )
@@ -365,7 +365,7 @@ async def get_parents(
 
 
 @router.get(
-    "/terms/{term_id}/children",
+    "/terms/{term_id:path}/children",
     response_model=list[TermRelationResponse],
     summary="Get direct children of a term"
 )

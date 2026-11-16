@@ -450,7 +450,7 @@ async def search_terms(
 
 
 @router.get(
-    "/terms/{term_id}",
+    "/terms/{term_id:path}",
     response_model=TermResponse,
     summary="Get a term by ID"
 )
