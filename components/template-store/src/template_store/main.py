@@ -39,7 +39,12 @@ from wip_auth.mongo import mongo_client_options, mongo_identity, mongo_ping
 from . import __version__
 from .api import api_router
 from .models.template import Template
-from .services.def_store_client import DefStoreError, configure_def_store_client, get_def_store_client
+from .services.def_store_client import (
+    DefStoreAmbiguousError,
+    DefStoreError,
+    configure_def_store_client,
+    get_def_store_client,
+)
 from .services.errors import TemplateUnresolvable
 from .services.integrity_service import IntegrityCheckResult, check_all_templates
 from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
@@ -259,7 +264,14 @@ app.include_router(api_router)
 
 async def _def_store_unavailable(_request: Request, exc: DefStoreError) -> JSONResponse:
     """Def-Store did not answer and nothing could answer for it: the request
-    fails visibly (503) rather than as a 500 or with a guessed answer."""
+    fails visibly (503) rather than as a 500 or with a guessed answer. An
+    identifier Def-Store answered as naming several terminologies is no
+    outage: it is the 409 Def-Store gave."""
+    if isinstance(exc, DefStoreAmbiguousError):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": {"error_code": "ambiguous_reference", "message": str(exc)}},
+        )
     return JSONResponse(status_code=503, content={"detail": f"Def-Store did not answer: {exc}"})
 
 

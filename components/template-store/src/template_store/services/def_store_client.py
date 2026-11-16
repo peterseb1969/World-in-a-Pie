@@ -76,6 +76,9 @@ class DefStoreClient:
                 if response.status_code == 404:
                     return None
 
+                if response.status_code == 409:
+                    raise DefStoreAmbiguousError(_ambiguity_message(response))
+
                 if response.status_code != 200:
                     raise DefStoreError(
                         f"Failed to get terminology: {response.status_code} - {response.text}"
@@ -201,6 +204,23 @@ class DefStoreClient:
 class DefStoreError(Exception):
     """Error communicating with the Def-Store service."""
     pass
+
+
+class DefStoreAmbiguousError(DefStoreError):
+    """Def-Store answered, with 409: the identifier names several
+    terminologies. An answer about the reference, not a failure to fetch it;
+    the message carries Def-Store's candidates."""
+
+
+def _ambiguity_message(response: httpx.Response) -> str:
+    """Def-Store's own explanation of a 409, which names the candidates."""
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return response.text
+    if isinstance(detail, dict) and detail.get("message"):
+        return str(detail["message"])
+    return str(detail)
 
 
 # Singleton instance for convenience

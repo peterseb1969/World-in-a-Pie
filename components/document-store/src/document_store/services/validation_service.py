@@ -17,7 +17,7 @@ from wip_auth.document_identity import (
 )
 from wip_auth.registry_client import AmbiguousIdentifierError, DependencyUnavailableError
 
-from .def_store_client import DefStoreError, get_def_store_client
+from .def_store_client import DefStoreAmbiguousError, DefStoreError, get_def_store_client
 from .errors import dependency_unavailable
 from .identity_service import IdentityService
 from .inbound_gate import InboundGate, current_gate, gate_refuses, reset_gate, use_gate
@@ -2737,6 +2737,13 @@ class ValidationService:
                     "terminology_id": terminology.get("terminology_id"),
                     "terminology_value": terminology.get("value"),
                 }
+        except DefStoreAmbiguousError as e:
+            result.add_error(
+                code="ambiguous_reference",
+                message=str(e),
+                field=field_path,
+            )
+            return None
         except DefStoreError as e:
             if e.unavailable:
                 raise dependency_unavailable(

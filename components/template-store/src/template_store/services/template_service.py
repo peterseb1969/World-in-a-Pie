@@ -49,7 +49,7 @@ from ..models.template import (
     TemplateUsage,
 )
 from . import referent_paths
-from .def_store_client import DefStoreError, get_def_store_client
+from .def_store_client import DefStoreAmbiguousError, DefStoreError, get_def_store_client
 from .document_store_client import get_document_store_client
 from .errors import TemplateError, TemplateUnresolvable, error_fields
 from .inbound_gate import InboundGate, carried_ids
@@ -3580,6 +3580,8 @@ class TemplateService:
                     _error(field, "invalid_reference", f"Terminology '{ref}' not found or inactive")
             except DefStoreError as e:
                 # Def-Store did not answer: the reference is unchecked, so the
+            except DefStoreAmbiguousError as e:
+                _error(field, "ambiguous_reference", str(e))
                 # template is not valid and does not activate (a warning let
                 # activation through on an answer nobody gave).
                 _error(field, "unverifiable", f"Could not check terminology '{ref}': {e!s}")

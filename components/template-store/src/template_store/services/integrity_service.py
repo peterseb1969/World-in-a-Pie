@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from ..models.field import FieldType
 from ..models.template import Template
-from .def_store_client import DefStoreError, get_def_store_client
+from .def_store_client import DefStoreAmbiguousError, DefStoreError, get_def_store_client
 
 
 class IntegrityIssue(BaseModel):
@@ -116,6 +116,14 @@ async def check_terminology_reference(
         terminology = await def_store.get_terminology(terminology_id=ref)
         if terminology is None:
             terminology = await def_store.get_terminology(terminology_value=ref)
+    except DefStoreAmbiguousError as e:
+        # Def-Store answered: the reference names several terminologies, so
+        # which one it means cannot be checked. Not an outage.
+        scan.skipped.append(SkippedCheck(
+            template_id=template.template_id, template_version=template.version,
+            field_path=field_path, reference=ref, reason=f"Ambiguous reference: {e}",
+        ))
+        return
     except DefStoreError as e:
         scan.skipped.append(SkippedCheck(
             template_id=template.template_id, template_version=template.version,
