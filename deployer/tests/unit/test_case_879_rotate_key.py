@@ -241,6 +241,21 @@ class TestProbe:
         )
         assert len(problems) == 1 and "new key is not accepted" in problems[0]
 
+    def test_an_old_key_that_got_no_answer_is_not_reported_as_answered(self, tmp_path):
+        d = self._deployment(tmp_path)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.headers.get("X-API-Key") == "new":
+                return httpx.Response(200)
+            raise httpx.ConnectError("refused", request=request)
+
+        problems = check_key_rotation(
+            d, "new", "old", transport=httpx.MockTransport(handler),
+            attempts=1, delay_seconds=0,
+        )
+        assert len(problems) == 1 and "old key got no response" in problems[0]
+        assert "None" not in problems[0]
+
     def test_old_key_still_accepted_is_reported(self, tmp_path):
         d = self._deployment(tmp_path)
         problems = check_key_rotation(

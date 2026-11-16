@@ -1280,6 +1280,8 @@ def check_key_rotation(
                 problems.append(
                     f"the old key is still answered {old_status} at {url} — "
                     "a service may still hold it"
+                    if old_status is not None else
+                    f"the old key got no response at {url}, so its refusal is unconfirmed"
                 )
     return problems
 

@@ -39,9 +39,9 @@ runner = CliRunner()
 AA_KEY = "app-wip-aa"
 AA_SECRET = f"{AA_KEY}-api-key"
 
-# The window `_key_arrival_note` names for k8s: about three minutes at two
-# seconds per attempt.
-FULL_WINDOW = 75
+# The window `_key_arrival_note` names for k8s: about three minutes, 89 sleeps
+# of two seconds between 90 attempts.
+FULL_WINDOW = 90
 
 
 class _Probe(NamedTuple):
@@ -149,12 +149,26 @@ class TestTheWait:
         harness.problems = ["the new key is not accepted at https://wip.example (last answer: 401)"]
         result = harness.run("add-app", "wip-aa")
         assert result.exit_code == 1
-        assert f"✗ the Registry still refuses {AA_KEY}" in result.output
+        assert f"✗ the Registry did not accept {AA_KEY}" in result.output
         assert "applied and saved" in result.output
         assert "401" in result.output
         # The verb still did its work: the install has the app, and waiting for
         # the Registry is what failed, not the apply.
         assert [a.name for a in cli._load_deployment(harness.install_dir).spec.apps] == ["wip-aa"]
+
+    def test_an_install_that_never_answered_is_not_called_a_refusal(
+        self, harness: _Harness
+    ) -> None:
+        # No answer still fails add-app (exit 0 means ready), but the operator
+        # is told it may be the install, not the key.
+        harness.problems = [
+            "the new key is not accepted at https://wip.example (last answer: no response)"
+        ]
+        result = harness.run("add-app", "wip-aa")
+        assert result.exit_code == 1
+        assert "refuses" not in result.output
+        assert "no response" in result.output
+        assert "check that it is reachable" in result.output
 
     def test_a_readded_app_is_asked_about_its_new_key(
         self, harness: _Harness
@@ -282,3 +296,9 @@ class TestProbe:
             t1228._deployment(), "k", None, attempts=2
         ).not_run == "the certificate did not verify"
         assert called == []
+
+
+def test_the_window_is_the_three_minutes_the_note_names() -> None:
+    # The probe sleeps between attempts, not after the last one.
+    assert (cli._KEY_ARRIVAL_ATTEMPTS - 1) * 2 >= 175
+

@@ -3269,9 +3269,11 @@ def _read_file_secret(deployment: Deployment, secret_name: str) -> str | None:
         return None
 
 
-# The window `_key_arrival_note` names for k8s: about three minutes, asked
-# twice a second apart, the same one rotate-key gives a declared key.
-_KEY_ARRIVAL_ATTEMPTS = 75
+# The window `_key_arrival_note` names for k8s: about three minutes. The
+# probe sleeps two seconds between attempts and not after the last, so 90
+# attempts wait 89 x 2 s = 178 s plus request time. rotate-key gives a
+# declared key the same window.
+_KEY_ARRIVAL_ATTEMPTS = 90
 
 
 def _await_app_key(deployment: Deployment, key: SpecAPIKey) -> None:
@@ -3307,9 +3309,9 @@ def _await_app_key(deployment: Deployment, key: SpecAPIKey) -> None:
     if acceptance.problems:
         typer.echo(
             typer.style(
-                f"✗ the Registry still refuses {key.name} after the window "
+                f"✗ the Registry did not accept {key.name} within the window "
                 "above: the app is applied and saved, but it cannot reach WIP "
-                "while its key is unknown.",
+                "until its key is accepted.",
                 fg=typer.colors.RED,
                 bold=True,
             ),
@@ -3318,8 +3320,10 @@ def _await_app_key(deployment: Deployment, key: SpecAPIKey) -> None:
         for problem in acceptance.problems:
             typer.echo(f"  - {problem}", err=True)
         typer.echo(
-            "  When the key is accepted, restart the app so it connects again; "
-            "`wip-deploy verify --security --live` probes it.",
+            "  A last answer of 401 means the key has not arrived; no response "
+            "or a 5xx means the install did not answer, so check that it is "
+            "reachable. When the key is accepted, restart the app so it "
+            "connects again; `wip-deploy verify --security --live` probes it.",
             err=True,
         )
         raise typer.Exit(1)
@@ -4045,7 +4049,8 @@ class KeyAcceptance(NamedTuple):
     `not_run` names why the question never reached the install — no trust
     anchor, or a certificate that does not verify against it. That is not an
     answer and never fails the caller: the install's keys are not sent
-    unverified. `problems` is what the Registry did answer that is wrong;
+    unverified. `problems` is what the probe found wrong: an answer other than
+    200 for the new key (a 401 refusal, an edge error) or no answer at all;
     empty means the new key is accepted, and, when an old key is given, refused.
     """
 
@@ -4268,7 +4273,7 @@ def rotate_key(
     # follow within one key sync.
     # A check that could not ask (no trust anchor, or a certificate that does
     # not verify against it) is reported as not run: the rotation is done,
-    # and only an answer from the install can fail it.
+    # and only an answer from the install, or its silence, can fail it.
     acceptance = _probe_key_at_registry(
         deployment, new_plaintext, old_plaintext,
         attempts=_KEY_ARRIVAL_ATTEMPTS if key_name is not None else 30,
