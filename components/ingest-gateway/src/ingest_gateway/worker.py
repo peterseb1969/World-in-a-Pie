@@ -188,7 +188,8 @@ class IngestWorker:
 
     @property
     def messages_gave_up(self) -> int:
-        """Messages whose forward still failed transiently on the last allowed delivery."""
+        """Messages whose forward still failed transiently on the last allowed
+        delivery, whether or not their outcome could then be stored."""
         return self._messages_gave_up
 
     @property
@@ -271,19 +272,31 @@ class IngestWorker:
         self, msg: Any, result: IngestResult, *, delivery: int, give_up: bool = False
     ) -> None:
         """Publish a message's final outcome, then ack it (term it when
-        giving up). If the outcome cannot be stored the message is handed
-        back with the outcome kept, so the redelivery publishes it without
-        forwarding the item again."""
+        giving up). Until the ack is made the outcome stays kept under the
+        message, so a redelivery — after an outcome that could not be stored,
+        or an ack that failed — publishes it again without forwarding the
+        item again. A failed ack leaves the message to the server's
+        redelivery; it is counted once, when an ack succeeds."""
         seq = self._stream_sequence(msg)
         if await self._publish(result):
+            self._keep(seq, result)
+            try:
+                if give_up:
+                    await msg.term()
+                else:
+                    await msg.ack()
+            except Exception as e:
+                logger.warning(
+                    f"Outcome of correlation_id={result.correlation_id} stored, but "
+                    f"the message could not be acked ({e}); its redelivery publishes "
+                    f"the stored outcome again"
+                )
+                return
             if seq is not None:
                 self._unpublished.pop(seq, None)
             self._count(result)
             if give_up:
                 self._messages_gave_up += 1
-                await msg.term()
-            else:
-                await msg.ack()
             logger.info(
                 f"Settled {result.action.value if result.action else 'unknown'} "
                 f"correlation_id={result.correlation_id} status={result.status.value} "
@@ -295,6 +308,8 @@ class IngestWorker:
             if seq is not None:
                 self._unpublished.pop(seq, None)
             self._count(None)
+            if give_up:
+                self._messages_gave_up += 1
             logger.error(
                 f"Outcome of correlation_id={result.correlation_id} could not be "
                 f"stored on the last allowed delivery; its producer will not find it"
@@ -302,15 +317,20 @@ class IngestWorker:
             await msg.term()
             return
 
-        if seq is not None:
-            self._unpublished[seq] = result
-            self._unpublished.move_to_end(seq)
-            while len(self._unpublished) > UNPUBLISHED_MAX:
-                self._unpublished.popitem(last=False)
+        self._keep(seq, result)
         await self._retry_later(
             msg, delivery,
             f"Outcome of correlation_id={result.correlation_id} not stored",
         )
+
+    def _keep(self, seq: int | None, result: IngestResult) -> None:
+        """Keep a message's outcome until the message is settled."""
+        if seq is None:
+            return
+        self._unpublished[seq] = result
+        self._unpublished.move_to_end(seq)
+        while len(self._unpublished) > UNPUBLISHED_MAX:
+            self._unpublished.popitem(last=False)
 
     async def _refuse(
         self,
@@ -425,11 +445,13 @@ class IngestWorker:
         started = time.perf_counter()
         delivery = self._delivery_count(msg)
 
-        # The item was forwarded on an earlier delivery and only its outcome
-        # failed to store: publish that, never write the item twice.
+        # The item was forwarded on an earlier delivery and its outcome failed
+        # to store, or the message to ack: publish that, never write the item
+        # twice. Only a given-up outcome is kept retryable.
         seq = self._stream_sequence(msg)
         if seq is not None and seq in self._unpublished:
-            await self._settle(msg, self._unpublished[seq], delivery=delivery)
+            kept = self._unpublished[seq]
+            await self._settle(msg, kept, delivery=delivery, give_up=kept.retryable)
             return
 
         read = self._read(msg)
@@ -498,8 +520,12 @@ class IngestWorker:
             while True:
                 await asyncio.sleep(ACK_WAIT_SECONDS / 3)
                 for queued in list(pending):
-                    with suppress(Exception):
+                    try:
                         await queued.in_progress()
+                    except Exception as e:
+                        # Missed, the server may redeliver it while it is
+                        # queued here; the redelivery is handled like any.
+                        logger.warning(f"Could not keep a queued message alive: {e}")
 
         heartbeat = asyncio.create_task(keep_alive())
         try:

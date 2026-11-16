@@ -1,5 +1,6 @@
 """HTTP client for forwarding requests to WIP REST APIs."""
 
+import json
 import logging
 from typing import Any, cast
 from urllib.parse import quote
@@ -17,6 +18,24 @@ logger = logging.getLogger(__name__)
 # created a moment ago reaches each service on its own sync). A key revoked
 # meanwhile is refused for good once the deliveries run out.
 _TRANSIENT_4XX = frozenset({401, 408, 429})
+
+# A failed answer's detail and body are kept in the outcome only up to these
+# sizes, well under NATS's default 1 MB payload.
+ERROR_DETAIL_MAX = 500
+ERROR_BODY_MAX = 64 * 1024
+
+
+def _bounded_body(body: Any) -> dict[str, Any] | None:
+    """A failed answer's body as the outcome keeps it: whole when it
+    serializes within ERROR_BODY_MAX characters, else its start, marked
+    truncated. A body that is not a JSON object is kept under "body"."""
+    if body is None:
+        return None
+    kept = body if isinstance(body, dict) else {"body": body}
+    text = json.dumps(kept, default=str)
+    if len(text) <= ERROR_BODY_MAX:
+        return kept
+    return {"truncated": True, "raw": text[:ERROR_BODY_MAX]}
 
 
 # Action to endpoint mapping
@@ -129,13 +148,16 @@ class IngestHTTPClient:
         # definitive answer about this request (validation, auth,
         # not found) that redelivery cannot change.
         if response.status_code >= 400:
-            error_detail = response_data.get("detail") if response_data else response.text[:500]
+            # Bounded: the outcome is one NATS message, and an outcome too
+            # large to publish never reaches its producer.
+            detail = response_data.get("detail") if isinstance(response_data, dict) else None
+            error_detail = str(detail if detail is not None else response.text)[:ERROR_DETAIL_MAX]
             return IngestResult(
                 correlation_id=correlation_id,
                 action=action,
                 status=IngestResultStatus.FAILED,
                 http_status_code=response.status_code,
-                response=response_data,
+                response=_bounded_body(response_data),
                 error=f"HTTP {response.status_code}: {error_detail}",
                 retryable=(
                     response.status_code >= 500

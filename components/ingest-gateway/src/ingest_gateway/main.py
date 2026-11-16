@@ -253,9 +253,10 @@ async def health_check() -> Any:
             "nats_url": settings.nats_url,
             "ingest_stream": settings.nats_ingest_stream_name,
             "results_stream": settings.nats_results_stream_name,
-            # Redeliveries after transient failures, messages given up on
-            # after the last allowed delivery, and messages consumed with no
-            # readable outcome. Reported, not turned into a non-200: a down
+            # Redeliveries after transient failures, messages whose forward
+            # still failed transiently on the last allowed delivery (whether
+            # or not their outcome could then be stored), and messages
+            # consumed with no readable outcome. Reported, not turned into a non-200: a down
             # target is not this service being unready.
             "messages_retried": state.worker.messages_retried if state.worker else 0,
             "messages_gave_up": state.worker.messages_gave_up if state.worker else 0,
