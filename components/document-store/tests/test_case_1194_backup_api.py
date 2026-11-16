@@ -22,6 +22,9 @@ from tests.test_case_543 import _job
 from tests.test_case_1098_restore_target import _archive, _post_restore
 
 API = "document_store.api.backup.check_namespace_permission"
+# A job is gated per namespace through check_entity_permission (its refusal
+# answers as a missing job); the listing tests stand in for that one.
+JOB_GATE = "document_store.api.backup.check_entity_permission"
 
 
 @pytest.mark.asyncio
@@ -30,10 +33,10 @@ async def test_listing_jobs_during_an_authorization_outage_is_a_503(
 ):
     await _job(namespaces=["wip"])
 
-    async def outage(identity, namespace, required):
+    async def outage(identity, namespace, required, not_found):
         raise HTTPException(503, "Authorization service unavailable")
 
-    with patch(API, side_effect=outage):
+    with patch(JOB_GATE, side_effect=outage):
         resp = await client.get("/api/document-store/backup/jobs", headers=auth_headers)
     assert resp.status_code == 503, resp.text
 
@@ -44,10 +47,10 @@ async def test_listing_jobs_still_hides_refused_ones(client: AsyncClient):
     # namespace locked for deletion, where a job spanning it stays theirs.
     await _job(namespaces=["wip"])
 
-    async def refused(identity, namespace, required):
-        raise HTTPException(404, "Namespace not found")
+    async def refused(identity, namespace, required, not_found):
+        raise HTTPException(404, not_found)
 
-    with patch(API, side_effect=refused):
+    with patch(JOB_GATE, side_effect=refused):
         resp = await client.get(
             "/api/document-store/backup/jobs", headers={"X-API-Key": "test_wip_admin_key"},
         )

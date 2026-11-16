@@ -815,6 +815,9 @@ async def activate_template(
         raise HTTPException(status_code=404, detail=await miss_detail(
             raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
         ))
+    # Write on the template's own namespace too, as every other write by id:
+    # a canonical id names a template wherever it lives.
+    await _require_write_on_template(template_id, raw_id, namespace)
 
     try:
         return await TemplateService.activate_template(

@@ -85,6 +85,15 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "namespaces": ["wip"],
     "grants": {"wip": "admin"},
 }, {
+    # Read on 'wip' and nothing more: a write gate weakened to "read" lets it
+    # through (test_case_845_authz).
+    "name": "test-wip-reader",
+    "key": "test_wip_reader_key",
+    "owner": "test-wip-reader",
+    "groups": [],
+    "namespaces": ["wip"],
+    "grants": {"wip": "read"},
+}, {
     # A platform service key (wip-services, never namespace-scoped): passes
     # the privileged gates.
     "name": "test-services",

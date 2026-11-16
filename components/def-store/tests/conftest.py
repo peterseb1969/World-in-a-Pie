@@ -72,6 +72,15 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "namespaces": ["wip"],
     "grants": {"wip": "admin"},
 }, {
+    # Read on 'wip' and nothing more: a write gate weakened to "read" lets it
+    # through (test_case_845_authz).
+    "name": "test-wip-reader",
+    "key": "test_wip_reader_key",
+    "owner": "test-wip-reader",
+    "groups": [],
+    "namespaces": ["wip"],
+    "grants": {"wip": "read"},
+}, {
     # A peer service's key: passes the privileged gates, refused by the
     # wip-admins-only ones (test_case_845_authz's admin group).
     "name": "test-services",

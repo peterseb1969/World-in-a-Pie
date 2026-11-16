@@ -10,6 +10,7 @@ skip the matrix.
 Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 - NOGRANT  no grant anywhere;
 - OTHER    read on 'xns-closed' only, nothing on 'wip';
+- READER   read on 'wip' only;
 - WRITER   write on 'wip';
 - WIPADMIN admin on 'wip';
 - SERVICES wip-services (no namespace scope);
@@ -17,14 +18,17 @@ Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 
 Groups:
 - public:     answered without a key.
-- ns:         addresses 'wip'; a caller who cannot read it gets 404 (its
-              existence is not leaked); a writer passes.
-- ns_bulk:    a bulk write addressing 'wip': HTTP 200 always, and each item
-              a caller cannot reach answers not_found.
+- ns:         a read addressing 'wip'; a caller who cannot read it gets 404
+              (its existence is not leaked); a reader passes.
+- ns_write:   a write addressing 'wip': as ns, and a reader gets 403, so a
+              gate weakened to "read" fails here.
+- ns_bulk:    a bulk read addressing 'wip': HTTP 200 always, and each item a
+              caller cannot read answers not_found; a reader passes.
+- ns_bulk_write: a bulk write: as ns_bulk, and forbidden for a reader.
 - ns_item:    one answer in a 200 body: error_code not_found for a caller
               who cannot read 'wip'.
-- ns_admin:   admin on 'wip' (or the privileged groups); a writer gets 403,
-              a caller who cannot read 'wip' 404.
+- ns_admin:   admin on 'wip' (or the privileged groups); a reader or a
+              writer gets 403, a caller who cannot read 'wip' 404.
 - privileged: wip-admins / wip-services only (403 for everyone else).
 - admin:      wip-admins only; a wip-services key gets 403 too.
 - filtered:   a listing that shows a caller only what it can read.
@@ -48,6 +52,7 @@ from wip_auth.testing import api_route_methods
 P = "/api/def-store"
 NOGRANT = "test_scoped_key"
 OTHER = "test_xns_only_key"
+READER = "test_wip_reader_key"
 WRITER = "test_xns_writer_key"
 WIPADMIN = "test_wip_admin_key"
 SERVICES = "test_services_key"
@@ -83,34 +88,34 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", "/livez", "public", _get("/livez")),
     ("GET", f"{P}/health/events", "privileged", _get(f"{P}/health/events")),
     # terminologies
-    ("POST", f"{P}/terminologies", "ns",
+    ("POST", f"{P}/terminologies", "ns_write",
      _json(P + "/terminologies", [{"value": "MATRIX_845_NEW", "label": "New", "namespace": "wip"}])),
     ("GET", f"{P}/terminologies", "ns", _get(P + "/terminologies?namespace=wip")),
-    ("PUT", f"{P}/terminologies", "ns_bulk",
+    ("PUT", f"{P}/terminologies", "ns_bulk_write",
      _json(P + "/terminologies?namespace=wip", lambda c: [{"terminology_id": c["tl"], "label": "changed"}])),
-    ("DELETE", f"{P}/terminologies", "ns_bulk",
+    ("DELETE", f"{P}/terminologies", "ns_bulk_write",
      _json(P + "/terminologies?namespace=wip", lambda c: [{"id": c["tl"]}])),
     ("GET", f"{P}/terminologies/by-value/{{value}}", "ns", _get(P + f"/terminologies/by-value/{TL}?namespace=wip")),
     ("GET", f"{P}/terminologies/{{terminology_id}}", "ns", _get(P + "/terminologies/{tl}")),
     ("GET", f"{P}/terminologies/{{terminology_id}}/dependencies", "ns",
      _get(P + "/terminologies/{tl}/dependencies")),
-    ("POST", f"{P}/terminologies/{{terminology_id}}/restore", "ns",
+    ("POST", f"{P}/terminologies/{{terminology_id}}/restore", "ns_write",
      _json(P + "/terminologies/{tl}/restore", None)),
-    ("POST", f"{P}/terminologies/{{terminology_id}}/terms", "ns",
+    ("POST", f"{P}/terminologies/{{terminology_id}}/terms", "ns_write",
      _json(P + "/terminologies/{tl}/terms", [{"value": "third", "label": "Third"}])),
     ("GET", f"{P}/terminologies/{{terminology_id}}/terms", "ns",
      _get(P + "/terminologies/{tl}/terms?namespace=wip")),
-    ("POST", f"{P}/terminologies/{{terminology_id}}/reconcile", "ns",
+    ("POST", f"{P}/terminologies/{{terminology_id}}/reconcile", "ns_write",
      _json(P + "/terminologies/{tl}/reconcile",
            {"terms": [{"value": "first", "label": "First"}], "dry_run": True})),
     # terms
     ("GET", f"{P}/terms/search", "ns", _get(P + f"/terms/search?namespace=wip&q=fir&terminology={TL}")),
     ("GET", f"{P}/terms/{{term_id}}", "ns", _get(P + "/terms/{t1}")),
-    ("PUT", f"{P}/terms", "ns_bulk", _json(P + "/terms", lambda c: [{"term_id": c["t1"], "label": "changed"}])),
-    ("DELETE", f"{P}/terms", "ns_bulk", _json(P + "/terms", lambda c: [{"id": c["t1"]}])),
-    ("POST", f"{P}/terms/deprecate", "ns_bulk",
+    ("PUT", f"{P}/terms", "ns_bulk_write", _json(P + "/terms", lambda c: [{"term_id": c["t1"], "label": "changed"}])),
+    ("DELETE", f"{P}/terms", "ns_bulk_write", _json(P + "/terms", lambda c: [{"id": c["t1"]}])),
+    ("POST", f"{P}/terms/deprecate", "ns_bulk_write",
      _json(P + "/terms/deprecate", lambda c: [{"term_id": c["t1"], "reason": "x"}])),
-    ("POST", f"{P}/terms/merge", "ns_bulk",
+    ("POST", f"{P}/terms/merge", "ns_bulk_write",
      _json(P + "/terms/merge", lambda c: [{"survivor_term_id": c["t1"], "absorbed_term_id": c["t2"]}])),
     # validation
     # Neither validate door permission-checks its namespace parameter: it only
@@ -127,9 +132,9 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     # import / export
     ("GET", f"{P}/import-export/export/{{terminology_id}}", "ns", _get(P + "/import-export/export/{tl}")),
     ("GET", f"{P}/import-export/export", "filtered", _get(P + "/import-export/export?namespace=wip")),
-    ("POST", f"{P}/import-export/import", "ns",
+    ("POST", f"{P}/import-export/import", "ns_write",
      _json(P + "/import-export/import?namespace=wip&format=json", EXPORT)),
-    ("POST", f"{P}/import-export/import-ontology", "ns",
+    ("POST", f"{P}/import-export/import-ontology", "ns_write",
      _json(P + f"/import-export/import-ontology?namespace=wip&terminology_value={TL}_OBO", OBO)),
     # Fetches a URL server-side, so what it brings cannot be checked against
     # any namespace before it is fetched: wip-admins only (is_superadmin). A
@@ -141,11 +146,11 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", f"{P}/audit/terminologies/{{terminology_id}}", "ns", _get(P + "/audit/terminologies/{tl}")),
     ("GET", f"{P}/audit", "filtered", _get(P + "/audit?namespace=wip")),
     # ontology
-    ("POST", f"{P}/ontology/term-relations", "ns",
+    ("POST", f"{P}/ontology/term-relations", "ns_write",
      _json(P + "/ontology/term-relations?namespace=wip",
            lambda c: [{"source_term_id": c["t2"], "target_term_id": c["t1"], "relation_type": "related_to"}])),
     ("GET", f"{P}/ontology/term-relations", "ns", _get(P + "/ontology/term-relations?namespace=wip&term_id={t1}")),
-    ("DELETE", f"{P}/ontology/term-relations", "ns",
+    ("DELETE", f"{P}/ontology/term-relations", "ns_write",
      _json(P + "/ontology/term-relations?namespace=wip",
            lambda c: [{"source_term_id": c["t1"], "target_term_id": c["t2"], "relation_type": "is_a"}])),
     ("GET", f"{P}/ontology/term-relations/all", "ns", _get(P + "/ontology/term-relations/all?namespace=wip")),
@@ -223,7 +228,21 @@ async def test_namespace_routes(route, ctx):
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 404, (route[1], key, resp.status_code, resp.text[:200])
-    for key in (WRITER, ADMIN):
+    for key in (READER, WRITER, ADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _of("ns_write"))
+async def test_namespace_write_routes(route, ctx):
+    assert (await _call(route, ctx, None)).status_code == 401
+    for key in (NOGRANT, OTHER):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 404, (route[1], key, resp.status_code, resp.text[:200])
+    resp = await _call(route, ctx, READER)
+    assert resp.status_code == 403, (route[1], resp.status_code, resp.text[:200])
+    for key in _permitted(route, WRITER, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
 
@@ -234,13 +253,18 @@ def _item_codes(resp) -> set[str | None]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", _of("ns_bulk"))
+@pytest.mark.parametrize("route", _of("ns_bulk") + _of("ns_bulk_write"))
 async def test_namespace_bulk_routes(route, ctx):
     assert (await _call(route, ctx, None)).status_code == 401
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert _item_codes(resp) == {"not_found"}, (key, [i.get("error") for i in resp.json()["results"]])
-    for key in _permitted(route, WRITER, ADMIN):
+    passing = (WRITER, ADMIN)
+    if route[2] == "ns_bulk_write":
+        assert _item_codes(await _call(route, ctx, READER)) == {"forbidden"}, route[1]
+    else:
+        passing = (READER, *passing)
+    for key in _permitted(route, *passing):
         resp = await _call(route, ctx, key)
         assert not _item_codes(resp) & {"not_found", "forbidden"}, (key, resp.text[:300])
 
@@ -252,8 +276,9 @@ async def test_namespace_admin_routes(route, ctx):
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 404, (route[1], key, resp.status_code, resp.text[:200])
-    resp = await _call(route, ctx, WRITER)
-    assert resp.status_code == 403, (resp.status_code, resp.text[:200])
+    for key in (READER, WRITER):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 403, (route[1], key, resp.status_code, resp.text[:200])
     for key in _permitted(route, WIPADMIN, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
@@ -295,7 +320,8 @@ async def test_filtered_listings(route, ctx):
     assert (await _call(route, ctx, None)).status_code == 401
     for key in (NOGRANT, OTHER):
         assert _listed(await _call(route, ctx, key)) == [], key
-    assert _listed(await _call(route, ctx, WRITER)), "a reader of 'wip' sees its entries"
+    for key in (READER, WRITER):
+        assert _listed(await _call(route, ctx, key)), (key, "a reader of 'wip' sees its entries")
 
 
 @pytest.mark.asyncio
@@ -306,7 +332,7 @@ async def test_namespace_item_routes(route, ctx):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 200 and resp.json().get("error_code") == "not_found", (
             key, resp.text[:200])
-    for key in (WRITER, ADMIN):
+    for key in (READER, WRITER, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 200, (key, resp.text[:200])
         assert resp.json().get("error_code") not in ("not_found", "forbidden"), (key, resp.text[:200])

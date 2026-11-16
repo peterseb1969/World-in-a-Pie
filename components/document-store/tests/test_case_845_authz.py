@@ -9,6 +9,7 @@ exists that ROUTES does not list: a new route cannot skip the matrix.
 Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 - NOGRANT  no grant anywhere (scoped to a namespace no data lives in);
 - OTHER    read on 'xns-closed' only, nothing on 'wip';
+- READER   read on 'wip' only (admin on 'xns-closed');
 - WRITER   write on 'wip';
 - WIPADMIN admin on 'wip';
 - SERVICES wip-services (no namespace scope);
@@ -17,12 +18,15 @@ Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 Groups:
 - public:        answered without a key.
 - authenticated: any valid key.
-- ns:            addresses 'wip'; a caller who cannot read it gets 404 (its
-                 existence is not leaked); a writer passes.
-- ns_bulk:       a bulk write addressing 'wip': HTTP 200 always, and each
-                 item a caller cannot reach answers not_found.
-- ns_admin:      admin on 'wip' (or the privileged groups); a writer gets
-                 403, a caller who cannot read 'wip' 404.
+- ns:            a read addressing 'wip'; a caller who cannot read it gets
+                 404 (its existence is not leaked); a reader passes.
+- ns_write:      a write addressing 'wip': as ns, and a reader gets 403, so a
+                 gate weakened to "read" fails here.
+- ns_bulk_write: a bulk write addressing 'wip': HTTP 200 always; each item a
+                 caller cannot read answers not_found, and forbidden for a
+                 reader.
+- ns_admin:      admin on 'wip' (or the privileged groups); a reader or a
+                 writer gets 403, a caller who cannot read 'wip' 404.
 - privileged:    wip-admins / wip-services only (403 for everyone else).
 - admin:         wip-admins only; a wip-services key gets 403 too.
 - filtered:      a listing that shows a caller only what it can read.
@@ -47,6 +51,7 @@ from wip_auth.testing import api_route_methods
 P = "/api/document-store"
 NOGRANT = "test_scoped_key"
 OTHER = "test_xns_only_key"
+READER = "test_app_shaped_key"
 WRITER = "test_xns_writer_key"
 WIPADMIN = "test_wip_admin_key"
 SERVICES = "test_services_key"
@@ -99,11 +104,11 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", f"{P}/health/events", "privileged", _get(f"{P}/health/events")),
     # documents
     ("GET", f"{P}/documents", "ns", _get(P + "/documents?namespace=wip")),
-    ("POST", f"{P}/documents", "ns", _json(P + "/documents", [_person("845000002")])),
-    ("PATCH", f"{P}/documents", "ns_bulk",
+    ("POST", f"{P}/documents", "ns_write", _json(P + "/documents", [_person("845000002")])),
+    ("PATCH", f"{P}/documents", "ns_bulk_write",
      _json(P + "/documents", lambda c: [{"document_id": c["doc"], "patch": {"first_name": "Z"}}])),
-    ("DELETE", f"{P}/documents", "ns_bulk", _json(P + "/documents", lambda c: [{"id": c["doc"]}])),
-    ("POST", f"{P}/documents/migrate", "ns",
+    ("DELETE", f"{P}/documents", "ns_bulk_write", _json(P + "/documents", lambda c: [{"id": c["doc"]}])),
+    ("POST", f"{P}/documents/migrate", "ns_write",
      _json(P + "/documents/migrate?namespace=wip",
            {"template_id": "PERSON", "from_version": 1, "to_version": 1, "dry_run": True})),
     ("GET", f"{P}/documents/impact-stats", "ns",
@@ -142,16 +147,16 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", f"{P}/table/{{template_id}}", "ns", _get(P + "/table/PERSON?namespace=wip")),
     ("GET", f"{P}/table/{{template_id}}/csv", "ns", _get(P + "/table/PERSON/csv?namespace=wip")),
     ("POST", f"{P}/import/preview", "authenticated", _upload(P + "/import/preview", "p.csv", CSV)),
-    ("POST", f"{P}/import", "ns", _upload(P + "/import", "p.csv", CSV, {
+    ("POST", f"{P}/import", "ns_write", _upload(P + "/import", "p.csv", CSV, {
         "template_id": "PERSON", "namespace": "wip",
         "column_mapping": '{"national_id": "national_id", "first_name": "first_name", "last_name": "last_name"}',
     })),
     # files
-    ("POST", f"{P}/files", "ns", _upload(P + "/files", "f.txt", b"bytes", {"namespace": "wip"})),
+    ("POST", f"{P}/files", "ns_write", _upload(P + "/files", "f.txt", b"bytes", {"namespace": "wip"})),
     ("GET", f"{P}/files", "ns", _get(P + "/files?namespace=wip")),
-    ("PATCH", f"{P}/files", "ns_bulk", _json(P + "/files", lambda c: [{"file_id": c["file"], "description": "x"}])),
-    ("DELETE", f"{P}/files", "ns_bulk", _json(P + "/files", lambda c: [{"id": c["file"]}])),
-    ("POST", f"{P}/files/reactivate", "ns_bulk", _json(P + "/files/reactivate", lambda c: [{"id": c["file"]}])),
+    ("PATCH", f"{P}/files", "ns_bulk_write", _json(P + "/files", lambda c: [{"file_id": c["file"], "description": "x"}])),
+    ("DELETE", f"{P}/files", "ns_bulk_write", _json(P + "/files", lambda c: [{"id": c["file"]}])),
+    ("POST", f"{P}/files/reactivate", "ns_bulk_write", _json(P + "/files/reactivate", lambda c: [{"id": c["file"]}])),
     ("GET", f"{P}/files/{{file_id}}", "ns", _get(P + "/files/{file}")),
     ("GET", f"{P}/files/{{file_id}}/download", "ns", _get(P + "/files/{file}/download")),
     ("GET", f"{P}/files/{{file_id}}/content", "ns", _get(P + "/files/{file}/content")),
@@ -275,7 +280,21 @@ async def test_namespace_routes(route, ctx):
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 404, (key, resp.status_code, resp.text[:200])
-    for key in (WRITER, ADMIN):
+    for key in (READER, WRITER, ADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _of("ns_write"))
+async def test_namespace_write_routes(route, ctx):
+    assert (await _call(route, ctx, None)).status_code == 401
+    for key in (NOGRANT, OTHER):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 404, (route[1], key, resp.status_code, resp.text[:200])
+    resp = await _call(route, ctx, READER)
+    assert resp.status_code == 403, (route[1], resp.status_code, resp.text[:200])
+    for key in _permitted(route, WRITER, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
 
@@ -286,11 +305,12 @@ def _item_codes(resp) -> set[str | None]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", _of("ns_bulk"))
-async def test_namespace_bulk_routes(route, ctx):
+@pytest.mark.parametrize("route", _of("ns_bulk_write"))
+async def test_namespace_bulk_write_routes(route, ctx):
     assert (await _call(route, ctx, None)).status_code == 401
     for key in (NOGRANT, OTHER):
         assert _item_codes(await _call(route, ctx, key)) == {"not_found"}, key
+    assert _item_codes(await _call(route, ctx, READER)) == {"forbidden"}, route[1]
     for key in _permitted(route, WRITER, ADMIN):
         assert not _item_codes(await _call(route, ctx, key)) & {"not_found", "forbidden"}, key
 
@@ -302,8 +322,9 @@ async def test_namespace_admin_routes(route, ctx):
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 404, (key, resp.status_code, resp.text[:200])
-    resp = await _call(route, ctx, WRITER)
-    assert resp.status_code == 403, (resp.status_code, resp.text[:200])
+    for key in (READER, WRITER):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 403, (route[1], key, resp.status_code, resp.text[:200])
     for key in _permitted(route, WIPADMIN, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
@@ -338,5 +359,24 @@ async def test_filtered_listings(route, ctx):
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 200 and resp.json() == [], (key, resp.text[:200])
-    resp = await _call(route, ctx, WRITER)
-    assert resp.status_code == 200 and resp.json(), resp.text[:200]
+    for key in (READER, WRITER):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 200 and resp.json(), (key, resp.text[:200])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "missing"), [
+    (P + "/backup/jobs/{job}", P + "/backup/jobs/no-such-job"),
+    (P + "/replay/{session}", P + "/replay/no-such-session"),
+])
+async def test_a_refused_id_answers_as_a_missing_one(path, missing, ctx):
+    """A by-id door answers a caller who cannot read the entity's namespace
+    exactly as an id that names nothing, the text included: "Namespace not
+    found" would confirm that the id exists."""
+    real = path.format(**ctx)
+    for key in (NOGRANT, OTHER):
+        refused = await _call(("GET", real, "", _get(real)), ctx, key)
+        absent = await _call(("GET", missing, "", _get(missing)), ctx, key)
+        assert refused.status_code == absent.status_code == 404, key
+        real_id, missing_id = real.rsplit("/", 1)[1], missing.rsplit("/", 1)[1]
+        assert refused.json()["detail"] == absent.json()["detail"].replace(missing_id, real_id), key

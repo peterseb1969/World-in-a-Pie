@@ -3,7 +3,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pymongo.errors import PyMongoError
 
-from wip_auth import UserIdentity, check_namespace_permission, require_api_key
+from wip_auth import (
+    UserIdentity,
+    check_entity_permission,
+    check_namespace_permission,
+    require_api_key,
+)
 
 from ..models.replay import ReplayRequest, ReplaySessionResponse
 from ..services.replay_service import get_replay_service
@@ -55,7 +60,12 @@ async def _enforce_replay_admin(session_id: str) -> dict:
     # ContextVar here since the helper isn't itself wired into FastAPI's DI.
     from wip_auth import require_current_identity
     identity = require_current_identity()
-    await check_namespace_permission(identity, namespace, "admin")
+    # A caller who cannot read the namespace gets the same 404 as for a
+    # session id that names nothing: a different text would confirm the
+    # session exists. One who can read it but is no admin gets 403.
+    await check_entity_permission(
+        identity, namespace, "admin", not_found=f"Replay session {session_id} not found",
+    )
     return session
 
 

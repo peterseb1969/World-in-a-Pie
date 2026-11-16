@@ -129,10 +129,11 @@ async def test_a_key_that_cannot_read_the_namespace_cannot_read_its_import_job(
 
     outsider = {"X-API-Key": "test_xns_only_key"}  # reads 'xns-closed', not 'wip'
     resp = await client.get(f"{JOBS}/{job_id}", headers=outsider)
-    # A namespace the key cannot read answers as one that is not there, and
-    # the job id with it.
-    assert resp.status_code == 404, resp.text
-    assert job_id not in resp.text
+    # A namespace the key cannot read answers exactly as a job id that names
+    # nothing, so the answer does not confirm the job exists.
+    missing = await client.get(f"{JOBS}/no-such-job", headers=outsider)
+    assert resp.status_code == missing.status_code == 404, resp.text
+    assert resp.json()["detail"] == missing.json()["detail"].replace("no-such-job", job_id)
 
 
 @pytest.mark.asyncio

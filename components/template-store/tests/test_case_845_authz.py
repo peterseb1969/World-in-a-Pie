@@ -9,6 +9,8 @@ list: a new route cannot skip the matrix.
 Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 - NOGRANT  no grant anywhere;
 - OTHER    read on 'xns-closed' only, nothing on 'wip';
+- READER   read on 'wip' only;
+- XWRITER  write on 'wip', read on 'xns-closed';
 - WRITER   write on 'wip';
 - WIPADMIN admin on 'wip';
 - SERVICES wip-services (no namespace scope);
@@ -16,12 +18,20 @@ Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 
 Groups:
 - public:     answered without a key.
-- ns:         addresses 'wip'; a caller who cannot read it gets 404 (its
-              existence is not leaked); a writer passes.
-- ns_bulk:    a bulk write addressing 'wip': HTTP 200 always, and each item
-              a caller cannot reach answers not_found.
-- ns_admin:   admin on 'wip' (or the privileged groups); a writer gets 403,
-              a caller who cannot read 'wip' 404.
+- ns:         a read addressing 'wip'; a caller who cannot read it gets 404
+              (its existence is not leaked); a reader passes.
+- ns_write:   a write addressing 'wip': as ns, and a reader gets 403, so a
+              gate weakened to "read" fails here.
+- ns_bulk_write: a bulk write addressing 'wip': HTTP 200 always; each item a
+              caller cannot read answers not_found, and forbidden for a
+              reader.
+- ns_admin:   admin on 'wip' (or the privileged groups); a reader or a
+              writer gets 403, a caller who cannot read 'wip' 404.
+
+A write that names a template is also sent for a template living in
+'xns-closed' while naming ?namespace=wip, by a key that writes 'wip' but only
+reads 'xns-closed': the gate must be on the template's own namespace, not on
+the parameter.
 - privileged: wip-admins / wip-services only (403 for everyone else).
 
 "Passes the gate" is asserted as "not refused" (not 401/403/404, or for a
@@ -43,6 +53,8 @@ from wip_auth.testing import api_route_methods
 P = "/api/template-store"
 NOGRANT = "test_scoped_key"
 OTHER = "test_xns_only_key"
+READER = "test_wip_reader_key"
+XWRITER = "test_xns_reader_key"
 WRITER = "test_xns_writer_key"
 WIPADMIN = "test_wip_admin_key"
 SERVICES = "test_services_key"
@@ -79,12 +91,12 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", "/livez", "public", _get("/livez")),
     ("GET", f"{P}/health/events", "privileged", _get(f"{P}/health/events")),
     ("GET", "/health/integrity", "privileged", _get("/health/integrity")),
-    ("POST", f"{P}/templates", "ns", _json(P + "/templates", [_template("MATRIX_845_NEW")])),
+    ("POST", f"{P}/templates", "ns_write", _json(P + "/templates", [_template("MATRIX_845_NEW")])),
     ("GET", f"{P}/templates", "ns", _get(P + "/templates?namespace=wip")),
-    ("PUT", f"{P}/templates", "ns_bulk",
+    ("PUT", f"{P}/templates", "ns_bulk_write",
      _json(P + "/templates?namespace=wip", lambda c: [{"template_id": c["tpl"], "label": "changed"}])),
-    ("DELETE", f"{P}/templates", "ns_bulk",
-     _json(P + "/templates?namespace=wip", lambda c: [{"id": c["tpl"]}])),
+    ("DELETE", f"{P}/templates", "ns_bulk_write",
+     _json(P + "/templates?namespace=wip", lambda c: [{"id": c["tpl"], "version": 1}])),
     ("GET", f"{P}/templates/stamp", "ns", _get(P + "/templates/stamp?namespace=wip")),
     ("GET", f"{P}/templates/{{template_id}}", "ns", _get(P + "/templates/{tpl}")),
     ("GET", f"{P}/templates/{{template_id}}/raw", "ns", _get(P + "/templates/{tpl}/raw")),
@@ -98,12 +110,12 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", f"{P}/templates/{{template_id}}/versions", "ns", _get(P + "/templates/{tpl}/versions")),
     ("GET", f"{P}/templates/{{template_id}}/dependencies", "ns", _get(P + "/templates/{tpl}/dependencies")),
     ("POST", f"{P}/templates/{{template_id}}/validate", "ns", _json(P + "/templates/{tpl}/validate", {})),
-    ("POST", f"{P}/templates/{{template_id}}/activate", "ns",
+    ("POST", f"{P}/templates/{{template_id}}/activate", "ns_write",
      _json(P + "/templates/{tpl}/activate?namespace=wip&dry_run=true", None)),
-    ("POST", f"{P}/templates/{{template_id}}/reactivate", "ns",
+    ("POST", f"{P}/templates/{{template_id}}/reactivate", "ns_write",
      _json(P + "/templates/{tpl}/reactivate?namespace=wip&version=1", None)),
-    ("POST", f"{P}/templates/{{template_id}}/cascade", "ns", _json(P + "/templates/{tpl}/cascade", None)),
-    ("POST", f"{P}/templates/{{template_id}}/endpoints", "ns",
+    ("POST", f"{P}/templates/{{template_id}}/cascade", "ns_write", _json(P + "/templates/{tpl}/cascade", None)),
+    ("POST", f"{P}/templates/{{template_id}}/endpoints", "ns_write",
      _json(P + "/templates/{tpl}/endpoints?namespace=wip", {"add_target_templates": [VALUE]})),
     ("GET", f"{P}/templates/{{template_id}}/children", "ns", _get(P + "/templates/{tpl}/children")),
     ("GET", f"{P}/templates/{{template_id}}/descendants", "ns", _get(P + "/templates/{tpl}/descendants")),
@@ -122,7 +134,10 @@ async def ctx(client):
                                  json=[_template(VALUE)])).json()
     item = created["results"][0]
     assert item["status"] == "created", item
-    return {"tpl": item["id"]}
+    other = (await client.post(f"{P}/templates", headers={"X-API-Key": ADMIN},
+                               json=[{**_template(VALUE), "namespace": "xns-closed"}])).json()
+    assert other["results"][0]["status"] == "created", other
+    return {"tpl": item["id"], "xtpl": other["results"][0]["id"]}
 
 
 async def _call(route, ctx: Ctx, key: str | None):
@@ -166,7 +181,21 @@ async def test_namespace_routes(route, ctx):
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 404, (key, resp.status_code, resp.text[:200])
-    for key in (WRITER, ADMIN):
+    for key in (READER, WRITER, ADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _of("ns_write"))
+async def test_namespace_write_routes(route, ctx):
+    assert (await _call(route, ctx, None)).status_code == 401
+    for key in (NOGRANT, OTHER):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 404, (route[1], key, resp.status_code, resp.text[:200])
+    resp = await _call(route, ctx, READER)
+    assert resp.status_code == 403, (route[1], resp.status_code, resp.text[:200])
+    for key in _permitted(route, WRITER, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
 
@@ -177,12 +206,13 @@ def _item_codes(resp) -> set[str | None]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", _of("ns_bulk"))
-async def test_namespace_bulk_routes(route, ctx):
+@pytest.mark.parametrize("route", _of("ns_bulk_write"))
+async def test_namespace_bulk_write_routes(route, ctx):
     assert (await _call(route, ctx, None)).status_code == 401
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert _item_codes(resp) == {"not_found"}, (key, [i.get("error") for i in resp.json()["results"]])
+    assert _item_codes(await _call(route, ctx, READER)) == {"forbidden"}, route[1]
     for key in _permitted(route, WRITER, ADMIN):
         assert not _item_codes(await _call(route, ctx, key)) & {"not_found", "forbidden"}, key
 
@@ -194,8 +224,9 @@ async def test_namespace_admin_routes(route, ctx):
     for key in (NOGRANT, OTHER):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 404, (key, resp.status_code, resp.text[:200])
-    resp = await _call(route, ctx, WRITER)
-    assert resp.status_code == 403, (resp.status_code, resp.text[:200])
+    for key in (READER, WRITER):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code == 403, (route[1], key, resp.status_code, resp.text[:200])
     for key in _permitted(route, WIPADMIN, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code not in _REFUSED, (key, resp.status_code, resp.text[:200])
@@ -211,3 +242,24 @@ async def test_privileged_routes(route, ctx):
     for key in (SERVICES, ADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code not in (401, 403), (key, resp.status_code, resp.text[:200])
+
+
+_BY_TEMPLATE = [
+    pytest.param(r, id=f"{r[0]} {r[1]}") for r in ROUTES
+    if r[2] == "ns_bulk_write" or (r[2] == "ns_write" and "{template_id}" in r[1])
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _BY_TEMPLATE)
+async def test_a_write_is_gated_on_the_templates_own_namespace(route, ctx):
+    """The template lives in 'xns-closed'; the request names ?namespace=wip,
+    where the caller may write. A gate on the parameter would let it through;
+    the gate on the template's own namespace refuses it (the caller only
+    reads 'xns-closed', so the template is visible and the answer is 403)."""
+    elsewhere = {**ctx, "tpl": ctx["xtpl"]}
+    resp = await _call(route, elsewhere, XWRITER)
+    if route[2] == "ns_bulk_write":
+        assert _item_codes(resp) == {"forbidden"}, (route[1], resp.text[:300])
+    else:
+        assert resp.status_code == 403, (route[1], resp.status_code, resp.text[:200])

@@ -98,6 +98,7 @@ from fastapi.responses import StreamingResponse
 
 from wip_auth import (
     UserIdentity,
+    check_entity_permission,
     check_namespace_permission,
     get_auth_config,
     is_superadmin,
@@ -1212,7 +1213,9 @@ async def _check_job_permission(
     which nobody here holds rights. Its retained input is the sources' data
     all the same, so ``archive_access`` (downloading it, deleting it) is
     further limited to the key that created the job and platform admins.
-    Refusals answer 404, as a missing job does.
+    A namespace the caller cannot read answers exactly as a missing job does
+    (404, "Backup job <id> not found"), so the refusal does not confirm that
+    the job exists; one it can read but lacks ``permission`` on answers 403.
 
     A platform admin is admin on every namespace but one locked for
     deletion, which the Registry closes to everyone. This job API is the
@@ -1225,7 +1228,9 @@ async def _check_job_permission(
     superadmin = is_superadmin(identity)
     for ns in dict.fromkeys([*(job.namespaces or [job.namespace]), *job.source_namespaces]):
         try:
-            await check_namespace_permission(identity, ns, permission)
+            await check_entity_permission(
+                identity, ns, permission, not_found=f"Backup job {job.job_id} not found",
+            )
         except HTTPException as exc:
             # The Registry answers a platform admin "none" (a 404) only on a
             # namespace locked for deletion.
