@@ -1700,36 +1700,54 @@ def _choose(
     candidates first, then by name, so the search runs the same way every time.
     A version with no candidate is left out: nothing can be mapped onto it.
 
-    When no combination places every version, each keeps its preferred
+    A version that has no candidate when the search starts is settled as
+    unmapped, so it does not stop the search for the others.
+
+    When no combination places every other version, each keeps its preferred
     candidate and the caller's check (_confirm) unmaps the ones whose
     references then disagree, so what stays mapped is consistent."""
-    return _search(candidates, context) or {
-        key: versions[0] for key, versions in candidates.items() if versions
-    }
+    unplaceable = frozenset(key for key, versions in candidates.items() if not versions)
+    found = _search(candidates, context, unplaceable)
+    if found is None:
+        found = {key: versions[0] for key, versions in candidates.items() if versions}
+    return found
+
+
+def _emptied(
+    domains: dict[_VersionKey, list[int]], unplaceable: frozenset[_VersionKey]
+) -> bool:
+    """Whether a version that started with candidates has none left."""
+    return any(not versions for key, versions in domains.items() if key not in unplaceable)
+
+
+def _next_branch(domains: dict[_VersionKey, list[int]]) -> _VersionKey | None:
+    """The version to branch over next: fewest candidates, then by name; None
+    when every version is down to at most one."""
+    branching = [key for key, versions in domains.items() if len(versions) > 1]
+    return min(branching, key=lambda key: (len(domains[key]), key), default=None)
 
 
 def _search(
-    domains: dict[_VersionKey, list[int]], context: _AlignmentContext
+    domains: dict[_VersionKey, list[int]],
+    context: _AlignmentContext,
+    unplaceable: frozenset[_VersionKey],
 ) -> dict[_VersionKey, int] | None:
-    """A target version for every version, or None when the candidates admit
-    none. Versions with more than one candidate are branched over, preferred
-    first, with the rest narrowed to agree after each choice; a narrowing that
-    empties a domain backs the choice out. Every domain loses a value or is
-    settled at each level, so this ends."""
-    if any(not versions for versions in domains.values()):
+    """A target version for every version outside ``unplaceable`` (those had
+    no candidate to begin with), or None when the candidates admit none.
+    Versions with more than one candidate are branched over, preferred first,
+    with the rest narrowed to agree after each choice; a narrowing that
+    empties another version's domain backs the choice out. Every domain loses
+    a value or is settled at each level, so this ends."""
+    if _emptied(domains, unplaceable):
         return None
-    branching = sorted(
-        (key for key, versions in domains.items() if len(versions) > 1),
-        key=lambda key: (len(domains[key]), key),
-    )
-    if not branching:
-        return {key: versions[0] for key, versions in domains.items()}
-    key = branching[0]
+    key = _next_branch(domains)
+    if key is None:
+        return {k: versions[0] for k, versions in domains.items() if versions}
     for value in domains[key]:
         trial = {k: list(v) for k, v in domains.items()}
         trial[key] = [value]
         _narrow(trial, context)
-        found = _search(trial, context)
+        found = _search(trial, context, unplaceable)
         if found is not None:
             return found
     return None

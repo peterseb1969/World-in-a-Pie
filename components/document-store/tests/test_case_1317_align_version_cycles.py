@@ -225,3 +225,25 @@ async def test_a_later_template_in_the_archive_sees_the_earlier_ones_mapping(db)
 
     assert _mapped(plan, "A-a") == {1: None}
     assert _mapped(plan, "A-b") == {1: None}
+
+
+@pytest.mark.asyncio
+async def test_an_unplaceable_template_does_not_stop_the_search_for_the_others(db):
+    # The shape above, plus GAMMA, whose archived version matches no target
+    # version. GAMMA has nothing to map onto from the start; that settles
+    # GAMMA alone and must not keep ALPHA and BETA from the mapping they have.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 1, _ref("beta", "T-b", 5)),
+                _tpl("T-a", "ALPHA", 2, _ref("beta", "T-b", 4)),
+                _tpl("T-b", "BETA", 4, _ref("alpha", "T-a", 1)),
+                _tpl("T-b", "BETA", 5, _ref("alpha", "T-a", 1)),
+                _tpl("T-g", "GAMMA", 1, AGE_STR)],
+        archive=[_tpl("A-a", "ALPHA", 1, _ref("beta", "A-b", 1)),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1)),
+                 _tpl("A-g", "GAMMA", 1, AGE_INT)],
+    )
+
+    assert _mapped(plan, "A-g") == {1: None}
+    assert _mapped(plan, "A-a") == {1: 1}
+    assert _mapped(plan, "A-b") == {1: 5}
