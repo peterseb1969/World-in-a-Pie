@@ -82,8 +82,8 @@ class BackupJob(BeanieDocument):
     )
     namespace: str = Field(
         ...,
-        description="Primary namespace (the URL anchor). For a multi-namespace "
-                    "backup this is the first of `namespaces`; for a "
+        description="Primary namespace (the URL anchor). It need not be the "
+                    "first of `namespaces`, nor one of them; for a "
                     "single-namespace restore it is the target, but for a "
                     "multi-namespace restore it is the URL anchor only (each "
                     "namespace restores into itself) — use `namespaces` for the "

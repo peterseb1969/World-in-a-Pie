@@ -74,7 +74,9 @@ export interface BackupJobSnapshot {
   namespace: string
   /**
    * Every namespace the job exports (backup) or writes (restore); always
-   * sent. `namespace` is the first of them.
+   * sent. `namespace` is the job's anchor (the URL namespace, or a restore's
+   * target), not necessarily one of these and not necessarily the first: read
+   * this list for the set.
    */
   namespaces: string[]
   /**
@@ -140,7 +142,9 @@ export interface NamespaceIntegritySummary {
   documents_checked: number
   /** Distinct document ids among the issues, whatever their version. */
   documents_with_issues: number
+  /** References to a template that does not exist: one per version row. */
   orphaned_template_refs: number
+  /** Term references whose term is not in its terminology: one per field path of a version row. */
   orphaned_term_refs: number
   /**
    * Documents whose current version is pinned to a template version that has
@@ -149,9 +153,11 @@ export interface NamespaceIntegritySummary {
    * counted.
    */
   inactive_template_refs: number
+  /** Document references whose target document does not exist: one per reference. */
   orphaned_document_refs: number
-  /** References whose held document id lives in another namespace than the reference names. */
+  /** References whose held document id lives in another namespace than the reference names: one per reference. */
   misplaced_document_refs: number
+  /** File references whose file record does not exist: one per reference. */
   orphaned_file_refs: number
   /** Version rows whose stored identity hash differs from the one recomputed: one per row. */
   identity_hash_mismatches: number

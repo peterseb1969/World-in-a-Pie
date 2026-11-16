@@ -25,7 +25,7 @@
     },
     "radon-cc-c-plus": {
       "count": 212,
-      "note": "re-measured 2026-11-15 at the CASE-1325 merge with the audit's own step 5 (python3 -m radon cc <the eight src trees> --min C --json, radon 6.0.1); the functions counted are in radon-cc-c-plus.json beside this file. Raised from 142, which the tree had been above since at least 2026-11-08 (291 then), so the gate failed every run. The other dimensions still date from the run stamped above."
+      "note": "re-measured 2026-11-15 at the CASE-1325 merge with the audit's own step 5 (python3 -m radon cc <the eight src trees> --min C --json, radon 6.0.1); the functions counted are in radon-cc-c-plus.json beside this file. Raised from 142, which the tree had been above since at least 2026-11-08 (291 then), so the gate failed every run. Since the run stamped above: mypy re-pinned to 0 on 2026-05-23 (55662f38), api-consistency to 0 on 2026-11-08 (e5b9fe30), vue-tsc retired on 2026-07-27 (9a0ef183); ruff, vulture, eslint, shellcheck and ts-prune still date from that run."
     }
   }
 }
