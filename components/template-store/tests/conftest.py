@@ -84,6 +84,13 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "groups": [],
     "namespaces": ["wip"],
     "grants": {"wip": "admin"},
+}, {
+    # A platform service key (wip-services, never namespace-scoped): passes
+    # the privileged gates.
+    "name": "test-services",
+    "key": "test_services_key",
+    "owner": "test-services",
+    "groups": ["wip-services"],
 }]))
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")

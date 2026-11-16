@@ -158,8 +158,8 @@ ROUTES: list[tuple[str, str, str, Req]] = [
     ("GET", f"{P}/files/{{file_id}}/documents", "ns", _get(P + "/files/{file}/documents")),
     ("DELETE", f"{P}/files/{{file_id}}/hard", "ns_admin", _json(P + "/files/{file}/hard", None)),
     ("GET", f"{P}/files/by-checksum/{{checksum}}", "filtered", _get(P + "/files/by-checksum/{checksum}?namespace=wip")),
-    ("GET", f"{P}/files/orphans/list", "privileged", _get(P + "/files/orphans/list?namespace=wip")),
-    ("GET", f"{P}/files/health/integrity", "privileged", _get(P + "/files/health/integrity")),
+    ("GET", f"{P}/files/orphans/list", "admin", _get(P + "/files/orphans/list?namespace=wip")),
+    ("GET", f"{P}/files/health/integrity", "admin", _get(P + "/files/health/integrity")),
     ("POST", f"{P}/files/storage/delete", "privileged",
      _json(P + "/files/storage/delete", {"namespace": "wip", "storage_keys": ["k"]})),
     # replay
@@ -316,7 +316,9 @@ async def test_privileged_routes(route, ctx):
     for key in (NOGRANT, OTHER, WRITER, WIPADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 403, (key, resp.status_code, resp.text[:200])
-    assert (await _call(route, ctx, ADMIN)).status_code not in (401, 403)
+    for key in (SERVICES, ADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code not in (401, 403), (key, resp.status_code, resp.text[:200])
 
 
 @pytest.mark.asyncio

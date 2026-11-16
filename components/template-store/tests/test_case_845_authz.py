@@ -11,6 +11,7 @@ Keys (tests/conftest.py, WIP_AUTH_API_KEYS_JSON):
 - OTHER    read on 'xns-closed' only, nothing on 'wip';
 - WRITER   write on 'wip';
 - WIPADMIN admin on 'wip';
+- SERVICES wip-services (no namespace scope);
 - ADMIN    the admin master key.
 
 Groups:
@@ -44,6 +45,7 @@ NOGRANT = "test_scoped_key"
 OTHER = "test_xns_only_key"
 WRITER = "test_xns_writer_key"
 WIPADMIN = "test_wip_admin_key"
+SERVICES = "test_services_key"
 ADMIN = "test_api_key"
 
 Ctx = dict[str, str]
@@ -206,4 +208,6 @@ async def test_privileged_routes(route, ctx):
     for key in (NOGRANT, OTHER, WRITER, WIPADMIN):
         resp = await _call(route, ctx, key)
         assert resp.status_code == 403, (key, resp.status_code, resp.text[:200])
-    assert (await _call(route, ctx, ADMIN)).status_code not in (401, 403)
+    for key in (SERVICES, ADMIN):
+        resp = await _call(route, ctx, key)
+        assert resp.status_code not in (401, 403), (key, resp.status_code, resp.text[:200])
