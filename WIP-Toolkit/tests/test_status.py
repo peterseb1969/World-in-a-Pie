@@ -341,3 +341,55 @@ def test_cli_status_quiet_speaks_on_problems(runner):
         result = runner.invoke(cli, ["status", "--quiet", "--json"])
     assert result.exit_code == 1
     assert result.output  # JSON printed because there's a warning
+
+
+# A scan that found errors the three orphan counters do not count (an
+# orphaned document or file reference, an identity mismatch) is not ok, a
+# warning is a warning, and a check that could not run is named whatever
+# the verdict.
+
+
+def _aggregate(status: str, issues: list, **extra) -> dict:
+    return {
+        "status": status, "summary": dict(_CLEAN_SUMMARY), "issues": issues,
+        "services_checked": ["template-store", "document-store"],
+        "services_unavailable": [], "services_incomplete": [], "services_truncated": [],
+        **extra,
+    }
+
+
+@pytest.mark.parametrize("issue_type", [
+    "orphaned_document_ref", "orphaned_file_ref", "identity_hash_mismatch",
+])
+def test_status_integrity_error_outside_the_orphan_counters_is_critical(issue_type):
+    client = _make_client(integrity=_aggregate(
+        "error", [{"type": issue_type, "severity": "error", "message": "x"}],
+    ))
+    integrity = next(c for c in collect_status(client, include_integrity=True).checks
+                     if c.name == "integrity")
+    assert integrity.severity == "critical"
+    assert f"1 integrity error(s) detected ({issue_type})" in integrity.message
+
+
+def test_status_integrity_warning_is_a_warning():
+    client = _make_client(integrity=_aggregate(
+        "warning", [{"type": "inactive_template_ref", "severity": "warning", "message": "x"}],
+    ))
+    integrity = next(c for c in collect_status(client, include_integrity=True).checks
+                     if c.name == "integrity")
+    assert integrity.severity == "warning"
+
+
+@pytest.mark.parametrize(("status", "severity", "issue_severity"), [
+    ("error", "critical", "error"),
+    ("warning", "warning", "warning"),
+])
+def test_status_integrity_names_unchecked_services_beside_a_finding(status, severity, issue_severity):
+    client = _make_client(integrity=_aggregate(
+        status, [{"type": "t", "severity": issue_severity, "message": "x"}],
+        services_incomplete=["document-store"],
+    ))
+    integrity = next(c for c in collect_status(client, include_integrity=True).checks
+                     if c.name == "integrity")
+    assert integrity.severity == severity
+    assert "document-store" in integrity.message

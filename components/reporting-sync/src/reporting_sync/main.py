@@ -1814,8 +1814,8 @@ class AggregatedIntegrityResult(BaseModel):
     services_incomplete: list[str] = Field(
         default_factory=list,
         description=(
-            "Services that answered but could not run every check (their own "
-            "status was incomplete/unknown: a service they ask did not answer)"
+            "Services that answered but could not run every check (a "
+            "service they ask did not answer), whatever else their scan found"
         ),
     )
     services_truncated: list[str] = Field(
@@ -1830,7 +1830,11 @@ class AggregatedIntegrityResult(BaseModel):
 
 
 # Upstream statuses meaning "nothing found, but not everything was checked"
-# (document-store: incomplete; template-store: unknown).
+# (document-store: incomplete; template-store: unknown). A store decides its
+# status by its worst finding first, so one that found something and also
+# could not run every check answers warning or error: its skipped-check
+# counters (document-store summary.checks_not_run, template-store
+# summary.checks_skipped) are read as well, whatever the status.
 _UPSTREAM_INCOMPLETE = ("incomplete", "unknown")
 
 # Budget for template-store's scan. Document-store's scales with its limit:
@@ -1888,7 +1892,9 @@ def _fold_template_store(
     summary.orphaned_terminology_refs = ts_summary.get("orphaned_terminology_refs", 0)
     summary.inactive_refs += ts_summary.get("inactive_terminology_refs", 0)
     summary.inactive_refs += ts_summary.get("inactive_template_refs", 0)
-    incomplete = body.get("status") in _UPSTREAM_INCOMPLETE
+    incomplete = (
+        body.get("status") in _UPSTREAM_INCOMPLETE or bool(ts_summary.get("checks_skipped"))
+    )
     truncated = not incomplete and bool(ts_summary.get("truncated"))
     issues = [
         IntegrityIssue(
@@ -1918,7 +1924,9 @@ def _fold_document_store(
     summary.orphaned_template_refs = ds_summary.get("orphaned_template_refs", 0)
     summary.orphaned_term_refs = ds_summary.get("orphaned_term_refs", 0)
     summary.inactive_refs += ds_summary.get("inactive_template_refs", 0)
-    incomplete = body.get("status") in _UPSTREAM_INCOMPLETE
+    incomplete = (
+        body.get("status") in _UPSTREAM_INCOMPLETE or bool(ds_summary.get("checks_not_run"))
+    )
     truncated = not incomplete and summary.documents_checked < summary.total_documents
     issues = [
         IntegrityIssue(

@@ -20,3 +20,14 @@ store that could not run every check. Before, both went into
 either. A truncated scan keeps the toolkit at `ok` ("no orphaned references
 in scanned window"). `@wip/client`'s `IntegrityCheckResult` type
 carries `services_truncated`.
+
+`status --integrity` also reported `ok` for a scan whose findings the three
+orphan counters do not count: an orphaned document or file reference, or an
+identity hash mismatch, left the aggregate at `error` and the toolkit at
+`ok`. Every error-severity finding now makes the check `critical`, and a
+warning-severity finding (a retired but present referent) makes it
+`warning`. And a store that found something and also could not run every
+check answered `warning` or `error`, which hid the outage: reporting-sync
+now lists it in `services_incomplete` from its skipped-check counters,
+whatever its status, and the toolkit names those services beside the
+finding.

@@ -411,23 +411,49 @@ def _check_integrity(
 
     summary = data.get("summary") or {}
     issues = data.get("issues") or []
-    drift = (
+    # Every error-severity finding counts, not only the three orphan counters
+    # the aggregate keeps: an orphaned document or file reference and an
+    # identity mismatch are errors too, and have no counter of their own.
+    orphans = (
         int(summary.get("orphaned_terminology_refs", 0) or 0)
         + int(summary.get("orphaned_template_refs", 0) or 0)
         + int(summary.get("orphaned_term_refs", 0) or 0)
     )
+    errors = sum(1 for i in issues if i.get("severity") == "error")
+    warnings = sum(1 for i in issues if i.get("severity") == "warning")
+    drift = max(orphans, errors)
+    # A store that found something and could not run every check is named
+    # beside the finding, so the verdict never reads as a full scan.
+    unchecked = list(dict.fromkeys(
+        list(data.get("services_unavailable") or []) + list(data.get("services_incomplete") or [])
+    ))
+    also = f"; not fully checked: {', '.join(unchecked)}" if unchecked else ""
+    details = {
+        "summary": summary,
+        "status": data.get("status"),
+        "first_issues": issues[:5],
+        "services_checked": data.get("services_checked"),
+        "services_unavailable": data.get("services_unavailable"),
+        "services_incomplete": data.get("services_incomplete"),
+    }
 
     if drift >= thresholds.integrity_drift_critical:
+        # Name what was found: the issue types when the scan lists them, else
+        # the orphan counters, which are all the aggregate counted.
+        error_types = sorted({str(i.get("type")) for i in issues if i.get("severity") == "error"})
+        found = ", ".join(error_types) if errors >= orphans else f"{orphans} orphaned reference(s)"
         return [CheckResult(
             name="integrity",
             severity="critical",
-            message=f"{drift} orphaned reference(s) detected",
-            details={
-                "summary": summary,
-                "first_issues": issues[:5],
-                "services_checked": data.get("services_checked"),
-                "services_unavailable": data.get("services_unavailable"),
-            },
+            message=f"{drift} integrity error(s) detected ({found}){also}",
+            details=details,
+        )]
+    if warnings:
+        return [CheckResult(
+            name="integrity",
+            severity="warning",
+            message=f"{warnings} integrity warning(s) detected{also}",
+            details=details,
         )]
     not_checked = _integrity_not_fully_checked(data, summary)
     if not_checked is not None:
