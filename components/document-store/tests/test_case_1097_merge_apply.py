@@ -5,7 +5,8 @@
 2. An overwrite in place (versioned: false) stores dates as dates.
 3. A batch insert that fails partway never leaves two active versions.
 4. An overwrite whose archive copy equals the target's adds no version.
-5. The reporting-structure gate runs before documents move.
+5. Reporting is verified after the documents move, never between the
+   definitions and the documents.
 
 The real engine against the real test MongoDB, archive stubbed, as in
 test_merge_restore.py (whose helpers these tests use).
@@ -419,7 +420,7 @@ async def test_a_different_overwrite_still_adds_a_version(mongo):
     assert sorted(d["version"] for d in await _rows(mongo, "documents")) == [1, 2]
 
 
-# ── 5. the reporting gate ─────────────────────────────────────────────
+# ── 5. the reporting verdict ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio

@@ -5,22 +5,23 @@ cases: [1297, 1096]
 
 ### A multi-namespace merge writes definitions everywhere first, and a failure after a write says what was written
 
-A merge used to write one namespace completely (definitions, reporting gate,
-documents) before it started the next. Namespace B's reporting gate could
-therefore refuse after namespace A had been fully merged, and the job
-reported a plain refusal. It now writes in three steps across all of the
-archive's namespaces:
+A merge used to write one namespace completely (definitions, reporting,
+documents) before it started the next. Namespace B could therefore refuse
+after namespace A had been fully merged, and the job reported a plain
+refusal. It now writes in two steps across all of the archive's namespaces:
 
 1. every namespace's definitions and their Registry entries (whose key
    claims are now written with them),
-2. every namespace's reporting structure gate,
-3. every namespace's documents, files and remaining entries.
+2. every namespace's documents, files and remaining entries.
 
-A gate that refuses now does so before any document is written anywhere.
-Nothing written is undone: any failure after the first write fails the job
-with `result_kind: merge_partial` and `details.written`, naming per target
-what it received. A merge's dry run still cannot see the reporting gate,
-which needs the templates written.
+Every refusal that remains is a precondition, and the preconditions run
+before anything is written. Nothing written is undone: any failure after the
+first write fails the job with `result_kind: merge_partial` and
+`details.written`, naming per target what it received. Reporting is not a
+step between the two: its tables are derived from the documents, so a merge
+verifies them after the documents and reports reporting-sync's verdict on the
+job (CASE-1328) — which also makes its dry run exact, since nothing there
+needs the templates written first.
 
 Also fixed, for `align_templates`:
 
@@ -48,5 +49,5 @@ Also fixed, for `align_templates`:
   `wip-archive migrate`.
 - A template both sides share is no longer refused (above).
 - A multi-namespace merge could refuse after writing (above), so "a refusal
-  leaves every target untouched" was not true. It now holds for the reporting
-  gate as far as documents go.
+  leaves every target untouched" was not true. It holds again for the
+  reporting checks: they refuse nothing once writing has started.

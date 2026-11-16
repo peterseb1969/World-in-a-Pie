@@ -50,6 +50,9 @@ field) must map `incomplete`/`unavailable`/`not_checked` onto `failed` or
 means the same as before. `wip-toolkit restore` now prints the verdict and the re-sync to
 run when it is not `verified`; the same information is on the job record, and
 `wip restore` exits 0 for a completed job whatever the verdict — decide on
-`reporting_verification`, not on the exit code. To rebuild a namespace's tables
-from MongoDB: `POST /api/reporting-sync/sync/batch?namespace=kb&force=true`,
-then confirm with `GET /api/reporting-sync/parity?namespace=kb`.
+`reporting_verification`, not on the exit code. A `failed` verdict names the
+rebuild from source — `POST /api/reporting-sync/sync/batch?namespace=kb&force=true`,
+then `GET /api/reporting-sync/parity?namespace=kb`. An `unverified` one proved
+nothing missing, so what is named there is the plain re-trigger without
+`force=true`: force drops each in-scope template's tables before recreating
+them, and SQL readers see relation-does-not-exist until the jobs land.

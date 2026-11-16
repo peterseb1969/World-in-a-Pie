@@ -14,8 +14,8 @@ packages: [wip-client]
   ("not found") when the store holding the referenced entity answered an
   error or could not be reached. That is now a 503. A reference the store
   answers 404 for is still broken.
-- **Parity** (`GET /parity`, the restore's structure gate, the parity
-  monitor): a failure while listing the shared templates a namespace's
+- **Parity** (`GET /parity`, the restore's post-document verification, the
+  parity monitor): a failure while listing the shared templates a namespace's
   documents use aborted the whole check with no template rows. The
   namespace's own templates are now still checked, and the result says the
   shared ones were not. A shared template that cannot be read is a row with

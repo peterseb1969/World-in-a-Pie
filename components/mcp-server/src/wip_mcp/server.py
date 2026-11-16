@@ -5273,20 +5273,24 @@ async def start_restore(
 
     dry_run is exact for a merge: the plan is computed before anything is
     written, so the report is what a real run would do, and it still fails on
-    what a real run would refuse — except the reporting structure gate, which
-    needs the merged templates written. A real merge writes every namespace's
-    definitions first, then runs every gate, then writes documents, so a gate
-    refusal comes before any document is written; any failure after the
+    what a real run would refuse. A real merge writes in two steps across all
+    namespaces — every namespace's definitions first, then every namespace's
+    documents, files and remaining entries. Anything that fails after the
     first write lists what each target received (details.written).
 
-    The restore verifies the PostgreSQL reporting layer at phase boundaries:
-    a stale reporting schema fails the precondition unless
-    drop_stale_reporting=True (which drops it first, and which a merge rejects
-    — its target is live); reporting tables must materialize correctly after
-    templates are written (halts before documents otherwise); and row-count
-    parity is checked at the end — a mismatch completes the job WITH warnings
-    on the job record, never a hard fail. Use check_reporting_parity for the
-    same verification any time.
+    Reporting never stops a restore: the documents are what a restore protects,
+    and the reporting tables are rebuilt from them. Two reporting moments are
+    left. Before any write, the preconditions still refuse — a restore target
+    whose reporting schema already holds tables needs drop_stale_reporting=True
+    (which drops that schema first; a merge lands in a live namespace, so only
+    unusable bookkeeping refuses there). After the documents, the run triggers
+    the namespace batch sync, waits while reporting-sync says it is still
+    working, and records reporting-sync's own verdict on the job —
+    result.reporting_verification (see get_backup_job) is verified, failed (rows
+    or tables proved missing) or unverified (nothing could be settled), with the
+    reasons and the batch sync to re-run. A failed or unverified verdict
+    completes the job WITH warnings, never as a failed job. Use
+    check_reporting_parity for the same verification any time.
 
     The archive at archive_path is uploaded as multipart and a job is queued.
     Poll get_backup_job to track progress.

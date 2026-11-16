@@ -136,10 +136,10 @@ verified restore from one that could not be, without reading `warnings`:
   "namespaces": {
     "kb": {
       "status": "failed",
-      "reason": "kb:BOOK 3 of 10 live documents have rows (and 1 more)",
+      "reason": "BOOK: 3 of 10 live documents have rows; term_relations: 0 rows where 7 are expected",
       "reasons": [
         {"kind": "template", "name": "BOOK", "issue": "count_mismatch",
-         "detail": "kb:BOOK 3 of 10 live documents have rows",
+         "detail": "BOOK: 3 of 10 live documents have rows",
          "expected": 10, "actual": 3},
         {"kind": "table", "name": "term_relations",
          "issue": "term_relations_mismatch",
@@ -156,13 +156,22 @@ Each namespace the run wrote gets one of:
 - `failed`: a check proved rows or tables missing. `reasons` lists each one:
   `kind` (`template`, `table`, `view`, `namespace`), `name`, `issue`, a
   one-line `detail` and, where the check has them, the expected and actual
-  counts. Re-run the batch sync (`force=true` rebuilds the tables from
-  MongoDB) and confirm with the parity check.
-- `unverified`: nothing could be settled — reporting-sync or template-store
-  did not answer, the wait gave out while the sync was still running, there
-  was nothing to check (documents skipped), or the run did not verify at all.
-  This includes a fresh restore (`namespace_map`), which does not wait for
-  reporting: its sync starts when the job completes.
+  counts. A template of another namespace that the documents use is named by
+  its owner (`other-ns:BOOK`); the bare value is the namespace's own
+  template. `reason` is those `detail` lines joined with `; `, shortened to
+  the first three plus `(and N more)`. Re-run the batch sync
+  (`POST /api/reporting-sync/sync/batch?namespace=kb&force=true`, which
+  rebuilds the tables from MongoDB) and confirm with the parity check.
+- `unverified`: nothing could be settled — reporting-sync, template-store or
+  document-store did not answer (a namespace whose shared templates were never
+  swept says `shared_templates_unchecked`), the wait gave out while the sync
+  was still running, there was nothing to check (documents skipped), or the
+  run did not verify at all. This includes a fresh restore (`namespace_map`),
+  which does not wait for reporting: its sync starts when the job completes.
+  Nothing here proved a table missing, so re-trigger the plain namespace sync
+  (`POST /api/reporting-sync/sync/batch?namespace=kb`) and re-check —
+  `force=true` would drop the tables before rebuilding them, and SQL readers
+  see relation-does-not-exist while that runs.
 
 `verified`, `failed` and `unverified` are reporting-sync's own verdict, computed
 over the tables it owns and recorded as given — document-store keeps no second
