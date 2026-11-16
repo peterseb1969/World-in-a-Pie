@@ -138,9 +138,11 @@ class Clash:
     # Every target row the archived entity matched. More than one only for
     # versioned types, where the caller resolves against the head version.
     targets: list[dict[str, Any]]
-    # Empty for an identical pair — the archive adds nothing and every policy
-    # agrees to leave the target alone. Populated when the two differ, keyed
-    # by field name with both sides' values.
+    # For a diffable type: empty for an identical pair (the archive adds
+    # nothing and every policy agrees to leave the target alone), populated
+    # when the two differ, keyed by field name with both sides' values. A
+    # clash read through a projection (documents) always has an empty diff:
+    # it was not compared, so empty does not mean identical there.
     diff: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
@@ -149,6 +151,8 @@ class Clash:
 
     @property
     def identical(self) -> bool:
+        """Meaningful only when the owning EntityPlan is diffable; read
+        EntityPlan.identical_clashes, which checks that."""
         return not self.diff
 
 

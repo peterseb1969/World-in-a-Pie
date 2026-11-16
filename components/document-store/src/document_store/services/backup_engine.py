@@ -5567,8 +5567,10 @@ class DirectRestoreEngine:
         # A merge adds to a namespace that already holds data, so its
         # record says what arrived and under which policy, not that
         # the namespace came from the archive. The plan summary is
-        # what was planned per entity type; with on_clash "newer" the
-        # clashes actually written are a subset of `clash`.
+        # what was planned per entity type. Documents the target already
+        # holds are counted as `not_compared` (the plan does not read their
+        # content), and under on_clash the documents actually written are
+        # a subset of that count.
         planned = self.result["namespaces"][tgt]
         await self._write_restore_provenance(
             archive_path, manifest, raw_manifest,
