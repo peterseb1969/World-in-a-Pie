@@ -289,7 +289,7 @@ const { data: template } = useTemplateByValue('PATIENT_RECORD', { namespace: 'cl
 |------|---------|-----------|---------|
 | `useDocuments(params?)` | `DocumentListResponse` | 30s | always |
 | `useDocument(id, { version?, namespace? })` | `Document` | 30s | when `id` is truthy |
-| `useQueryDocuments(query, { namespace? })` | `DocumentListResponse` | 30s | when `query.template_id` or `query.filters.length > 0` |
+| `useQueryDocuments(query, { namespace? })` | `DocumentListResponse` | 30s | unless `query.template_id` is present and empty |
 | `useDocumentVersions(id)` | `DocumentVersionResponse` | 30s | when `id` is truthy |
 | `useTableView(templateId, params?)` | `TableViewResponse` | 30s | when `templateId` is truthy |
 | `useDocumentRelationships(id, params?)` | `DocumentListResponse` | 30s | when `id` is truthy |
