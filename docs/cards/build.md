@@ -6,7 +6,7 @@ docs/WIP_PoNIFs.md sha256:5834cbc38977bdad reviewed:cdbecddf
 libs/wip-client/README.md sha256:26ed95d9edcd30a7 reviewed:c54871ff
 libs/wip-react/README.md sha256:4248acbe6da3a2c3 reviewed:c54871ff
 libs/wip-proxy/README.md sha256:e63cb4241bccc1e7 reviewed:4bb50871
-docs/wip-deployable-app-contract.md sha256:8140aa79b6f26654 reviewed:c63a09bd
+docs/wip-deployable-app-contract.md sha256:a00820fcfbaa290f reviewed:dda7e850
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:6b9cda0da7c6c00d reviewed:06668a40
 scaffold/templates/claude-md/app.md sha256:5b1689c74d00df71 reviewed:fc5a10e0
