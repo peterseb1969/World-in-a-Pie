@@ -438,23 +438,24 @@ class TestNamespaceSyncRunning:
         service = _service(monkeypatch)
         seen: list[bool] = []
 
-        async def fake_sweep(_namespace: str | None, _page_size: int) -> None:
+        async def fake_sweep(**_kwargs: object) -> dict:
             seen.append(service.is_namespace_sync_running(NS))
+            return {"synced": 0, "failed": 0, "complete": True}
 
-        monkeypatch.setattr(service, "_sync_definitions", fake_sweep)
-        asyncio.run(service._sync_definitions_tracked(NS, 100))
+        monkeypatch.setattr(service, "_sweep_terms", fake_sweep)
+        asyncio.run(service.batch_sync_terms(namespace=NS))
         assert seen == [True]
         assert service.is_namespace_sync_running(NS) is False
 
     def test_a_failed_sweep_still_clears_the_marker(self, monkeypatch):
         service = _service(monkeypatch)
 
-        async def boom(_namespace: str | None, _page_size: int) -> None:
+        async def boom(**_kwargs: object) -> dict:
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(service, "_sync_definitions", boom)
+        monkeypatch.setattr(service, "_sweep_terms", boom)
         with pytest.raises(RuntimeError):
-            asyncio.run(service._sync_definitions_tracked(NS, 100))
+            asyncio.run(service.batch_sync_terms(namespace=NS))
         assert service.is_namespace_sync_running(NS) is False
 
     def test_the_endpoint_asks_the_service(self, monkeypatch):

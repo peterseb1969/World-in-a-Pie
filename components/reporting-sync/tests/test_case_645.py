@@ -137,7 +137,7 @@ async def test_templates_in_tables_listing(http_client: AsyncClient, mock_state)
 @pytest.mark.asyncio
 async def test_backfill_requests_latest_only():
     """batch_sync_templates asks the template-store for latest versions only."""
-    service = BatchSyncService.__new__(BatchSyncService)
+    service = BatchSyncService(MagicMock())
     service.schema_manager = AsyncMock()
     service.pool = _mock_pool()[0]
 

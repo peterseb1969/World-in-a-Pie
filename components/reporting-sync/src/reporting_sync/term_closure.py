@@ -75,6 +75,18 @@ class TermClosureMaintainer:
                 self._debounced(namespace)
             )
 
+    def has_pending(self, namespace: str) -> bool:
+        """Whether a rebuild of this namespace's closure is queued or running.
+
+        The window between a term write and the rebuild landing is when
+        ``term_closure`` lags its terms, so a caller checking parity needs to
+        know it is open: the rows a rebuild is about to write are not a gap.
+        """
+        if namespace in self._dirty:
+            return True
+        task = self._pending.get(namespace)
+        return bool(task and not task.done())
+
     async def _debounced(self, namespace: str) -> None:
         delay = DEBOUNCE_SECONDS
         while True:

@@ -45,6 +45,14 @@ def _derived(table, issue):
 def _batch_sync(active_jobs=()):
     bs = MagicMock()
     bs.list_jobs.return_value = list(active_jobs)
+    # The monitor asks the service whether the namespace is still syncing;
+    # these fixtures answer from the jobs they were given. (The rule itself,
+    # including the sweeps, is test_case_1427_untracked_sweeps.)
+    bs.is_namespace_sync_running.side_effect = lambda ns: any(
+        job.status in (BatchSyncStatus.PENDING, BatchSyncStatus.RUNNING)
+        and job.namespace in (ns, None)
+        for job in bs.list_jobs.return_value
+    )
     bs.batch_sync_terms = AsyncMock(return_value={})
     bs.batch_sync_term_relations = AsyncMock(return_value={})
     bs.start_batch_sync = AsyncMock()

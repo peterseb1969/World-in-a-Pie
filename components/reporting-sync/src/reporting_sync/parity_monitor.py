@@ -10,8 +10,10 @@ Rules that keep it from fighting the rest of the service:
 - A gap is repaired only when two consecutive passes see it. Event-driven
   sync and the closure's rebuild debounce make short-lived gaps normal; one
   sighting is not evidence.
-- A namespace with an active batch job is skipped for that pass: the
-  operator's (or the restore's) sync owns it until it finishes.
+- A namespace with a sync of its own still in flight is skipped for that
+  pass: that sync owns it until it finishes. In flight covers a document job,
+  a definitions sweep or a queued closure rebuild — whatever is writing the
+  rows this check would otherwise call missing.
 - Each gap gets at most ``settings.parity_repair_attempts`` repairs. One
   that persists past them is logged once at error level and left alone
   until it closes; it stays visible in the status.
@@ -36,7 +38,6 @@ from pydantic import BaseModel, Field
 
 from .batch_sync import BatchSyncService
 from .config import settings
-from .models import BatchSyncStatus
 from .parity import NamespaceParityResult, check_namespace_parity
 from .schema_manager import SchemaManager
 
@@ -220,11 +221,11 @@ class ParityMonitor:
         self._status.last_pass_finished_at = datetime.now(UTC)
 
     def _sync_active(self, namespace: str) -> bool:
-        return any(
-            job.status in (BatchSyncStatus.PENDING, BatchSyncStatus.RUNNING)
-            and job.namespace in (None, namespace)
-            for job in self.batch_sync.list_jobs()
-        )
+        """Whether reporting-sync still has work in flight for this namespace.
+        Asked of the service that runs it, which knows the definitions sweeps
+        and the queued closure rebuilds too — the job list alone would leave a
+        term backfill mid-flight looking like a gap to repair."""
+        return self.batch_sync.is_namespace_sync_running(namespace)
 
     async def check_namespace(self, namespace: str) -> None:
         ns_status = self._status.namespaces.setdefault(namespace, NamespaceParityStatus())

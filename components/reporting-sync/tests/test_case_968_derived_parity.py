@@ -9,7 +9,7 @@ relations too — its omission is how the relations went missing.
 
 import json
 from contextlib import ExitStack
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -252,7 +252,7 @@ async def test_empty_namespace_is_green(pg_pool):
 async def test_batch_sync_definitions_include_term_relations():
     """The namespace batch sync rebuilds relations after terms, so a restore
     that triggers it gets its relations and closure back."""
-    service = BatchSyncService.__new__(BatchSyncService)
+    service = BatchSyncService(MagicMock())
     calls: list[str] = []
 
     def recorder(name):
