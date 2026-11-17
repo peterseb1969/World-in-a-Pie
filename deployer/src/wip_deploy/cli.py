@@ -10,6 +10,7 @@ import contextlib
 import functools
 import json
 import re
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
@@ -4303,18 +4304,20 @@ def rotate_key(
     except OSError:
         old_plaintext = None
     # Remove the current secret so the re-apply's ensure_secrets regenerates
-    # a fresh plaintext (get_or_generate: absent → generate).
-    FileSecretBackend(secrets_location).remove(secret_name)
-
-    _apply_and_persist_mutation(
-        deployment,
-        components,
-        apps_list,
-        target_dir,
-        f"Rotated {label} on {resolved_name}",
-        repo_root=repo_root,
-        regenerate=frozenset({secret_name}),
-    )
+    # a fresh plaintext (get_or_generate: absent → generate). A rotation that
+    # is not saved puts the current value back.
+    with _store_edits_kept_if_saved(secrets_location, [secret_name]) as mark_saved:
+        FileSecretBackend(secrets_location).remove(secret_name)
+        _apply_and_persist_mutation(
+            deployment,
+            components,
+            apps_list,
+            target_dir,
+            f"Rotated {label} on {resolved_name}",
+            repo_root=repo_root,
+            regenerate=frozenset({secret_name}),
+            after_persist=mark_saved,
+        )
 
     # Read the regenerated plaintext straight off disk (the apply used its own
     # backend instance; this reads the persisted value).
@@ -5358,6 +5361,42 @@ def _store_secret(secrets_dir: Path, name: str, value: str) -> None:
     backend.persist()
 
 
+@contextlib.contextmanager
+def _store_edits_kept_if_saved(secrets_dir: Path, names: list[str]) -> Iterator[Callable[[], None]]:
+    """For a verb that edits the secret store before it renders and applies.
+
+    Records the named store files as they are, and yields the callback to
+    pass as `after_persist` to _apply_and_persist_mutation, which runs it
+    exactly when the mutated spec is saved. If the verb ends any other way
+    (the render refused, the apply changed nothing, an interrupt), the files
+    are put back: the store then still holds the values the install runs,
+    which the kept spec and the install's secret record describe.
+    """
+    held: dict[str, tuple[bytes, int] | None] = {}
+    for name in names:
+        path = secrets_dir / name
+        held[name] = (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) if path.is_file() else None
+    saved = False
+
+    def mark_saved() -> None:
+        nonlocal saved
+        saved = True
+
+    try:
+        yield mark_saved
+    except BaseException:
+        if not saved:
+            for name, entry in held.items():
+                path = secrets_dir / name
+                if entry is None:
+                    path.unlink(missing_ok=True)
+                    continue
+                path.write_bytes(entry[0])
+                with contextlib.suppress(OSError):
+                    path.chmod(entry[1])
+        raise
+
+
 def _parse_connector_config(
     pairs: list[str], config_file: Path | None
 ) -> dict[str, Any]:
@@ -5481,20 +5520,25 @@ def connector_add(
         raise typer.Exit(2)
 
     _replace_auth(deployment, connectors=[*auth.connectors, connector])
-    if key is not None and secret_file is not None:
-        _store_secret(
-            _file_secrets_dir(deployment), connector.secret_name, _read_secret_source(secret_file)
+    secret = _read_secret_source(secret_file) if key is not None and secret_file is not None else None
+    secrets_dir = _file_secrets_dir(deployment) if secret is not None else None
+    with (
+        _store_edits_kept_if_saved(secrets_dir, [connector.secret_name])
+        if secrets_dir is not None
+        else contextlib.nullcontext(None)
+    ) as mark_saved:
+        if secrets_dir is not None and secret is not None:
+            _store_secret(secrets_dir, connector.secret_name, secret)
+        _apply_and_persist_mutation(
+            deployment,
+            components,
+            apps_list,
+            target_dir,
+            f"Added Dex connector {connector_id!r} to {resolved_name}",
+            repo_root=repo_root,
+            services_scope=_user_verb_scope(deployment, components),
+            after_persist=mark_saved,
         )
-
-    _apply_and_persist_mutation(
-        deployment,
-        components,
-        apps_list,
-        target_dir,
-        f"Added Dex connector {connector_id!r} to {resolved_name}",
-        repo_root=repo_root,
-        services_scope=_user_verb_scope(deployment, components),
-    )
     from wip_deploy.config_gen.dex import _PASSWORD_CONNECTOR_TYPES
 
     if connector_type not in _PASSWORD_CONNECTOR_TYPES:
@@ -5525,18 +5569,20 @@ def connector_set_secret(
             err=True,
         )
         raise typer.Exit(2)
-    _store_secret(
-        _file_secrets_dir(deployment), connector.secret_name, _read_secret_source(secret_file)
-    )
-    _apply_and_persist_mutation(
-        deployment,
-        components,
-        apps_list,
-        target_dir,
-        f"Replaced the secret of Dex connector {connector_id!r} on {resolved_name}",
-        services_scope=["dex"],
-        repo_root=repo_root,
-    )
+    secrets_dir = _file_secrets_dir(deployment)
+    secret = _read_secret_source(secret_file)
+    with _store_edits_kept_if_saved(secrets_dir, [connector.secret_name]) as mark_saved:
+        _store_secret(secrets_dir, connector.secret_name, secret)
+        _apply_and_persist_mutation(
+            deployment,
+            components,
+            apps_list,
+            target_dir,
+            f"Replaced the secret of Dex connector {connector_id!r} on {resolved_name}",
+            services_scope=["dex"],
+            repo_root=repo_root,
+            after_persist=mark_saved,
+        )
 
 
 @connector_app.command("remove")

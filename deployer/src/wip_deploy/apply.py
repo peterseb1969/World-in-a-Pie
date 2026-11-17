@@ -152,7 +152,9 @@ def apply_compose(
     the install dir gets the previous render back: ``up``, ``rebuild`` and
     ``start`` deploy from those files, and must not deploy what the spec
     refused. A failure that moved the deployment keeps the new render,
-    which matches the spec the CLI then persists.
+    which matches the spec the CLI then persists. Any other way the apply
+    ends without returning (an interrupt, an unexpected exception) also
+    leaves the previous spec saved, so it restores the previous render too.
     """
     root = Path(install_dir)
     previous = _snapshot_render(root, tree)
@@ -161,8 +163,8 @@ def apply_compose(
             deployment=deployment, components=components, apps=apps, tree=tree,
             install_dir=root, services_scope=services_scope,
         )
-    except ApplyError as e:
-        if not e.mutated:
+    except BaseException as e:
+        if not (isinstance(e, ApplyError) and e.mutated):
             _restore_render(root, previous)
         raise
 
@@ -1729,11 +1731,17 @@ def apply_k8s(
             extra_names=app_origin_hosts(deployment),
         )
 
-    # CASE-455: see apply_compose — post-`kubectl apply` failures are
-    # post-mutation; stamp them so the CLI persists the applied spec.
+    # A failure of the apply step itself is judged by what kubectl reports it
+    # changed (see _KubectlApplies): an unreachable API server or a refused
+    # object changes nothing, and the CLI must keep the previous spec then.
+    # Everything after the apply step is post-mutation (CASE-455); it is
+    # stamped so the CLI persists the applied spec.
+    if services_scope is not None:
+        _kubectl_apply_scoped(install_dir, ns, services_scope)
+    else:
+        _kubectl_apply_tree(install_dir, ns)
     try:
         if services_scope is not None:
-            _kubectl_apply_scoped(install_dir, ns, services_scope)
             # Narrow the wait / hooks / summary to the scoped services.
             # Filtering the component and app lists here composes through
             # _expected_workloads, _run_post_install_k8s, and
@@ -1745,7 +1753,6 @@ def apply_k8s(
             apps = [a for a in apps if a.metadata.name in scoped_names]
             up_count = len(_expected_workloads(components, apps, deployment))
         else:
-            _kubectl_apply_tree(install_dir, ns)
             # Read the live claims after the apply: it created the namespace a
             # first install had not made yet, and it deleted no claim.
             _report_kept_claims(ns, _claims_left_out(ns, tree))
@@ -1874,17 +1881,18 @@ def _kubectl_apply_scoped(
     or changing an app changes it. Its Deployment carries the Caddyfile's
     hash, so an unchanged file is a no-op and a changed one rolls the pod.
     """
+    applies = _KubectlApplies()
     namespace_yaml = install_dir / "namespace.yaml"
     if namespace_yaml.exists():
-        _kubectl_run(["apply", "-f", str(namespace_yaml)])
+        applies.run(["apply", "-f", str(namespace_yaml)])
 
     for shared in sorted(install_dir.glob("*.yaml")):
         if shared.name != "namespace.yaml":
-            _kubectl_run(["apply", "-n", ns, "-f", str(shared)])
+            applies.run(["apply", "-n", ns, "-f", str(shared)])
 
     front_door = install_dir / "services" / f"{PUBLIC_CADDY_NAME}.yaml"
     if front_door.exists() and PUBLIC_CADDY_NAME not in services:
-        _kubectl_run(["apply", "-n", ns, "-f", str(front_door)])
+        applies.run(["apply", "-n", ns, "-f", str(front_door)])
 
     for svc in services:
         candidates = (
@@ -1895,9 +1903,10 @@ def _kubectl_apply_scoped(
         if path is None:
             raise ApplyError(
                 f"scoped apply: no rendered manifest for {svc!r} "
-                f"(looked in services/ and infrastructure/)"
+                f"(looked in services/ and infrastructure/)",
+                mutated=applies.changed,
             )
-        _kubectl_run(["apply", "-n", ns, "-f", str(path)])
+        applies.run(["apply", "-n", ns, "-f", str(path)])
 
 
 def _rendered_claims(tree: FileTree) -> set[str]:
@@ -1965,9 +1974,10 @@ def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:
     is not in the allowlist. Volume claims are not in it either, so no
     apply deletes a volume.
     """
+    applies = _KubectlApplies()
     namespace_yaml = install_dir / "namespace.yaml"
     if namespace_yaml.exists():
-        _kubectl_run(["apply", "-f", str(namespace_yaml)])
+        applies.run(["apply", "-f", str(namespace_yaml)])
 
     args = [
         "apply",
@@ -1978,11 +1988,14 @@ def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:
     ]
     for kind in _PRUNE_ALLOWLIST:
         args.extend(["--prune-allowlist", kind])
-    _kubectl_run(args)
+    applies.run(args)
 
 
 def _kubectl_run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Shell out to kubectl and raise ApplyError on non-zero exit."""
+    """Shell out to kubectl and raise ApplyError on non-zero exit.
+
+    The error is marked mutated when kubectl's own output says it changed an
+    object before it failed (see _kubectl_changed)."""
     try:
         return subprocess.run(
             [*kubectl(), *args],
@@ -1993,8 +2006,39 @@ def _kubectl_run(args: list[str]) -> subprocess.CompletedProcess[str]:
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
         raise ApplyError(
-            f"kubectl {' '.join(args)} failed (exit {e.returncode}): {stderr}"
+            f"kubectl {' '.join(args)} failed (exit {e.returncode}): {stderr}",
+            mutated=_kubectl_changed(e.stdout),
         ) from e
+
+
+# The verbs `kubectl apply` prints after an object it changed; an object it
+# left alone is "unchanged".
+_KUBECTL_CHANGE = re.compile(r"\s(created|configured|pruned|serverside-applied)(\s|$)")
+
+
+def _kubectl_changed(stdout: str | None) -> bool:
+    """Whether `kubectl apply` output names an object it created, changed or
+    pruned."""
+    return any(_KUBECTL_CHANGE.search(line) for line in (stdout or "").splitlines())
+
+
+class _KubectlApplies:
+    """The `kubectl apply` calls of one apply step, and whether any of them
+    changed the cluster. A failing call is marked mutated when it, or a call
+    before it in the step, changed an object: a step that failed having
+    changed nothing (an unreachable API server, a refused object) leaves the
+    cluster as the previous spec describes it."""
+
+    def __init__(self) -> None:
+        self.changed = False
+
+    def run(self, args: list[str]) -> None:
+        try:
+            result = _kubectl_run(args)
+        except ApplyError as e:
+            e.mutated = e.mutated or self.changed
+            raise
+        self.changed = self.changed or _kubectl_changed(result.stdout)
 
 
 # ────────────────────────────────────────────────────────────────────
