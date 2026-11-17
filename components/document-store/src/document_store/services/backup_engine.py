@@ -2420,6 +2420,23 @@ def _check_advance_answer(resp: Any, batch: list[str]) -> None:
         )
 
 
+def _written_rows(
+    chain: list[dict[str, Any]], held: set[str], head_only: set[str],
+    held_rows: dict[tuple[str, int], int] | None,
+) -> list[dict[str, Any]]:
+    """The rows of one archived chain the merge writes, counting the others
+    into ``held_rows``."""
+    doc_id = str(chain[0].get("document_id")) if chain else ""
+    if doc_id in held:
+        _count_rows(chain, held_rows)
+        return []
+    if doc_id in head_only:
+        head = head_of(chain)
+        _count_rows([row for row in chain if row is not head], held_rows)
+        return [head]
+    return chain
+
+
 def _count_rows(chain: list[dict[str, Any]], counts: dict[tuple[str, int], int] | None) -> None:
     """Add a chain's rows to ``counts`` per (template_id, template_version)."""
     if counts is None:
@@ -2432,17 +2449,19 @@ def _count_rows(chain: list[dict[str, Any]], counts: dict[tuple[str, int], int] 
 def _alignment_rows(
     alignment: dict[str, Any], chains: Any, held: set[str],
     held_rows: dict[tuple[str, int], int] | None = None,
+    *,
+    head_only: set[str] | None = None,
 ) -> tuple[dict[tuple[str, int], list[str]], dict[tuple[str, int], dict[str, int]]]:
     """Per (template, version) of the alignment: the documents with a row
-    pinned to it, and how many of its rows fill each field the target
-    version lacks. A held document's chain is not counted; its rows are
-    counted per version into ``held_rows`` when given."""
+    the merge writes pinned to it, and how many of those rows fill each
+    field the target version lacks. A held document writes no row, and a
+    head-only one only its head row (appended on top of the target's copy);
+    the rows not written are counted per version into ``held_rows`` when
+    given."""
     rows_per_version: dict[tuple[str, int], list[str]] = {}
     carrying: dict[tuple[str, int], dict[str, int]] = {}
     for chain in chains:
-        if chain and str(chain[0].get("document_id")) in held:
-            _count_rows(chain, held_rows)
-            continue
+        chain = _written_rows(chain, held, head_only or set(), held_rows)
         for row in chain:
             template_id = str(row.get("template_id"))
             if template_id not in alignment:
@@ -2520,14 +2539,51 @@ def _alignment_report(
 def _pinned_versions(
     alignment: dict[str, Any], reader: ArchiveReader, src: str,
     doc_groups: dict[str, list[dict[str, Any]]] | None, held: set[str],
+    head_only: set[str] | None = None,
 ) -> set[tuple[str, int]]:
     """The (archive template_id, version) pairs of aligned templates that the
-    arriving documents' rows pin. A held document arrives as nothing."""
+    rows the merge writes pin. A held document writes nothing; a head-only
+    one writes its head row."""
     chains: Any = (
         doc_groups.values() if doc_groups is not None else iter_chains(reader, src)
     )
-    rows_per_version, _carrying = _alignment_rows(alignment, chains, held)
+    rows_per_version, _carrying = _alignment_rows(alignment, chains, held, head_only=head_only)
     return set(rows_per_version)
+
+
+def _archived_clash_ids(plan: Any, archived_ids: set[str]) -> dict[int, str]:
+    """Each clash's ARCHIVED document_id, by its index in the plan. A clash
+    entity carries the archive's id, or, once the planner mapped it onto the
+    target's copy, the target's, which the plan's mapping leads back from."""
+    back = {new_id: old_id for old_id, new_id in plan.mapping.items()}
+    found: dict[int, str] = {}
+    for index, clash in enumerate(plan.clashes):
+        entity_id = str(clash.entity.get("document_id"))
+        archive_id = entity_id if entity_id in archived_ids else back.get(entity_id)
+        if archive_id in archived_ids:
+            found[index] = archive_id
+    return found
+
+
+def _archived_heads(
+    reader: ArchiveReader, src: str,
+    doc_groups: dict[str, list[dict[str, Any]]] | None,
+    remapper: IDRemapper, wanted: set[str],
+) -> dict[str, dict[str, Any]]:
+    """The head row of each wanted archived document, as the merge would
+    write it (references pointed at the target's ids), so a clash compares
+    with the target's copy the way the overwrite does."""
+    if doc_groups is not None:
+        return {
+            doc_id: head_of(chain) for doc_id, chain in doc_groups.items()
+            if doc_id in wanted and chain
+        }
+    heads: dict[str, dict[str, Any]] = {}
+    for chain in iter_chains(reader, src):
+        doc_id = str(chain[0].get("document_id")) if chain else ""
+        if doc_id in wanted:
+            heads[doc_id] = remapper.remap_document(head_of(chain))
+    return heads
 
 
 class DirectRestoreEngine:
@@ -5220,23 +5276,29 @@ class DirectRestoreEngine:
 
         The versions decided are the ones arriving documents pin, and the
         versions those name; every other archived version is history, never
-        judged. Under ``on_clash=skip`` a document the target already holds
-        is never written, so its rows pin nothing and it is never left out:
-        the target keeps its own copy. Which documents the target holds is
-        what pass 2 finds, files and documents matched to a fixed point
-        (_held_documents), so an identity fed by another archived document or
-        a file is compared by the id it has on the target. With
+        judged. Only rows the merge will write count. A document the target
+        already holds writes nothing under ``on_clash=skip``, nor when its copy
+        is identical, nor under ``newer`` when the archive's copy is not the
+        newer one: its rows pin nothing and it is never left out, the target
+        keeps its own copy. Under ``overwrite`` or ``newer`` a held document
+        the archive wins writes only its head row, appended on top of the
+        target's, so only that row pins a version. Which documents the target
+        holds is what pass 2 finds, files and documents matched to a fixed
+        point (_held_documents), so an identity fed by another archived
+        document or a file is compared by the id it has on the target. With
         ``skip_documents`` no document arrives: every version is history."""
         if skip_documents:
             doc_groups = {}
         held: set[str] = set()
-        if on_clash == "skip" and not skip_documents:
-            held = await self._held_documents(
+        head_only: set[str] = set()
+        if not skip_documents:
+            held, head_only = await self._held_documents(
                 reader, manifest, targets, src, tgt, archive_entities, doc_groups,
-                remapper, redirects,
+                remapper, redirects, on_clash=on_clash,
             )
         pinned = await self._off_loop(
             _pinned_versions, definitions.alignment, reader, src, doc_groups, held,
+            head_only,
         )
         kept_before = len(definitions.target_wins)
         planner.settle_alignment(definitions, pinned)
@@ -5250,7 +5312,7 @@ class DirectRestoreEngine:
         self._emit_kept(tgt, definitions.target_wins[kept_before:], phase)
         unplaceable, report = await self._off_loop(
             self._settle_alignment,
-            definitions.alignment, reader, src, doc_groups, held,
+            definitions.alignment, reader, src, doc_groups, held, head_only,
         )
         self._emit_alignment(tgt, report, dry_run=dry_run)
         self._enforce_definitions_gate(tgt, definitions, alignment_report=report)
@@ -5274,38 +5336,80 @@ class DirectRestoreEngine:
         doc_groups: dict[str, list[dict[str, Any]]] | None,
         remapper: _AligningRemapper,
         redirects: dict[str, str],
-    ) -> set[str]:
+        *,
+        on_clash: str,
+    ) -> tuple[set[str], set[str]]:
         """The archived documents the target already holds, as pass 2 finds
-        them: files, then documents planned against the target until no new
-        mapping appears, on copies, so nothing here reaches the real pass 2.
+        them, split by what the merge writes for each: (held, head_only).
 
+        Files, then documents, are planned against the target until no new
+        mapping appears, on copies, so nothing here reaches the real pass 2.
         A document identity can hash another archived document's id or a
         file's, which only pass 2's matching turns into the id the target
-        holds; matched before that, such a document is missed. A held
-        document is one the planner finds as a clash: the same document_id,
-        or the same identity on the aligned target template."""
+        holds; matched before that, such a document is missed. The target
+        holds a document the planner finds as a clash: the same document_id,
+        or the same identity on the aligned target template.
+
+        ``held`` write nothing: every clash under ``skip``, and under
+        ``overwrite`` / ``newer`` the ones the archive does not win
+        (_archive_wins: an identical copy, or under ``newer`` a copy that is
+        not strictly newer). ``head_only`` are the clashes the archive wins:
+        only their head row is appended."""
         probe_entities = {
             entity_type: archive_entities[entity_type]
             for entity_type in ("files", "documents")
             if archive_entities.get(entity_type) is not None
         }
         if not probe_entities.get("documents"):
-            return set()
+            return set(), set()
         archived_ids = {
             str(row.get("document_id")) for row in probe_entities["documents"]
         }
-        built, *_rest = await self._plan_merge_entities(
+        probe_remapper = copy.deepcopy(remapper)
+        built, _rewritten, _transform, probe_groups, _rehash = await self._plan_merge_entities(
             reader, manifest, targets, src, tgt, probe_entities, doc_groups,
-            copy.deepcopy(remapper), redirects=redirects,
+            probe_remapper, redirects=redirects,
         )
         plan = built.get("documents")
-        if plan is None:
-            return set()
-        clashing = {str(clash.entity.get("document_id")) for clash in plan.clashes}
-        held = clashing | {
-            old_id for old_id, new_id in plan.mapping.items() if new_id in clashing
-        }
-        return held & archived_ids
+        if plan is None or not plan.clashes:
+            return set(), set()
+        archive_id_of = _archived_clash_ids(plan, archived_ids)
+        if on_clash == "skip":
+            return set(archive_id_of.values()), set()
+        heads = await self._off_loop(
+            _archived_heads, reader, src, probe_groups, probe_remapper,
+            set(archive_id_of.values()),
+        )
+        db_name, coll_name = COLLECTION_MAP["documents"]
+        full_heads = await self._full_target_heads(
+            self._mongo[db_name][coll_name], tgt, plan.clashes,
+        )
+        return self._split_by_policy(plan.clashes, archive_id_of, heads, full_heads, on_clash)
+
+    def _split_by_policy(
+        self,
+        clashes: list[Any],
+        archive_id_of: dict[int, str],
+        heads: dict[str, dict[str, Any]],
+        full_heads: dict[tuple[Any, int], dict[str, Any]],
+        on_clash: str,
+    ) -> tuple[set[str], set[str]]:
+        """(held, head_only) by the rule the overwrite itself applies
+        (_archive_wins), so the alignment counts the rows that pass writes."""
+        held: set[str] = set()
+        head_only: set[str] = set()
+        for index, clash in enumerate(clashes):
+            archive_id = archive_id_of.get(index)
+            if archive_id is None:
+                continue
+            target_head = max(clash.targets, key=lambda r: r.get("version", 1))
+            full_head = full_heads.get(
+                (target_head.get("document_id"), target_head.get("version", 1))
+            )
+            latest = heads.get(archive_id, clash.entity)
+            wins = self._archive_wins(latest, target_head, full_head, on_clash, _OverwriteTally())
+            (head_only if wins else held).add(archive_id)
+        return held, head_only
 
     async def _plan_merge_entities(
         self,
@@ -6073,6 +6177,7 @@ class DirectRestoreEngine:
         src: str,
         doc_groups: dict[str, list[dict[str, Any]]] | None,
         held: set[str] | None = None,
+        head_only: set[str] | None = None,
     ) -> tuple[set[str], dict[str, Any]]:
         """Finish the template alignment against the arriving documents.
 
@@ -6089,7 +6194,9 @@ class DirectRestoreEngine:
         )
         held = held or set()
         held_rows: dict[tuple[str, int], int] = {}
-        rows_per_version, carrying = _alignment_rows(alignment, chains, held, held_rows)
+        rows_per_version, carrying = _alignment_rows(
+            alignment, chains, held, held_rows, head_only=head_only,
+        )
 
         for (template_id, number), counts in carrying.items():
             version = alignment[template_id].versions[number]

@@ -63,10 +63,15 @@ templates as follows.
    pinned to the target version its archived version mapped to. A document
    whose version mapped nowhere is listed in the plan
    (`unplaceable_documents`, with its template and, per version, the
-   reason) and not written. Under `on_clash=skip`, a document the target
-   already holds (same `document_id`, or the same identity on the aligned
-   target template) is not written, so it neither decides whether a version
-   can be placed nor is listed (`held_by_target_count`).
+   reason) and not written. Only rows the merge writes count. A document
+   the target already holds (same `document_id`, or the same identity on
+   the aligned target template) writes nothing under `on_clash=skip`, nor
+   when the two copies are identical, nor under `newer` when the archive's
+   copy is not strictly newer: it neither decides whether a version can be
+   placed nor is listed (`held_by_target_count`). One the archive wins under
+   `overwrite` or `newer` writes only its head row, appended on top of the
+   target's copy, so only that row pins a version; the rest of its archived
+   chain counts as `held_rows`.
 4. **History versions are not definitions to add.** An archive version that
    no arriving document pins (normally the source's retired history, or a
    draft nobody activated) is neither compared nor added, whatever its
@@ -189,13 +194,15 @@ which only that matching turns into the id the target holds. So:
 1. **Pass 1 matches aligned templates by value and decides no version.** The
    template-level refusal (different `identity_fields`, `usage`,
    `versioned`) stays in pass 1.
-2. **Held documents come from pass 2's own matching.** Under
-   `on_clash=skip` the merge plans files and documents against the target on
-   copies, as pass 2 does, and takes the documents it finds as clashes. That
+2. **Held documents come from pass 2's own matching.** The merge plans
+   files and documents against the target on copies, as pass 2 does, and
+   takes the documents it finds as clashes; each is decided by the clash
+   policy's own rule (`skip` writes none; `overwrite` and `newer` append the
+   head of the ones the archive wins, `_archive_wins`). That
    is the only rehash; nothing else hashes identities ahead of it. Re-pinning
    changes only `template_version`, and the identity hash has no version in
    it, so the matching never depends on the version mapping.
-3. **Then the versions are decided:** the ones the non-held arriving rows pin,
+3. **Then the versions are decided:** the ones the rows the merge writes pin,
    and the versions those name, transitively. Everything else is history.
 4. **Status is judged on those versions only.** A target draft is never a
    candidate; an archived draft among them refuses the merge; active against
@@ -207,6 +214,7 @@ which only that matching turns into the id the target holds. So:
    template is reported with its `outcome` and reason, on the merge's result
    and on a refusal alike.
 
-The cost: under `on_clash=skip` with `align_templates`, files and documents
-are planned twice, once to find the held documents and once for the merge.
+The cost: with `align_templates`, files and documents are planned twice,
+once to find the held documents and once for the merge, under every clash
+policy.
 

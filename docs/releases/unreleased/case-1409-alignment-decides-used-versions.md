@@ -29,11 +29,15 @@ Now:
 - **Search.** The search places as many versions as it can. A version that
   fits nowhere is reported `unplaced` without costing the others.
 - **Held documents.** These are found by the merge's own document matching,
-  after files and documents are mapped to the target.
+  after files and documents are mapped to the target, under every clash
+  policy. Only rows the merge writes count: a document the target keeps
+  (`skip`, an identical copy, or under `newer` an archive copy that is not
+  the newer one) counts none, and one the archive wins under `overwrite` or
+  `newer` counts only its head row, the one appended.
 - **Report.** Each version in `template_alignment.templates[].versions[]`
   carries an `outcome`: `mapped`, `unplaced`, `held`, `history` or
   `refused`. It also carries `held_rows`. A merge refused while settling the
   alignment carries the same `template_alignment` account on its refusal.
 
-Under `on_clash=skip`, an aligned merge now plans files and documents twice:
-once to find the documents the target holds, once for the merge.
+An aligned merge with documents now plans files and documents twice: once to
+find the documents the target holds, once for the merge.
