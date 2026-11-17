@@ -319,7 +319,9 @@ async def update_deletion_mode(
     if ns.deletion_mode == "retain" and deletion_mode == "full" and not confirm_enable_deletion:
         raise HTTPException(
             400,
-            "Changing from 'retain' to 'full' requires confirm_enable_deletion=true"
+            "Changing from 'retain' to 'full' requires the query parameter "
+            "confirm_enable_deletion=true (this route takes deletion_mode and "
+            "confirm_enable_deletion as query parameters, not in the body)"
         )
 
     # A namespace mid-deletion keeps the mode it is being deleted under.

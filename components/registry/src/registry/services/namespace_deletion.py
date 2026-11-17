@@ -261,7 +261,15 @@ def deletion_refusals(ns: Namespace) -> list[tuple[str, str, int]]:
         )
     if ns.deletion_mode != "full":
         # 'wip' can never be switched to full, so it gets no advice to do so.
-        advice = "" if ns.prefix == "wip" else " Set deletion_mode='full' first via PATCH."
+        # The advice names whole calls: the two routes that set the mode take
+        # it in different places (PUT in the body, PATCH as query parameters).
+        advice = "" if ns.prefix == "wip" else (
+            " Set deletion_mode='full' first: PUT /api/registry/namespaces/"
+            f"{ns.prefix} with body "
+            '{"deletion_mode": "full", "confirm_enable_deletion": true}, or '
+            f"PATCH /api/registry/namespaces/{ns.prefix}"
+            "?deletion_mode=full&confirm_enable_deletion=true."
+        )
         refusals.append((
             "deletion_mode",
             f"Namespace '{ns.prefix}' has deletion_mode='retain'.{advice}",
