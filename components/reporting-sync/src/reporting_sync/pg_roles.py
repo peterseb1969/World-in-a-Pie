@@ -49,6 +49,10 @@ _ALTER_FOR_KIND = {
 }
 # Serialises provisioning across concurrent starts against one database.
 _PROVISION_LOCK_KEY = 0x5749505F524F4C45  # "WIP_ROLE"
+# How long the startup grant loop waits for one schema's lock. A namespace
+# drop holds that lock while it counts every table's rows, so an unbounded
+# wait would hold up the whole PostgreSQL bring-up behind one deletion.
+_GRANT_LOCK_TIMEOUT = "10s"
 
 
 @dataclass
@@ -68,6 +72,8 @@ class ProvisionReport:
     roles_created: list[str] = field(default_factory=list)
     schemas_reowned: int = 0
     relations_reowned: int = 0
+    # Schemas whose lock stayed held past _GRANT_LOCK_TIMEOUT: not granted.
+    schemas_skipped: list[str] = field(default_factory=list)
 
 
 async def _ensure_role(
@@ -101,6 +107,32 @@ async def _quoted(conn: asyncpg.Connection, template: str, *args: str) -> str:
     """Build a utility statement with server-side identifier quoting."""
     placeholders = ", ".join(f"${i + 1}::text" for i in range(len(args)))
     return str(await conn.fetchval(f"SELECT format('{template}', {placeholders})", *args))
+
+
+async def _grant_reader_on(conn: asyncpg.Connection, schema: str, reader: str) -> bool:
+    """Grant the reader one schema under that schema's close lock, in a
+    transaction of its own: it holds no other schema's lock while it waits,
+    and waits at most _GRANT_LOCK_TIMEOUT. False when the lock stayed held
+    that long; the schema is then left as it is."""
+    try:
+        async with conn.transaction():
+            await conn.execute(await _quoted(conn, "SET LOCAL lock_timeout = %L", _GRANT_LOCK_TIMEOUT))
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{schema}")
+            current = await conn.fetchrow(
+                "SELECT obj_description(oid, 'pg_namespace') AS note FROM pg_namespace "
+                "WHERE nspname = $1",
+                schema,
+            )
+            # Dropped, or closed, while this step waited for its lock.
+            if current is None or current["note"] == CLOSED_SCHEMA_COMMENT:
+                return True
+            await conn.execute(await _quoted(conn, "GRANT USAGE ON SCHEMA %I TO %I", schema, reader))
+            await conn.execute(await _quoted(
+                conn, "GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I", schema, reader,
+            ))
+    except asyncpg.exceptions.LockNotAvailableError:
+        return False
+    return True
 
 
 async def provision_roles(conn: asyncpg.Connection, spec: RoleSpec) -> ProvisionReport:
@@ -192,32 +224,25 @@ async def provision_roles(conn: asyncpg.Connection, spec: RoleSpec) -> Provision
     # Each schema is checked under the per-schema lock close_namespace takes,
     # so a close running alongside (another replica during a rolling update)
     # is either seen by the check or waits for the grants and revokes them.
-    # Sorted, the order every holder of several of these locks takes them in.
-    async with conn.transaction():
-        owned = await conn.fetch(
-            f"""
-            SELECT n.nspname FROM pg_namespace n
-            WHERE {_SYSTEM_SCHEMA_FILTER}
-              AND (pg_get_userbyid(n.nspowner) = $1 OR n.nspname = 'public')
-            """,  # nosec B608  # SQL fragments are code constants, values bound
-            spec.owner,
+    owned = await conn.fetch(
+        f"""
+        SELECT n.nspname FROM pg_namespace n
+        WHERE {_SYSTEM_SCHEMA_FILTER}
+          AND (pg_get_userbyid(n.nspowner) = $1 OR n.nspname = 'public')
+        """,  # nosec B608  # SQL fragments are code constants, values bound
+        spec.owner,
+    )
+    for schema in sorted(row["nspname"] for row in owned):
+        if not await _grant_reader_on(conn, schema, spec.reader):
+            report.schemas_skipped.append(schema)
+    if report.schemas_skipped:
+        logger.warning(
+            "Reader grants skipped for %s: another session held the schema's lock past %s "
+            "(a namespace being closed or dropped). The reader keeps the grants it already "
+            "had there; the next start grants them again.",
+            ", ".join(report.schemas_skipped), _GRANT_LOCK_TIMEOUT,
         )
-        # Python's order, not the database collation's: the scoped grant step
-        # sorts the same way, and two lock takers must agree on the order.
-        for schema in sorted(row["nspname"] for row in owned):
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{schema}")
-            current = await conn.fetchrow(
-                "SELECT obj_description(oid, 'pg_namespace') AS note FROM pg_namespace "
-                "WHERE nspname = $1",
-                schema,
-            )
-            # Dropped, or closed, while this step waited for its lock.
-            if current is None or current["note"] == CLOSED_SCHEMA_COMMENT:
-                continue
-            await conn.execute(await _quoted(conn, "GRANT USAGE ON SCHEMA %I TO %I", schema, spec.reader))
-            await conn.execute(await _quoted(
-                conn, "GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I", schema, spec.reader,
-            ))
+    async with conn.transaction():
         await conn.execute(await _quoted(
             conn, "ALTER DEFAULT PRIVILEGES FOR ROLE %I GRANT SELECT ON TABLES TO %I", spec.owner, spec.reader,
         ))

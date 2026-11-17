@@ -26,7 +26,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from reporting_sync import main
+from reporting_sync import main, pg_roles
 from reporting_sync.main import _close_namespaces_being_deleted, app, init_postgres_schema, state
 from reporting_sync.pg_roles import RoleSpec, provision_roles
 from reporting_sync.schema_manager import CLOSED_SCHEMA_COMMENT, NamespaceDeletedError, SchemaManager
@@ -348,6 +348,36 @@ async def test_the_startup_grant_loop_waits_for_a_namespace_being_closed(pg_pool
             with contextlib.suppress(asyncio.CancelledError, asyncpg.PostgresError):
                 await task
         await holder.close()
+
+
+async def test_the_startup_grant_loop_does_not_wait_out_a_long_held_lock(pg_pool, roles, monkeypatch):
+    """A namespace drop holds a schema's lock while it counts every table's
+    rows. The startup grants wait for it only so long, then leave that
+    schema and grant the ones after it, so one deletion cannot hold up the
+    whole PostgreSQL bring-up."""
+    spec, _reader_pool = roles
+    later = f"{NS}-z"  # sorts after NS, so the loop reaches it after the held one
+    monkeypatch.setattr(pg_roles, "_GRANT_LOCK_TIMEOUT", "200ms", raising=False)
+    holder = await asyncpg.connect(POSTGRES_TEST_URI)
+    try:
+        async with pg_pool.acquire() as conn:
+            await conn.execute(f'CREATE SCHEMA "{later}" AUTHORIZATION "{spec.owner}"')
+            await conn.execute(f'REVOKE USAGE ON SCHEMA "{later}" FROM "{spec.reader}"')
+        trx = holder.transaction()
+        await trx.start()
+        await holder.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"wip-ns:{NS}")
+
+        async with pg_pool.acquire() as conn:
+            report = await asyncio.wait_for(provision_roles(conn, spec), 10)
+
+        assert report.schemas_skipped == [NS]
+        async with pg_pool.acquire() as conn:
+            assert await conn.fetchval("SELECT has_schema_privilege($1, $2, 'USAGE')", spec.reader, later)
+        await trx.rollback()
+    finally:
+        await holder.close()
+        async with pg_pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{later}" CASCADE')
 
 
 SYNCED = {"template_id": "t-closing", "value": "closing", "version": 1,
