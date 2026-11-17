@@ -191,6 +191,11 @@ class NamespaceParityResult(BaseModel):
     # document tables.
     derived_issues: int = 0
     ok: bool = False
+    # Whether row counts were compared at all. The structure-only form
+    # (include_counts=false) never looks at rows, and a caller must be able to
+    # see that on the answer: a "verified" there covers tables and columns, not
+    # the documents that should be in them.
+    counts_included: bool = True
     # verified | failed | unverified — see VERIFIED/FAILED/UNVERIFIED. The one
     # answer a caller branches on; reasons carries what stands behind it.
     verdict: str = UNVERIFIED
@@ -597,6 +602,7 @@ async def check_namespace_parity(
     sm = SchemaManager(pool)
     schema = sm.schema_for(namespace)
     result = await _schema_presence(pool, namespace, schema)
+    result.counts_included = include_counts
     await _check_bookkeeping(pool, namespace, result)
 
     sweep = await _templates_to_check(namespace, result)

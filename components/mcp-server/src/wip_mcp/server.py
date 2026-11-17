@@ -5583,6 +5583,11 @@ async def check_reporting_parity(
     there was nothing to check). A check that could not run is never reported
     as a clean one.
 
+    `counts_included` says what the check looked at: with include_counts=false
+    no row was counted and no term table compared, so a `verified` there
+    covers structure alone — the tables and their columns — and says nothing
+    about whether the documents reached them.
+
     Interpreting results:
     - structural_issues > 0: tables missing or mis-shaped — check the
       per-template rows for missing_columns / legacy_table / errors.
@@ -5614,7 +5619,8 @@ async def check_reporting_parity(
     Args:
         namespace: Namespace to verify.
         include_counts: Include row-count parity (slower). Pass false for
-            the cheap structure-only check.
+            the cheap structure-only check, whose answer carries
+            counts_included=false.
     """
     try:
         data = await get_client().check_reporting_parity(

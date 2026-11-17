@@ -165,6 +165,24 @@ class TestVerifyPhase:
             "status": "verified", "reason": None, "reasons": []}
 
     @pytest.mark.asyncio
+    async def test_a_recorded_verified_asked_for_its_rows(self):
+        """``verified`` on the job reads as "the documents reached the tables",
+        so the verdict phase asks the counting form — the structure-only answer
+        is not what backs that claim."""
+        reporting = _reporting_stub(CLEAN)
+        eng = _engine(reporting, [])
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert [c.kwargs["include_counts"] for c in reporting.parity.await_args_list] == [True]
+
+    @pytest.mark.asyncio
+    async def test_the_structure_only_precondition_records_no_verdict(self):
+        """The cheap form runs before any write, where it gates the restore on
+        shape; it never becomes the verdict the job reports."""
+        eng = _engine(_reporting_stub(dict(CLEAN, counts_included=False)), [])
+        await eng._check_reporting_precondition("ns1", drop_stale=False)
+        assert eng._reporting_verdicts == {}
+
+    @pytest.mark.asyncio
     async def test_an_unverified_that_waiting_cannot_fix_is_recorded_at_once(self):
         """A template store that did not answer is settled the moment it is
         heard: the wait is for a sync, not for luck."""

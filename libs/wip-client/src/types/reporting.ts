@@ -458,6 +458,10 @@ export interface NamespaceParityResult {
    * structural_issues because the term data and views land after it. */
   derived_issues: number
   ok: boolean
+  /** Whether row counts were compared at all. The structure-only form
+   * (`include_counts: false`) never counts rows, so a `verified` there covers
+   * tables and columns, not whether the documents reached them. */
+  counts_included: boolean
   /** The answer to branch on, computed by reporting-sync over the tables it
    * owns: `verified` — every check ran and found nothing missing; `failed` — a
    * check proved rows or tables missing; `unverified` — nothing could be

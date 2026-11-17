@@ -1087,7 +1087,8 @@ async def reporting_parity(
         description=(
             "Include expected-vs-actual row counts (mongo-derived, same "
             "query the batch sync consumes). Pass false for the cheap "
-            "structure-only form, which checks tables but not their rows."
+            "structure-only form, which checks tables but not their rows; "
+            "the answer then carries counts_included=false."
         ),
     ),
     identity: UserIdentity = Depends(require_api_key),
@@ -1113,6 +1114,11 @@ async def reporting_parity(
     nothing could be settled, because a store did not answer, this
     namespace's batch sync is still running, or there was nothing to check.
     A check that could not run is never reported as a clean one.
+
+    What the check looked at is on the answer as ``counts_included``. With
+    ``include_counts=false`` no row was counted and no term table compared,
+    so a ``verified`` there covers structure alone — the tables and their
+    columns — and says nothing about whether the documents reached them.
 
     The one-request answer to "why does the reporting layer look empty":
     a stale/fossil schema shows structural issues, a dead sync worker or
