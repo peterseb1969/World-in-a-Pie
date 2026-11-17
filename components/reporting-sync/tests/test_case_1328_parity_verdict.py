@@ -178,6 +178,32 @@ class TestUnverified:
         assert verdict == UNVERIFIED
         assert reasons[0].issue == "sync_running"
 
+    def test_a_clean_count_check_is_verified_while_a_sync_is_still_running(self):
+        # A merge into a namespace already at parity triggers the batch sync,
+        # which registers its jobs at once: the tables already match, so the
+        # running sync can only write what is there (forward review of
+        # 864cc532, R1). Recorded as unverified, every such merge read as a
+        # reporting problem.
+        verdict, reasons = _verdict(_result(), sync_running=True, counts_checked=True)
+        assert verdict == VERIFIED
+        assert reasons == []
+
+    def test_a_count_gap_while_a_sync_is_still_running_stays_open(self):
+        # A gap the running sync may still close is not a verdict yet.
+        verdict, reasons = _verdict(_result(templates=[TemplateParity(
+            template_value="T1", table_present=True, version_tables=[1],
+            view_present=True, bookkeeping_row=True, counts_match=False,
+            expected_documents=10, actual_rows=3,
+        )]), sync_running=True, counts_checked=True)
+        assert verdict == UNVERIFIED
+        assert [r.issue for r in reasons] == ["sync_running", "count_mismatch"]
+
+    def test_a_structure_only_check_does_not_settle_a_running_sync(self):
+        # Without counts nothing says the rows have landed.
+        verdict, reasons = _verdict(_result(), sync_running=True, counts_checked=False)
+        assert verdict == UNVERIFIED
+        assert reasons[0].issue == "sync_running"
+
     def test_unusable_bookkeeping_is_unverified_not_a_proven_gap(self):
         result = _result(bookkeeping_tables_ok=False, bookkeeping_error="predates namespace keying")
         verdict, reasons = _verdict(result)

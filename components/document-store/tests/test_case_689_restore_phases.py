@@ -221,6 +221,31 @@ class TestVerifyPhase:
         assert "reporting verified" in messages[-1]
 
     @pytest.mark.asyncio
+    async def test_term_table_rows_are_progress_too(self):
+        """The definitions sweep writes only the term tables while the
+        document rows stand still; counting document rows alone read that as
+        a stall (forward review of 864cc532, R1)."""
+        calls = {"n": 0}
+
+        async def parity(namespace, include_counts=False):
+            calls["n"] += 1
+            if calls["n"] > 30:  # 30 polls ≈ 0.3 s, past the 0.05 s stall
+                return dict(CLEAN, templates=[{"template_value": "T1"}])
+            return dict(
+                _still_running(100, 100),
+                derived_tables=[{"table": "terms", "actual_rows": calls["n"] * 5,
+                                 "expected_rows": 500}],
+            )
+
+        reporting = _reporting_stub(None)
+        reporting.parity = AsyncMock(side_effect=parity)
+        events = []
+        eng = _engine(reporting, events)
+        await eng._reporting_phase_verify("ns1", skip_documents=False)
+        assert not any(ev.phase == "warning" for ev in events)
+        assert eng._reporting_verdicts["ns1"]["status"] == "verified"
+
+    @pytest.mark.asyncio
     async def test_no_progress_gives_up_after_the_stall_window(self):
         events = []
         eng = _engine(self._catching_up(0), events)

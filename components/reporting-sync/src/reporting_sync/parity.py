@@ -627,6 +627,7 @@ async def check_namespace_parity(
     result.ok = _all_clear(result)
     return _set_verdict(
         result, sync_running=sync_running, shared_sweep_error=sweep.shared_sweep_error,
+        counts_checked=include_counts,
     )
 
 
@@ -636,6 +637,7 @@ def _set_verdict(
     sync_running: bool,
     templates_unreadable: bool = False,
     shared_sweep_error: str | None = None,
+    counts_checked: bool = False,
 ) -> NamespaceParityResult:
     """The one verdict, with every finding that stands behind it.
 
@@ -648,9 +650,19 @@ def _set_verdict(
     nothing to check: a caller must never read "nobody looked" as clean. Under
     whatever verdict, every finding is listed, so none is hidden by its
     neighbour.
+
+    A running sync holds the verdict open only while the check found
+    something it could still change. When the counts were checked and every
+    table, row count, term table and view already matches, the layer is
+    complete now: a sync still in flight can only write what is there
+    already, so it does not make a clean namespace unverified (a merge into a
+    namespace already at parity triggers exactly that sync).
     """
     proven, blocked = _findings(result)
-    blockers = _blockers(result, sync_running, templates_unreadable, shared_sweep_error)
+    settled = counts_checked and not proven and not blocked
+    blockers = _blockers(
+        result, sync_running and not settled, templates_unreadable, shared_sweep_error,
+    )
     if blockers:
         result.verdict, result.reasons = UNVERIFIED, blockers + proven + blocked
     elif proven:

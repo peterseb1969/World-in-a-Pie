@@ -1980,9 +1980,16 @@ def _resync_command(namespace: str, verdict: str) -> str:
 
 
 def _parity_rows(parity: dict[str, Any]) -> int:
-    """The rows the namespace's reporting tables hold: the signal that a sync
-    landing its pages is making progress."""
-    return sum(int(t.get("actual_rows") or 0) for t in parity.get("templates") or [])
+    """The rows the namespace's reporting tables hold, document tables and
+    the term tables alike: the signal that a sync landing its pages is making
+    progress. The definitions sweep writes only term tables, so counting the
+    document tables alone read it as stalled."""
+    return sum(
+        int(t.get("actual_rows") or 0)
+        for key in ("templates", "derived_tables")
+        for t in parity.get(key) or []
+        if isinstance(t, dict)
+    )
 
 
 def _parity_expected(parity: dict[str, Any]) -> int:
@@ -7753,8 +7760,9 @@ class DirectRestoreEngine:
         namespace half-written.
 
         The wait is for the sync to settle, not for a green answer: it lasts
-        while reporting-sync still has work for the namespace, and then records
-        the verdict as it stands.
+        while reporting-sync says the namespace is still syncing, which it stops
+        saying once the tables already match, and then records the verdict as
+        it stands.
         """
         if skip_documents:
             self._set_reporting_verdict(namespace, _UNVERIFIED, "documents were skipped")
