@@ -466,6 +466,11 @@ def _project_containers(cli: str, install: str) -> list[str] | None:
     return [n.strip() for n in listing.stdout.splitlines() if n.strip()]
 
 
+# The row _project_container_state reads: `ID` is the field name podman and
+# docker share (podman refuses `{{.Id}}` as soon as it has a row to format).
+_CONTAINER_ROW_FORMAT = "{{.ID}} {{.Names}}"
+
+
 def _project_container_state(cli: str, install: str) -> frozenset[tuple[str, str]] | None:
     """This install's containers as ``(name, id)`` pairs; None when the runtime
     could not be asked.
@@ -477,7 +482,7 @@ def _project_container_state(cli: str, install: str) -> frozenset[tuple[str, str
     """
     listing = subprocess.run(
         [cli, "ps", "-a", "--filter", f"label=com.docker.compose.project={install}",
-         "--format", "{{.Id}} {{.Names}}"],
+         "--format", _CONTAINER_ROW_FORMAT],
         capture_output=True, text=True,
     )
     if listing.returncode != 0:
@@ -1706,10 +1711,61 @@ def apply_k8s(
     the scoped services. Resource DELETION happens only via the full
     apply's prune, so verbs that remove resources must pass None — volume
     claims excepted, since no apply deletes one.
+
+    The install dir follows the spec the CLI keeps. A failure that left the
+    cluster where it was (``ApplyError.mutated`` False: the TLS pre-flight,
+    or an apply step kubectl reports changed nothing), an interrupt or an
+    unexpected exception keeps the previous spec, so the previous render is
+    put back: the dir is what an operator inspects and may apply by hand
+    (`kubectl apply -R -f <install dir>`), and must not hold what the spec
+    refused. A failure that moved the cluster keeps the new render, which
+    matches the spec the CLI then persists.
     """
     if not shutil.which("kubectl"):
         raise ApplyError("kubectl not on PATH")
 
+    install_dir = Path(install_dir)
+    previous = _snapshot_k8s_render(install_dir, tree)
+    try:
+        return _apply_k8s(
+            deployment=deployment, components=components, apps=apps, tree=tree,
+            install_dir=install_dir, services_scope=services_scope,
+        )
+    except BaseException as e:
+        if not (isinstance(e, ApplyError) and e.mutated):
+            _restore_render(install_dir, previous)
+        raise
+
+
+def _snapshot_k8s_render(root: Path, tree: FileTree) -> dict[Path, tuple[bytes, int] | None]:
+    """_snapshot_render, widened to every file _clean_rendered_tree deletes:
+    the k8s apply removes the whole previous render before it writes the new
+    one, so a file only the previous render had must come back too."""
+    snapshot = _snapshot_render(root, tree)
+    if not root.is_dir():
+        return snapshot
+    owned = [*root.glob("*.yaml")]
+    for name in ("services", "infrastructure"):
+        sub = root / name
+        if sub.is_dir():
+            owned.extend(p for p in sub.rglob("*") if p.is_file())
+    for path in owned:
+        rel = path.relative_to(root)
+        if rel not in snapshot:
+            snapshot[rel] = (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+    return snapshot
+
+
+def _apply_k8s(
+    *,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    tree: FileTree,
+    install_dir: Path,
+    services_scope: list[str] | None = None,
+) -> ApplyResult:
+    """The k8s apply itself (see apply_k8s)."""
     k8s = deployment.spec.platform.k8s
     if k8s is None:
         raise ApplyError("k8s target requires platform.k8s")

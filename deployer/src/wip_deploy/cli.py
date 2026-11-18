@@ -4760,17 +4760,19 @@ def _apply_with_supplied_hashes(
     """Store each user's supplied bcrypt hash, then apply.
 
     The hash has to be in the secret store before the render, which reads
-    it. If the apply fails, the stored hashes are removed again: a hash left
-    behind without its user would be read, unchecked, by a later `user add`
-    of the same name as the hash of a freshly generated password.
+    it. If the verb ends without saving the spec (the render refused, the
+    apply changed nothing, an interrupt), the store is put back as it was:
+    a hash left behind without its user would be read, unchecked, by a later
+    `user add` of the same name as the hash of a freshly generated password.
+    A failure that moved the install saves the spec, which names the users
+    with supplied passwords, so their hashes stay: removing them would stop
+    every later mutation on the missing operator secret.
     """
     secrets_dir = _file_secrets_dir(deployment, what="supplied password hashes")
-    stored: list[str] = []
-    try:
+    names = {u: bcrypt_secret_name(_dex_password_secret(u)) for u in hashes}
+    with _store_edits_kept_if_saved(secrets_dir, list(names.values())) as mark_saved:
         for username, value in hashes.items():
-            name = bcrypt_secret_name(_dex_password_secret(username))
-            _store_secret(secrets_dir, name, value)
-            stored.append(name)
+            _store_secret(secrets_dir, names[username], value)
         _apply_and_persist_mutation(
             deployment,
             components,
@@ -4779,12 +4781,8 @@ def _apply_with_supplied_hashes(
             action_label,
             services_scope=_user_verb_scope(deployment, components),
             repo_root=repo_root,
+            after_persist=mark_saved,
         )
-    except BaseException:
-        backend = FileSecretBackend(secrets_dir)
-        for name in stored:
-            backend.remove(name)
-        raise
 
 
 def _as_group_list(value: Any) -> list[str] | None:
