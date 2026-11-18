@@ -646,29 +646,27 @@ def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
         )
     logger.info("PostgreSQL connected")
 
-    state.batch_sync_service = BatchSyncService(pool)
+    batch_sync = BatchSyncService(pool)
+    state.batch_sync_service = batch_sync
     # Initial metadata sync: each step waits on its own source and retries
     # until its listing completes (see _initial_metadata_sync).
-    state.initial_sync_task = asyncio.create_task(
-        _initial_metadata_sync(state.batch_sync_service)
-    )
+    state.initial_sync_task = asyncio.create_task(_initial_metadata_sync(batch_sync))
     logger.info("Initial metadata sync scheduled (background)")
 
     # Standing parity check: finds reporting gaps after the fact (a restore
     # that stopped waiting, a missed event, lost views) and repairs them.
-    state.parity_monitor = ParityMonitor(pool, state.batch_sync_service)
+    state.parity_monitor = ParityMonitor(pool, batch_sync)
     state.parity_task = asyncio.create_task(state.parity_monitor.run_forever())
 
     # The bus runs the sync worker as soon as NATS is connected and restarts
     # it whenever its consumer loop dies (e.g. the stream was missing, or a
     # NATS outage outlived the subscription). One closure maintainer per
     # process: the worker queues a rebuild from every term event, and parity
-    # asks this service whether a namespace is still syncing.
+    # asks the service's queue whether a namespace is still syncing.
     state.sync_task = state.bus.supervise(
         "sync-worker",
         lambda js: run_sync_worker(
-            state.bus.client, js, pool, state.sync_status,
-            closure=state.batch_sync_service.closure,
+            state.bus.client, js, pool, state.sync_status, closure=batch_sync.closure
         ),
     )
     logger.info("Sync worker scheduled (runs while NATS is connected)")
