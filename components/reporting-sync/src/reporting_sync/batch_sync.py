@@ -171,15 +171,16 @@ class BatchSyncService:
         """Whether this namespace is still being synced.
 
         A pending or running document job whose scope covers it, a definitions
-        sweep of it (or of everything), a backfill step of it still retrying, or
-        a term-closure rebuild for it that is queued or in the transaction. The
-        instance-wide scope (``namespace=None``) covers every namespace, as in
-        _find_active_job's overlap rule. Parity asks this so a row the sync has
-        not written yet reads as "still syncing", never as a gap the operator
-        has to chase: a sweep leaves no job record for a check to find, so this
-        is where that knowledge lives. A closure rebuild that has failed every
-        attempt since it was queued is not counted — that is a gap to name, not
-        progress to wait for.
+        sweep of it (or of everything), a backfill step of it that still claims
+        progress, or a term-closure rebuild for it that is queued or in the
+        transaction. The instance-wide scope (``namespace=None``) covers every
+        namespace, as in _find_active_job's overlap rule. Parity asks this so a
+        row the sync has not written yet reads as "still syncing", never as a gap
+        the operator has to chase: a sweep leaves no job record for a check to
+        find, so this is where that knowledge lives. A retry loop that has failed
+        every attempt since it started — a closure rebuild, or a backfill step
+        that has not reached its source — is not counted: that is a gap to name,
+        not progress to wait for.
         """
         scopes = (namespace, None)
         for job in self._jobs.values():
@@ -196,9 +197,13 @@ class BatchSyncService:
         """Record a definitions scope as being written for the block's duration.
 
         A sweep holds it for its own body (see _tracked_sweep). A caller that
-        retries holds it across the whole step: between two attempts the tables
-        are half-filled and no listing has been proved complete, which is the
-        state a parity check must read as still syncing, not as a gap.
+        retries between attempts holds it across the waits too: the tables then
+        hold what the attempts so far wrote and no listing has been proved
+        complete, which is the state a parity check must read as still syncing,
+        not as a gap. How long such a claim lasts is the caller's to bound — a
+        step that has failed every attempt is waiting on an outage rather than
+        writing, and holding the instance-wide scope through that keeps every
+        namespace's checks from answering.
         """
         self._definitions_sweeps[namespace] += 1
         try:

@@ -324,7 +324,10 @@ class TestTheBackfillWaitsAreCovered:
     off when a listing came back short. Tracking only the sweep body left those
     windows — the longer half of a slow start — reading as a settled reporting
     layer, and a restore's 3-second poll lands in one often enough to record a
-    gap that was never one."""
+    gap that was never one. The claim is bounded: a step whose source has not
+    answered for its whole quota of attempts has no progress left to claim, and
+    holding the instance-wide scope through an outage would keep every namespace
+    from being checked at all."""
 
     @pytest.mark.asyncio
     async def test_a_step_holds_its_scope_across_the_health_check_and_the_backoff(
@@ -365,6 +368,87 @@ class TestTheBackfillWaitsAreCovered:
         assert len(slept) == len(_SWEEPS), "every step retried once, as its stub is written"
         assert marks and set(marks) == {True}, "no wait in a step reads as settled"
         assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_a_step_outlives_its_claim_when_its_source_stays_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The claim covers the retries that still stand for progress, not the
+        outage: after its quota of failed attempts the step releases the scope
+        and keeps retrying."""
+        from reporting_sync import main
+
+        service = _service()
+        monkeypatch.setattr(main, "_BACKFILL_CLAIM_LIMIT", 3)
+        marks: list[bool] = []
+        attempts = 0
+
+        async def unhealthy(_url: str) -> bool:
+            nonlocal attempts
+            attempts += 1
+            marks.append(service.is_namespace_sync_running(NS))
+            return False
+
+        async def yield_sleep(_delay: float) -> None:
+            await asyncio.sleep(0.002)
+
+        monkeypatch.setattr(main, "_source_healthy", unhealthy)
+        monkeypatch.setattr(main, "_backfill_sleep", yield_sleep)
+
+        step = asyncio.ensure_future(main._backfill_until_complete(
+            "terminology", "http://def-store", AsyncMock(),
+            claim=lambda: service.definitions_scope_held(None),
+        ))
+        await _wait_until(lambda: attempts >= 5)
+        step.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await step
+
+        assert marks[:5] == [True, True, True, False, False]
+        assert not any(marks[5:]), "the scope stays free while the source stays down"
+        assert service.is_namespace_sync_running(NS) is False, "the scope went back with the claim"
+
+    @pytest.mark.asyncio
+    async def test_a_startup_backfill_of_a_dead_source_leaves_every_namespace_checkable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scenario: reporting-sync starts while def-store is unreachable,
+        and the terminology step retries for as long as the source stays down.
+        Its scope is the instance-wide one, so a claim that outlived its
+        progress answered ``sync_running`` for every namespace and the standing
+        parity check skipped them all until def-store came back."""
+        from reporting_sync import main
+
+        service = _service()
+        monkeypatch.setattr(main, "_BACKFILL_CLAIM_LIMIT", 3)
+        def_store = main.settings.def_store_url
+        attempts: dict[str, int] = {}
+
+        async def health(_url: str) -> bool:
+            attempts[_url] = attempts.get(_url, 0) + 1
+            return _url != def_store
+
+        async def yield_sleep(_delay: float) -> None:
+            await asyncio.sleep(0.002)
+
+        monkeypatch.setattr(main, "_source_healthy", health)
+        monkeypatch.setattr(main, "_backfill_sleep", yield_sleep)
+        for _, body in _SWEEPS:
+            monkeypatch.setattr(
+                service, body,
+                AsyncMock(return_value={"synced": 0, "failed": 0, "complete": True}),
+            )
+
+        backfill = asyncio.ensure_future(main._initial_metadata_sync(service))
+        await _wait_until(lambda: attempts.get(def_store, 0) >= 5)
+
+        assert service.is_namespace_sync_running(NS) is False, (
+            "the retries go on, but they no longer claim to be writing"
+        )
+
+        backfill.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await backfill
 
     @pytest.mark.asyncio
     async def test_the_scope_is_released_when_the_body_raises(self) -> None:
