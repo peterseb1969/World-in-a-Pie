@@ -15,6 +15,8 @@ debounced closure rebuild lags its tables the same way and is covered with them.
 """
 
 import asyncio
+import importlib
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +25,42 @@ from reporting_sync.batch_sync import BatchSyncService
 from reporting_sync.parity_monitor import ParityMonitor
 
 NS = "sweepns"
+
+
+class _FakePool:
+    """Stands in for the asyncpg pool with a transaction a test can hold open,
+    so it can look at the maintainer while a rebuild is inside it."""
+
+    def __init__(self) -> None:
+        self.transaction_opened = asyncio.Event()
+        self.release_transaction = asyncio.Event()
+
+    @asynccontextmanager
+    async def acquire(self):
+        pool = self
+
+        class _Conn:
+            @asynccontextmanager
+            async def transaction(self):
+                pool.transaction_opened.set()
+                await pool.release_transaction.wait()
+                yield
+
+            async def execute(self, _sql: str, *_args: object) -> str:
+                return "INSERT 0 0"
+
+        yield _Conn()
+
+
+async def _wait_until(condition, timeout: float = 2.0) -> None:
+    """Let a fire-and-forget loop run until it is where the assertion expects
+    it; the loop takes its own steps, the test only yields."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.001)
+
 
 # (public sweep, the body a test replaces to look inside the sweep)
 _SWEEPS = [
@@ -307,3 +345,97 @@ class TestTheClosureRebuildIsCovered:
 
     def test_a_namespace_with_nothing_queued_does_not(self) -> None:
         assert _service().closure.has_pending(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_started_directly_counts_while_it_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A repair that calls rebuild() itself — which is how the parity
+        monitor closes a stale closure — never passes through mark_dirty, so the
+        queue says nothing about it. The closure lags its terms all the same
+        while the transaction runs, and a check landing in that window would
+        name a gap the running rebuild is closing."""
+        service = _service()
+        pool = _FakePool()
+        service.closure.pool = pool
+        for table in ("term_closure", "term_relations", "terms"):
+            monkeypatch.setattr(
+                service.closure.schema_manager,
+                f"ensure_{table}_table",
+                AsyncMock(return_value=f'"s"."{table}"'),
+            )
+
+        running = asyncio.ensure_future(service.closure.rebuild(NS))
+        await pool.transaction_opened.wait()
+
+        assert service.closure.has_pending(NS) is True
+        assert service.is_namespace_sync_running(NS) is True
+
+        pool.release_transaction.set()
+        await running
+
+        assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_that_keeps_failing_is_not_reported_as_syncing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The retry loop is patient by design, but patience is not a sync in
+        flight: while it queued a rebuild forever, /parity could never name
+        ``term_closure_stale`` and the standing check skipped the namespace on
+        every pass, so the gap that needs an operator stayed unreported. The
+        loop keeps retrying; only its claim of progress ends."""
+        term_closure = importlib.import_module("reporting_sync.term_closure")
+        monkeypatch.setattr(term_closure, "DEBOUNCE_SECONDS", 0.01)
+        monkeypatch.setattr(term_closure, "REPORTED_AS_GAP_AFTER_FAILURES", 3)
+        service = _service()
+        pool = _FakePool()
+        pool.release_transaction.set()
+        service.closure.pool = pool
+        state = {"broken": True, "attempts": 0}
+
+        async def failing_ensure(namespace: str) -> str:
+            state["attempts"] += 1
+            if state["broken"]:
+                raise RuntimeError("permission denied for schema")
+            return '"s"."term_closure"'
+
+        monkeypatch.setattr(
+            service.closure.schema_manager, "ensure_term_closure_table", failing_ensure
+        )
+        monkeypatch.setattr(
+            service.closure.schema_manager, "ensure_term_relations_table",
+            AsyncMock(return_value='"s"."term_relations"'),
+        )
+        monkeypatch.setattr(
+            service.closure.schema_manager, "ensure_terms_table",
+            AsyncMock(return_value='"s"."terms"'),
+        )
+
+        service.closure.mark_dirty(NS)
+        assert service.is_namespace_sync_running(NS) is True
+
+        await _wait_until(lambda: state["attempts"] >= 3)
+
+        assert service.is_namespace_sync_running(NS) is False
+        assert service.closure.has_pending(NS) is False
+        assert service.closure._dirty == {NS}, "the rebuild is still being retried"
+
+        state["broken"] = False  # the operator cleared whatever blocked it
+        await _wait_until(lambda: NS not in service.closure._failing)
+        assert service.is_namespace_sync_running(NS) is False
+        await service.closure.close()
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_forgets_the_rebuild_it_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The debounced task is gone at shutdown; a namespace left in the dirty
+        set would read as syncing on an object that can never rebuild again."""
+        monkeypatch.setattr("reporting_sync.term_closure.DEBOUNCE_SECONDS", 60)
+        service = _service()
+        service.closure.mark_dirty(NS)
+
+        assert service.is_namespace_sync_running(NS) is True
+        await service.closure.close()
+        assert service.is_namespace_sync_running(NS) is False

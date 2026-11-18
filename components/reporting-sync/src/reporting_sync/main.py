@@ -1153,8 +1153,8 @@ async def reporting_parity_status() -> ParityMonitorStatus:
     a template's batch sync, the term or term-relation sync, a closure
     rebuild, re-applying registered views — at most PARITY_REPAIR_ATTEMPTS
     times. A namespace with a sync of its own still in flight — a document
-    job, a definitions sweep or a queued closure rebuild — is skipped for that
-    pass.
+    job, a definitions sweep or a closure rebuild queued or writing — is
+    skipped for that pass.
     ``not_healing`` lists gaps that outlived their repairs or have no
     automatic repair (a legacy table, old-shape bookkeeping, a check that
     could not run); those are also logged once at error level.

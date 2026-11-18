@@ -12,8 +12,8 @@ Rules that keep it from fighting the rest of the service:
   sighting is not evidence.
 - A namespace with a sync of its own still in flight is skipped for that
   pass: that sync owns it until it finishes. In flight covers a document job,
-  a definitions sweep or a queued closure rebuild — whatever is writing the
-  rows this check would otherwise call missing.
+  a definitions sweep or a closure rebuild queued or writing — whatever is
+  writing the rows this check would otherwise call missing.
 - Each gap gets at most ``settings.parity_repair_attempts`` repairs. One
   that persists past them is logged once at error level and left alone
   until it closes; it stays visible in the status.
@@ -223,8 +223,10 @@ class ParityMonitor:
     def _sync_active(self, namespace: str) -> bool:
         """Whether reporting-sync still has work in flight for this namespace.
         Asked of the service that runs it, which knows the definitions sweeps
-        and the queued closure rebuilds too — the job list alone would leave a
-        term backfill mid-flight looking like a gap to repair."""
+        and the closure rebuilds too — the job list alone would leave a term
+        backfill mid-flight looking like a gap to repair, and a repair started
+        here is itself work the next pass must not mistake for an idle
+        namespace."""
         return self.batch_sync.is_namespace_sync_running(namespace)
 
     async def check_namespace(self, namespace: str) -> None:

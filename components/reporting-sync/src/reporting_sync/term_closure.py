@@ -51,6 +51,10 @@ MAX_DEPTH = 50
 DEBOUNCE_SECONDS = 3.0
 # A failed rebuild is retried, the wait doubling up to this.
 RETRY_MAX_SECONDS = 300.0
+# Past this many rebuilds that failed one after another (~90 s of retrying,
+# inside the standing parity check's pass interval) the closure is no longer a
+# repair in flight: it is a gap an operator has to clear.
+REPORTED_AS_GAP_AFTER_FAILURES = 5
 
 
 class TermClosureMaintainer:
@@ -61,6 +65,11 @@ class TermClosureMaintainer:
         self.schema_manager = schema_manager
         self._dirty: set[str] = set()
         self._pending: dict[str, asyncio.Task] = {}
+        # Namespaces with a rebuild inside the transaction right now, however
+        # it was started — debounced, or a caller calling rebuild directly.
+        self._rebuilding: set[str] = set()
+        # Namespaces whose rebuild keeps failing; see has_pending.
+        self._failing: set[str] = set()
 
     def mark_dirty(self, namespace: str) -> None:
         """Schedule a debounced rebuild for the namespace.
@@ -81,7 +90,19 @@ class TermClosureMaintainer:
         The window between a term write and the rebuild landing is when
         ``term_closure`` lags its terms, so a caller checking parity needs to
         know it is open: the rows a rebuild is about to write are not a gap.
+        Running counts whichever way it started — a caller that rebuilds
+        directly never went through mark_dirty, so there is no queue entry for
+        it, but the closure lags just the same while it writes.
+
+        A namespace whose rebuild keeps failing does not count. Past
+        REPORTED_AS_GAP_AFTER_FAILURES the retry loop is not a repair in flight
+        but an outage of that namespace's own, and calling it "still syncing"
+        would keep the stale closure out of every check that could name it.
         """
+        if namespace in self._rebuilding:
+            return True
+        if namespace in self._failing:
+            return False
         if namespace in self._dirty:
             return True
         task = self._pending.get(namespace)
@@ -89,12 +110,14 @@ class TermClosureMaintainer:
 
     async def _debounced(self, namespace: str) -> None:
         delay = DEBOUNCE_SECONDS
+        failures = 0
         while True:
             await asyncio.sleep(delay)
             self._dirty.discard(namespace)
             try:
                 await self.rebuild(namespace)
                 delay = DEBOUNCE_SECONDS
+                failures = 0
             except NamespaceDeletedError:
                 # Deleted between the term event and this debounced rebuild:
                 # there is nothing left to rebuild.
@@ -104,11 +127,20 @@ class TermClosureMaintainer:
                 # The closure stays as the last rebuild left it (the rebuild
                 # is one transaction): try again, backing off, until it lands.
                 delay = min(delay * 2, RETRY_MAX_SECONDS)
+                failures += 1
                 logger.error(
                     "term_closure rebuild failed for %s (retrying in %.0fs): %s",
                     namespace, delay, e,
                 )
                 self._dirty.add(namespace)
+                if failures >= REPORTED_AS_GAP_AFTER_FAILURES and namespace not in self._failing:
+                    self._failing.add(namespace)
+                    logger.error(
+                        "term_closure rebuild for %s has failed %d times in a row: the "
+                        "closure is reported as a gap to fix from now on, not as a sync "
+                        "still running",
+                        namespace, failures,
+                    )
             if namespace not in self._dirty:
                 return
 
@@ -118,6 +150,9 @@ class TermClosureMaintainer:
             if not task.done():
                 task.cancel()
         self._pending.clear()
+        # Nothing is queued any more; a namespace left in _dirty would read as
+        # a rebuild in flight on an object whose tasks are gone.
+        self._dirty.clear()
 
     async def rebuild(self, namespace: str) -> int:
         """Rebuild the namespace's closure in one transaction.
@@ -179,11 +214,17 @@ GROUP BY p.relation_type, p.ancestor, p.descendant,
          ta."terminology_id", td."terminology_id"
 """  # nosec B608  # tables from ensure_*, MAX_DEPTH a code constant, values bound
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                f'DELETE FROM {closure} WHERE "namespace" = $1', namespace  # nosec B608  # tables from ensure_*, MAX_DEPTH a code constant, values bound
-            )
-            result = await conn.execute(sql, namespace)
+        self._rebuilding.add(namespace)
+        try:
+            async with self.pool.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    f'DELETE FROM {closure} WHERE "namespace" = $1', namespace  # nosec B608  # tables from ensure_*, MAX_DEPTH a code constant, values bound
+                )
+                result = await conn.execute(sql, namespace)
+        finally:
+            self._rebuilding.discard(namespace)
+        # Committed: whatever failure was reported about this closure is closed.
+        self._failing.discard(namespace)
 
         # asyncpg returns 'INSERT 0 <n>'
         rows = int(result.split()[-1]) if result else 0

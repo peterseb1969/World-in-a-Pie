@@ -170,12 +170,14 @@ class BatchSyncService:
         """Whether this namespace is still being synced.
 
         A pending or running document job whose scope covers it, a definitions
-        sweep of it, or a term-closure rebuild queued for it. The
-        instance-wide scope (``namespace=None``) covers every namespace, as in
-        _find_active_job's overlap rule. Parity asks this so a row the sync has
-        not written yet reads as "still syncing", never as a gap the operator
-        has to chase: a sweep leaves no job record for a check to find, so this
-        is where that knowledge lives.
+        sweep of it, or a term-closure rebuild for it that is queued or in the
+        transaction. The instance-wide scope (``namespace=None``) covers every
+        namespace, as in _find_active_job's overlap rule. Parity asks this so a
+        row the sync has not written yet reads as "still syncing", never as a
+        gap the operator has to chase: a sweep leaves no job record for a check
+        to find, so this is where that knowledge lives. A closure rebuild that
+        has failed every attempt since it was queued is not counted — that is a
+        gap to name, not progress to wait for.
         """
         scopes = (namespace, None)
         for job in self._jobs.values():
