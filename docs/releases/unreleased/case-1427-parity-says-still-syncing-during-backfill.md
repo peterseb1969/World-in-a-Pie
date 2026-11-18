@@ -20,7 +20,9 @@ Every sweep now records its own scope, so a check that lands mid-backfill
 answers `unverified` with `sync_running`, and the restore engine waits on that
 answer instead of recording a gap that was never one. A term-closure rebuild
 waiting on its debounce counts as in flight too — that is exactly the window in
-which `term_closure` legitimately lags its terms.
+which `term_closure` legitimately lags its terms — and the service and the
+event worker now share one rebuild queue, so the rebuild a term event queued is
+the one parity knows about.
 
 No action needed. A script that branches on `verdict` may see `unverified` where
 it used to see `failed` during a restart; `unverified` is the accurate answer

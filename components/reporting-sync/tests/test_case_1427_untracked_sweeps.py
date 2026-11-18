@@ -15,6 +15,7 @@ debounced closure rebuild lags its tables the same way and is covered with them.
 """
 
 import asyncio
+import contextlib
 import importlib
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,7 +23,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from reporting_sync.batch_sync import BatchSyncService
+from reporting_sync.models import SyncStatus
 from reporting_sync.parity_monitor import ParityMonitor
+from reporting_sync.worker import SyncWorker
 
 NS = "sweepns"
 
@@ -314,6 +317,73 @@ class TestTheMonitorAsksTheService:
 
         assert monitor._sync_active(NS) is True
         assert asked == [NS]
+
+
+class TestTheEventWorkerSharesTheQueue:
+    """A term event is the dominant producer of a closure rebuild, and it lands
+    on the worker's maintainer. Parity asks the batch-sync service, so the two
+    have to hold one maintainer — two queues means the queue parity asks never
+    saw the write whose rebuild it is waiting for."""
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_queued_by_an_event_reads_as_still_syncing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("reporting_sync.term_closure.DEBOUNCE_SECONDS", 60)
+        service = _service()
+        worker = SyncWorker(
+            MagicMock(), MagicMock(), None,
+            SyncStatus(running=True, connected_to_nats=True, connected_to_postgres=True),
+            closure=service.closure,
+        )
+
+        assert worker.closure is service.closure
+        worker.closure.mark_dirty(NS)
+
+        assert service.is_namespace_sync_running(NS) is True
+        await service.closure.close()
+
+    @pytest.mark.asyncio
+    async def test_startup_hands_the_worker_the_services_maintainer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sharing is wiring, and wiring is what rots: the worker is launched
+        by the bus's supervisor, so the pin sits on what that launch passes."""
+        from reporting_sync import main
+
+        service = _service()
+        monkeypatch.setattr(main, "BatchSyncService", MagicMock(return_value=service))
+        monkeypatch.setattr(main, "SearchService", MagicMock())
+        monkeypatch.setattr(main, "ScopedReads", MagicMock())
+        monitor = MagicMock()
+        monitor.run_forever = AsyncMock()
+        monkeypatch.setattr(main, "ParityMonitor", MagicMock(return_value=monitor))
+        monkeypatch.setattr(main, "_close_namespaces_being_deleted", AsyncMock())
+        monkeypatch.setattr(main, "_initial_metadata_sync", AsyncMock())
+
+        launched: dict[str, object] = {}
+
+        async def fake_run_worker(*_args: object, **kwargs: object) -> None:
+            launched.update(kwargs)
+
+        monkeypatch.setattr(main, "run_sync_worker", fake_run_worker)
+        bus = MagicMock()
+        monkeypatch.setattr(main.state, "bus", bus, raising=False)
+
+        main._start_postgres_work(MagicMock(), MagicMock())
+        supervisor_name, launch = bus.supervise.call_args[0]
+        await launch(MagicMock())
+
+        assert supervisor_name == "sync-worker"
+        assert launched["closure"] is service.closure
+
+        for task in (
+            main.state.closing_task, main.state.parity_task, main.state.initial_sync_task,
+        ):
+            if task is not None and not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 class TestTheClosureRebuildIsCovered:

@@ -662,10 +662,15 @@ def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
 
     # The bus runs the sync worker as soon as NATS is connected and restarts
     # it whenever its consumer loop dies (e.g. the stream was missing, or a
-    # NATS outage outlived the subscription).
+    # NATS outage outlived the subscription). One closure maintainer per
+    # process: the worker queues a rebuild from every term event, and parity
+    # asks this service whether a namespace is still syncing.
     state.sync_task = state.bus.supervise(
         "sync-worker",
-        lambda js: run_sync_worker(state.bus.client, js, pool, state.sync_status),
+        lambda js: run_sync_worker(
+            state.bus.client, js, pool, state.sync_status,
+            closure=state.batch_sync_service.closure,
+        ),
     )
     logger.info("Sync worker scheduled (runs while NATS is connected)")
 

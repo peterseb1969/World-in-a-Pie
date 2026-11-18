@@ -55,13 +55,21 @@ class SyncWorker:
         jetstream: JetStreamContext,
         postgres_pool: asyncpg.Pool,
         status: SyncStatus,
+        closure: TermClosureMaintainer | None = None,
     ):
+        """``closure`` is the process's one closure maintainer, when the caller
+        has one. Term and relation events queue a rebuild from here, and the
+        batch-sync service answers "is this namespace still syncing" from the
+        maintainer it holds: a consumer running its own queues rebuilds nobody
+        can see, and ``term_closure`` is then proved stale during the very
+        debounce that is closing it.
+        """
         self.nc = nats_client
         self.js = jetstream
         self.pool = postgres_pool
         self.status = status
         self.schema_manager = SchemaManager(postgres_pool)
-        self.closure = TermClosureMaintainer(postgres_pool, self.schema_manager)
+        self.closure = closure or TermClosureMaintainer(postgres_pool, self.schema_manager)
         self._running = False
         self._template_cache: dict[str, dict[str, Any]] = {}
         self._managed_tables: set[str] = set()
@@ -1041,7 +1049,8 @@ async def run_sync_worker(
     jetstream: JetStreamContext,
     postgres_pool: asyncpg.Pool,
     status: SyncStatus,
+    closure: TermClosureMaintainer | None = None,
 ) -> None:
     """Run the sync worker."""
-    worker = SyncWorker(nats_client, jetstream, postgres_pool, status)
+    worker = SyncWorker(nats_client, jetstream, postgres_pool, status, closure=closure)
     await worker.start()
