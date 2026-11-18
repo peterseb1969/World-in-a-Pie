@@ -407,9 +407,9 @@ export interface TemplateParity {
 /**
  * Parity of one fixed-schema table reporting derives from def-store.
  * `issue` is a stable code when the table does not hold what it should:
- * `terms_mismatch`, `term_relations_mismatch`, `term_names_missing`,
- * `term_closure_stale`, or `check_failed` (the check itself could not run;
- * `error` says why).
+ * `terminologies_mismatch`, `terms_mismatch`, `term_relations_mismatch`,
+ * `term_names_missing`, `term_closure_stale`, or `check_failed` (the check
+ * itself could not run; `error` says why).
  */
 export interface DerivedTableParity {
   table: string

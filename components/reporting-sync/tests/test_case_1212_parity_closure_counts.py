@@ -34,6 +34,7 @@ def _stubs(foreign: list, doc_total: int) -> ExitStack:
         ("_fetch_namespace_templates", []),
         ("_fetch_foreign_templates", (foreign, [])),
         ("_expected_document_total", doc_total),
+        ("_expected_active_terminologies", 0),
         ("_expected_active_terms", 0),
         ("_expected_active_relations", 0),
     ):

@@ -104,6 +104,7 @@ async def test_a_failed_sweep_still_checks_the_namespaces_own_templates(pg_pool)
             ("_fetch_namespace_templates", AsyncMock(return_value=[own])),
             ("_fetch_foreign_templates", AsyncMock(side_effect=refused)),
             ("_expected_document_total", AsyncMock(return_value=0)),
+            ("_expected_active_terminologies", AsyncMock(return_value=0)),
             ("_expected_active_terms", AsyncMock(return_value=0)),
             ("_expected_active_relations", AsyncMock(return_value=0)),
         ):

@@ -43,10 +43,11 @@ from .schema_manager import SchemaManager
 
 logger = logging.getLogger(__name__)
 
-# Repair order within one pass: terms before relations (the relation sync
+# Repair order within one pass: terminologies before terms (the term sync
+# walks the terminology listing), terms before relations (the relation sync
 # ends with the closure rebuild, which needs every term), and a closure
 # repair only when neither of those ran.
-_ORDER = ("terms", "term_relations", "term_closure", "views")
+_ORDER = ("terminologies", "terms", "term_relations", "term_closure", "views")
 
 
 class ParityAction(BaseModel):
@@ -61,8 +62,8 @@ class ParityAction(BaseModel):
 class NamespaceParityStatus(BaseModel):
     checked_at: datetime | None = None
     ok: bool | None = None
-    # Gaps seen this pass, by key: template:<value>, terms, term_relations,
-    # term_closure, views, and the operator-only kinds.
+    # Gaps seen this pass, by key: template:<value>, terminologies, terms,
+    # term_relations, term_closure, views, and the operator-only kinds.
     gaps: list[str] = Field(default_factory=list)
     # Repairs made so far per gap still open.
     repair_attempts: dict[str, int] = Field(default_factory=dict)
@@ -300,6 +301,10 @@ class ParityMonitor:
     async def _repair(self, namespace: str, key: str, attempt: int) -> None:
         sm = self.batch_sync.schema_manager
         repairs: dict[str, tuple[str, Callable[[], Awaitable[Any]]]] = {
+            "terminologies": (
+                "terminology batch sync",
+                lambda: self.batch_sync.batch_sync_terminologies(namespace=namespace),
+            ),
             "terms": ("term batch sync", lambda: self.batch_sync.batch_sync_terms(namespace=namespace)),
             "term_relations": (
                 "term-relation batch sync",

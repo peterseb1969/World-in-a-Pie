@@ -1141,23 +1141,28 @@ async def reporting_parity(
     count, and whether the bookkeeping tables are namespace-keyed at all.
 
     Beyond document tables: every view registered for the namespace must
-    exist (``views``), and with counts the term tables are checked
-    (``derived_tables``) — active terms and term relations against
-    def-store's active totals, name rows for every named term, and the
-    closure's reflexive rows against what its rebuild writes. Failures
-    count in ``derived_issues``; ``ok`` holds only when every check passes.
+    exist (``views``), and with counts the terminology and term tables are
+    checked (``derived_tables``) — active terminologies, terms and term
+    relations against def-store's active totals, name rows for every named
+    term, and the closure's reflexive rows against what its rebuild writes.
+    Failures count in ``derived_issues``; ``ok`` holds only when every check
+    passes.
 
     ``verdict`` is the one answer to branch on, and ``reasons`` what stands
     behind it: ``verified`` — every check ran and found nothing missing;
     ``failed`` — a check proved rows or tables absent; ``unverified`` —
     nothing could be settled, because a store did not answer, this
     namespace's batch sync is still running, or there was nothing to check.
-    A check that could not run is never reported as a clean one.
+    A check that could not run is never reported as a clean one. A sync in
+    flight is settled only over the surfaces that were compared: a template
+    whose rows cannot be counted against its documents (sync_strategy
+    all_versions, ``counts_comparable=false``) leaves the verdict open.
 
     What the check looked at is on the answer as ``counts_included``. With
-    ``include_counts=false`` no row was counted and no term table compared,
-    so a ``verified`` there covers structure alone — the tables and their
-    columns — and says nothing about whether the documents reached them.
+    ``include_counts=false`` no row was counted and no terminology or term
+    table compared, so a ``verified`` there covers structure alone — the tables
+    and their columns — and says nothing about whether the documents reached
+    them.
 
     The one-request answer to "why does the reporting layer look empty":
     a stale/fossil schema shows structural issues, a dead sync worker or

@@ -278,7 +278,7 @@ class TestFailedWinsOverUnverified:
 
 def _patch_http(templates: list[dict] | Exception, doc_total: int = 0) -> ExitStack:
     """Patch parity's sources: the template listing (which may fail), the
-    shared-template sweep, and the document/term totals."""
+    shared-template sweep, and the document, terminology and term totals."""
     listing = (
         AsyncMock(side_effect=templates)
         if isinstance(templates, Exception) else AsyncMock(return_value=templates)
@@ -288,6 +288,7 @@ def _patch_http(templates: list[dict] | Exception, doc_total: int = 0) -> ExitSt
         ("_fetch_namespace_templates", listing),
         ("_fetch_foreign_templates", ([], [])),
         ("_expected_document_total", doc_total),
+        ("_expected_active_terminologies", 0),
         ("_expected_active_terms", 0),
         ("_expected_active_relations", 0),
     ):

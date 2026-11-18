@@ -23,13 +23,18 @@ from .conftest import requires_postgres
 NS = "derivedns"
 
 
-def _patch_http(terms: int | Exception = 0, relations: int | Exception = 0) -> ExitStack:
+def _patch_http(
+    terminologies: int | Exception = 0,
+    terms: int | Exception = 0,
+    relations: int | Exception = 0,
+) -> ExitStack:
     """No templates; def-store reports the given active totals (or raises)."""
     stack = ExitStack()
     for target, value in (
         ("_fetch_namespace_templates", []),
         ("_fetch_foreign_templates", ([], [])),
         ("_expected_document_total", 0),
+        ("_expected_active_terminologies", terminologies),
         ("_expected_active_terms", terms),
         ("_expected_active_relations", relations),
     ):

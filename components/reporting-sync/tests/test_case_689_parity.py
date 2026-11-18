@@ -78,7 +78,8 @@ TEMPLATE = {
 
 def _patch_http(templates: list[dict], doc_total: int = 0):
     """Patch parity's HTTP fetches: template-store and document-store, then
-    def-store's term and relation totals (none here: no term data)."""
+    def-store's terminology, term and relation totals (none here: no term
+    data)."""
     def stack(*targets: tuple[str, object]) -> ExitStack:
         s = ExitStack()
         for target, value in targets:
@@ -91,7 +92,8 @@ def _patch_http(templates: list[dict], doc_total: int = 0):
         stack(("_fetch_namespace_templates", templates),
               ("_fetch_foreign_templates", ([], [])),
               ("_expected_document_total", doc_total)),
-        stack(("_expected_active_terms", 0), ("_expected_active_relations", 0)),
+        stack(("_expected_active_terminologies", 0),
+              ("_expected_active_terms", 0), ("_expected_active_relations", 0)),
     )
 
 

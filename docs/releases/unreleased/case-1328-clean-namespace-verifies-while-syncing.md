@@ -20,7 +20,9 @@ Now:
 
 - A counted parity check that finds nothing missing is `verified` while a
   sync is still running. Such a sync can only write rows that are already
-  there.
+  there. Over the surfaces it compared, and only those: a template whose
+  rows cannot be counted against its documents (`sync_strategy: all_versions`,
+  `counts_comparable: false`) keeps the verdict open while its sync runs.
 - A check that found a gap, or a structure-only check (counts not compared),
   still waits on the running sync.
 - Term-table rows count as progress in the restore's wait.
