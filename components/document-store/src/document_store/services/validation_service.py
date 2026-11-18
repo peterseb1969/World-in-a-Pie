@@ -206,6 +206,63 @@ _RULE_TYPES_NEEDING_TARGET = frozenset({
 _UUID7 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 
+async def _gate_candidates(
+    candidates: list[dict[str, Any]], id_key: str, namespace: str | None = None,
+) -> list[dict[str, Any]]:
+    """The candidates of an ambiguity that the inbound gate lets the writer
+    reference. Each is asked by id, so the recording pass of a create notes
+    every refusal and a carried reference stays visible. ``namespace`` is
+    the lookup's, when the candidates do not carry their own."""
+    return [
+        c for c in candidates
+        if not await gate_refuses(namespace or c.get("namespace"), c.get(id_key))
+    ]
+
+
+def _report_ambiguous_document(
+    result: ValidationResult, value: Any, field_path: str, target_templates: list[str],
+    visible: list[dict[str, Any]],
+) -> None:
+    """Several documents carry a reference's value and the field's
+    target_templates do not narrow them to one, or the Registry reported more
+    matches than it listed: refused, never resolved to an arbitrary one.
+    Only the candidates the writer may reference are named; none of them
+    reads exactly as a value nothing carries (a writer who may not reference
+    a namespace never learns what it holds). Not cached: the gate is per
+    write, the cache spans a batch."""
+    if not visible:
+        _document_reference_not_found(result, value, field_path, target_templates)
+        return
+    result.add_error(
+        code="ambiguous_reference",
+        message=(
+            f"Reference '{value}' in field '{field_path}' matches "
+            "several documents; use a document_id or a qualified value"
+        ),
+        field=field_path,
+        details={"value": str(value), "candidates": visible},
+    )
+
+
+def _ambiguous_terminology_message(
+    answered: str, value: str, candidates: list[dict[str, Any]], visible: list[dict[str, Any]],
+) -> str | None:
+    """The ambiguity error's message for a terminology_ref: def-store's own
+    (``answered``) when the writer may see every candidate, one naming only
+    the visible ones when some were refused, None when all were (the
+    reference then reads as a miss)."""
+    if len(visible) == len(candidates):
+        return answered
+    if not visible:
+        return None
+    ids = ", ".join(str(c.get("entry_id")) for c in visible[:5])
+    more = ", …" if len(visible) > 5 else ""
+    return (
+        f"Terminology '{value}' is ambiguous: it resolves to {len(visible)} "
+        f"terminologies ({ids}{more}); use a canonical ID or a qualified value"
+    )
+
+
 def _terminology_miss_message(value: str, namespace: str | None) -> str:
     """The refusal for a terminology_ref that resolved to nothing: where it was
     looked for and, for a bare value, how to name another namespace's copy. A
@@ -333,6 +390,20 @@ def _reference_item_shape_error(item: Any, reference_type: str | None) -> str | 
     if reference_type in ("term", "terminology", "template") and not isinstance(item, str):
         return f"a string ({reference_type} reference)"
     return None
+
+
+def _document_reference_not_found(
+    result: ValidationResult, value: Any, field_path: str, target_templates: list[str],
+) -> None:
+    """The error of a document reference that names nothing the writer may
+    reference: no document carries it, or the inbound gate refuses every
+    one that does."""
+    result.add_error(
+        code="reference_not_found",
+        message=f"Referenced document not found for field '{field_path}'",
+        field=field_path,
+        details={"value": str(value), "target_templates": target_templates},
+    )
 
 
 def _business_key_error(
@@ -2383,12 +2454,7 @@ class ValidationService:
         if doc is not None and await gate_refuses(doc.namespace, doc.document_id):
             doc = None
         if doc is None:
-            result.add_error(
-                code="reference_not_found",
-                message=f"Referenced document not found for field '{field_path}'",
-                field=field_path,
-                details={"value": str(value), "target_templates": target_templates}
-            )
+            _document_reference_not_found(result, value, field_path, target_templates)
             return None
         return await self._verify_ref_template_and_build_result(
             doc, target_templates, result, field_path, version_strategy,
@@ -2436,24 +2502,14 @@ class ValidationService:
             ref_ns, ref_value = None, value[len("hash:"):]
         else:
             ref_ns, ref_value = split_qualified_value(value)
+        lookup_namespace = ref_ns or namespace
         doc, candidates = await self._resolve_bare_document_reference(
-            ref_value, ref_ns or namespace, target_templates,
+            ref_value, lookup_namespace, target_templates,
         )
         if candidates:
-            # Several documents carry the value and the field's
-            # target_templates do not narrow them to one, or the Registry
-            # reported more matches than it listed: refused, never resolved
-            # to an arbitrary one. Not cached — the cache's None means
-            # "not found".
-            result.add_error(
-                code="ambiguous_reference",
-                message=(
-                    f"Reference '{value}' in field '{field_path}' matches "
-                    "several documents; use a document_id or a "
-                    "qualified value"
-                ),
-                field=field_path,
-                details={"value": str(value), "candidates": candidates},
+            _report_ambiguous_document(
+                result, value, field_path, target_templates,
+                await _gate_candidates(candidates, "document_id", lookup_namespace),
             )
             return None, True
 
@@ -2762,8 +2818,15 @@ class ValidationService:
         for entry in target_templates:
             try:
                 rid = await registry.resolve_identifier(namespace, "templates", entry)
-            except AmbiguousIdentifierError:
-                raise
+            except AmbiguousIdentifierError as e:
+                # Candidates the inbound gate refuses are not the writer's to
+                # see: none left reads as an entry that does not resolve.
+                visible = await _gate_candidates(e.candidates, "entry_id")
+                if len(visible) == len(e.candidates):
+                    raise
+                if visible:
+                    raise AmbiguousIdentifierError(e.value, visible, len(visible)) from e
+                rid = None
             except RegistryError:
                 rid = None
             if rid:
@@ -2917,12 +2980,16 @@ class ValidationService:
                     "terminology_value": terminology.get("value"),
                 }
         except DefStoreAmbiguousError as e:
-            result.add_error(
-                code="ambiguous_reference",
-                message=str(e),
-                field=field_path,
+            # Def-Store answered the service key, which sees every
+            # namespace: candidates the inbound gate refuses are not the
+            # writer's to see, and none left reads as a terminology that
+            # does not exist (the miss below).
+            message = _ambiguous_terminology_message(
+                str(e), value, e.candidates, await _gate_candidates(e.candidates, "entry_id"),
             )
-            return None
+            if message is not None:
+                result.add_error(code="ambiguous_reference", message=message, field=field_path)
+                return None
         except DefStoreError as e:
             if e.unavailable:
                 raise dependency_unavailable(

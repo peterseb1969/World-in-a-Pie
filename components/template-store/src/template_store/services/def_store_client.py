@@ -81,7 +81,9 @@ class DefStoreClient:
                     return None
 
                 if response.status_code == 409:
-                    raise DefStoreAmbiguousError(_ambiguity_message(response))
+                    raise DefStoreAmbiguousError(
+                        _ambiguity_message(response), _ambiguity_candidates(response),
+                    )
 
                 if response.status_code != 200:
                     raise DefStoreError(
@@ -221,7 +223,24 @@ class DefStoreError(Exception):
 class DefStoreAmbiguousError(DefStoreError):
     """Def-Store answered, with 409: the identifier names several
     terminologies. An answer about the reference, not a failure to fetch it;
-    the message carries Def-Store's candidates."""
+    the message carries Def-Store's candidates, and ``candidates`` the
+    structured list (entry_id, namespace, …) a caller filters by what the
+    writer may reference."""
+
+    def __init__(self, message: str = "", candidates: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.candidates = candidates or []
+
+
+def _ambiguity_candidates(response: httpx.Response) -> list[dict[str, Any]]:
+    """The candidates of def-store's 409, as the shared resolver sends them."""
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return []
+    if isinstance(detail, dict) and isinstance(detail.get("candidates"), list):
+        return [c for c in detail["candidates"] if isinstance(c, dict)]
+    return []
 
 
 def _ambiguity_message(response: httpx.Response) -> str:

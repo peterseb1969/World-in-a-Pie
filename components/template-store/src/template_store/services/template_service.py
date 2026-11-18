@@ -3581,7 +3581,26 @@ class TemplateService:
                 if not await _terminology_exists(ref, gate):
                     _error(field, "invalid_reference", f"Terminology '{ref}' not found or inactive")
             except DefStoreAmbiguousError as e:
-                _error(field, "ambiguous_reference", str(e))
+                # Def-Store answered the service key, which sees every
+                # namespace: candidates the inbound gate refuses are not the
+                # writer's to see, and none left reads as a terminology that
+                # does not exist.
+                visible = [
+                    c for c in e.candidates
+                    if not await gate.refuses(c.get("namespace"), c.get("entry_id"))
+                ]
+                if e.candidates and not visible:
+                    _error(field, "invalid_reference", f"Terminology '{ref}' not found or inactive")
+                elif len(visible) == len(e.candidates):
+                    _error(field, "ambiguous_reference", str(e))
+                else:
+                    ids = ", ".join(str(c.get("entry_id")) for c in visible[:5])
+                    _error(
+                        field, "ambiguous_reference",
+                        f"Terminology '{ref}' is ambiguous: it resolves to {len(visible)} "
+                        f"terminologies ({ids}{', …' if len(visible) > 5 else ''}); "
+                        "use a canonical ID or a qualified value",
+                    )
             except DefStoreError as e:
                 # Def-Store did not answer: the reference is unchecked, so the
                 # template is not valid and does not activate (a warning let
