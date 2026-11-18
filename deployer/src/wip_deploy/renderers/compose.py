@@ -384,8 +384,26 @@ def _service_block(
     hc = _healthcheck_block(owner)
     if hc is not None:
         block["healthcheck"] = hc
+    if needs_init(owner):
+        block["init"] = True
 
     return block
+
+
+def needs_init(owner: Component | App) -> bool:
+    """Whether the service runs under an init that reaps orphaned processes.
+
+    A command healthcheck runs under `timeout` (see _healthcheck_block).
+    busybox's `timeout` runs the command in the parent and its watchdog in a
+    forked child; when the command exits, the watchdog is re-parented to the
+    container's PID 1. A service that is PID 1 itself (caddy, nats-server)
+    never waits on it, so every check run left a zombie, until the VM's
+    task limit refused every fork. podman's init (catatonit, `--init`) is
+    PID 1 instead and reaps them. Which `timeout` an image ships is not
+    known at render time, so every command check gets the init.
+    """
+    hc = owner.spec.healthcheck
+    return hc is not None and hc.command is not None
 
 
 def _caddy_service_block(deployment: Deployment) -> dict[str, Any]:

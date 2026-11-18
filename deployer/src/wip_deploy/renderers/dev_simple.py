@@ -99,6 +99,7 @@ from wip_deploy.renderers.compose import (
     _healthcheck_block,
     _render_dotenv,
     mark_unrendered_obsolete,
+    needs_init,
 )
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
@@ -722,6 +723,8 @@ def _dev_service_block(
     hc = _healthcheck_block(owner)
     if hc is not None:
         block["healthcheck"] = hc
+    if needs_init(owner):
+        block["init"] = True
 
     return block
 
