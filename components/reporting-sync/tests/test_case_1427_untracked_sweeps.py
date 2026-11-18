@@ -1,0 +1,690 @@
+"""Every definitions sweep says so while it runs.
+
+Parity's "still syncing" comes from the service that runs the sync, because a
+sweep leaves no job record a check could find. That service only ever knew the
+batch-all pre-sync and the document jobs, so the sweeps launched by the startup
+backfill, by the standalone ``POST /sync/batch/<what>`` endpoints and by the
+parity monitor's own repairs were invisible: after a restart ``/parity`` proved
+``terms_mismatch`` against a term table the backfill was still filling, and
+``failed`` is precisely the verdict that advises ``force=true`` — dropping the
+tables out from under the sync writing them.
+
+Tracking lives in the sweeps themselves now, at the one place they are defined,
+so every present caller is covered and a caller written tomorrow is too. The
+debounced closure rebuild lags its tables the same way and is covered with them.
+"""
+
+import asyncio
+import contextlib
+import importlib
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from reporting_sync.batch_sync import BatchSyncService
+from reporting_sync.models import SyncStatus
+from reporting_sync.parity_monitor import ParityMonitor
+from reporting_sync.worker import SyncWorker
+
+NS = "sweepns"
+
+
+class _FakePool:
+    """Stands in for the asyncpg pool with a transaction a test can hold open,
+    so it can look at the maintainer while a rebuild is inside it."""
+
+    def __init__(self) -> None:
+        self.transaction_opened = asyncio.Event()
+        self.release_transaction = asyncio.Event()
+
+    @asynccontextmanager
+    async def acquire(self):
+        pool = self
+
+        class _Conn:
+            @asynccontextmanager
+            async def transaction(self):
+                pool.transaction_opened.set()
+                await pool.release_transaction.wait()
+                yield
+
+            async def execute(self, _sql: str, *_args: object) -> str:
+                return "INSERT 0 0"
+
+        yield _Conn()
+
+
+async def _wait_until(condition, timeout: float = 2.0) -> None:
+    """Let a fire-and-forget loop run until it is where the assertion expects
+    it; the loop takes its own steps, the test only yields."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.001)
+
+
+# (public sweep, the body a test replaces to look inside the sweep)
+_SWEEPS = [
+    ("batch_sync_terminologies", "_sweep_terminologies"),
+    ("batch_sync_templates", "_sweep_templates"),
+    ("batch_sync_terms", "_sweep_terms"),
+    ("batch_sync_term_relations", "_sweep_term_relations"),
+]
+
+# (endpoint, the sweep it runs)
+_ENDPOINTS = [
+    ("trigger_terminology_sync", "_sweep_terminologies"),
+    ("trigger_template_metadata_sync", "_sweep_templates"),
+    ("trigger_term_sync", "_sweep_terms"),
+    ("trigger_term_relation_sync", "_sweep_term_relations"),
+]
+
+
+def _service() -> BatchSyncService:
+    return BatchSyncService(None)  # type: ignore[arg-type] — no I/O here
+
+
+def _stub_sweep(monkeypatch: pytest.MonkeyPatch, service: BatchSyncService, body: str,
+                flags: list[bool]) -> None:
+    """Replace one sweep's body with one that only records whether its own
+    namespace reads as still syncing while it runs."""
+
+    async def fake(**_kwargs: object) -> dict:
+        flags.append(service.is_namespace_sync_running(NS))
+        return {"synced": 0, "failed": 0, "total": 0, "complete": True}
+
+    monkeypatch.setattr(service, body, fake)
+
+
+class TestSweepsRecordThemselves:
+    @pytest.mark.parametrize(("public", "body"), _SWEEPS)
+    def test_every_sweep_marks_its_namespace_while_it_runs(
+        self, monkeypatch: pytest.MonkeyPatch, public: str, body: str
+    ) -> None:
+        """The four sweeps share one choke point, so the marker cannot be
+        forgotten by one of them — which is how this started."""
+        service = _service()
+        flags: list[bool] = []
+        _stub_sweep(monkeypatch, service, body, flags)
+
+        asyncio.run(getattr(service, public)(namespace=NS))
+
+        assert flags == [True]
+        assert service.is_namespace_sync_running(NS) is False
+
+    def test_an_instance_wide_sweep_covers_every_namespace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``namespace=None`` is the startup form: it writes every schema, so no
+        namespace may read as settled while it runs."""
+        service = _service()
+        flags: list[bool] = []
+        _stub_sweep(monkeypatch, service, "_sweep_terms", flags)
+
+        asyncio.run(service.batch_sync_terms())
+
+        assert flags == [True]
+        assert service.is_namespace_sync_running(NS) is False
+
+    def test_another_namespaces_sweep_leaves_this_one_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = _service()
+        flags: list[bool] = []
+
+        async def fake(**_kwargs: object) -> dict:
+            flags.append(service.is_namespace_sync_running("somewhere-else"))
+            return {"synced": 0, "failed": 0, "complete": True}
+
+        monkeypatch.setattr(service, "_sweep_terms", fake)
+        asyncio.run(service.batch_sync_terms(namespace=NS))
+
+        assert flags == [False]
+
+    def test_two_sweeps_of_one_scope_stay_marked_until_the_last_ends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The startup backfill runs the template-metadata sweep beside the
+        terminology chain: the first of them finishing must not uncover a scope
+        the other is still writing."""
+        service = _service()
+        marks: list[bool] = []
+
+        async def slow(**_kwargs: object) -> dict:
+            await asyncio.sleep(0.02)
+            return {"synced": 0, "failed": 0, "complete": True}
+
+        async def quick(**_kwargs: object) -> dict:
+            return {"synced": 0, "failed": 0, "complete": True}
+
+        monkeypatch.setattr(service, "_sweep_terms", slow)
+        monkeypatch.setattr(service, "_sweep_term_relations", quick)
+
+        async def scenario() -> None:
+            whole = asyncio.ensure_future(service.batch_sync_terms(namespace=NS))
+            await asyncio.sleep(0.005)
+            await service.batch_sync_term_relations(namespace=NS)
+            marks.append(service.is_namespace_sync_running(NS))
+            await whole
+
+        asyncio.run(scenario())
+
+        assert marks == [True]
+        assert service.is_namespace_sync_running(NS) is False
+
+    def test_the_parity_route_reads_a_running_sweep_as_still_syncing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The endpoint asks the service, so a sweep started anywhere turns
+        /parity into "still syncing" — the answer CASE-1328's restore waits on."""
+        from reporting_sync.main import _namespace_sync_running, state
+
+        service = _service()
+        monkeypatch.setattr(state, "batch_sync_service", service, raising=False)
+        flags: list[bool] = []
+
+        async def fake(**_kwargs: object) -> dict:
+            flags.append(_namespace_sync_running(NS))
+            return {"synced": 0, "failed": 0, "complete": True}
+
+        monkeypatch.setattr(service, "_sweep_terms", fake)
+        asyncio.run(service.batch_sync_terms(namespace=NS))
+
+        assert flags == [True]
+
+
+class TestEachCallerIsCovered:
+    """The callers are not changed by this fix; they are covered by it. Each
+    one drives a real sweep wrapper, so the marker is observed on the path that
+    used to leave the sync invisible."""
+
+    @pytest.mark.asyncio
+    async def test_the_startup_backfill_runs_tracked_sweeps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reporting_sync import main
+
+        service = _service()
+        flags: list[bool] = []
+        for _, body in _SWEEPS:
+            _stub_sweep(monkeypatch, service, body, flags)
+        with patch.object(main, "_source_healthy", AsyncMock(return_value=True)):
+            await main._initial_metadata_sync(service)
+
+        assert flags == [True] * len(_SWEEPS)
+        assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("endpoint", "body"), _ENDPOINTS)
+    async def test_a_standalone_endpoint_runs_a_tracked_sweep(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint: str, body: str
+    ) -> None:
+        from reporting_sync import main
+
+        service = _service()
+        monkeypatch.setattr(main.state, "batch_sync_service", service, raising=False)
+        flags: list[bool] = []
+        _stub_sweep(monkeypatch, service, body, flags)
+
+        answer = await getattr(main, endpoint)(namespace=NS, page_size=10)
+
+        assert answer["status"] == "completed"
+        assert flags == [True]
+        assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_batch_alls_definitions_pre_sync_is_tracked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = _service()
+        flags: list[bool] = []
+        for _, body in _SWEEPS:
+            _stub_sweep(monkeypatch, service, body, flags)
+        monkeypatch.setattr(service, "_list_templates", AsyncMock(return_value=[]))
+
+        await service.start_batch_sync_all(namespace=NS)
+        await asyncio.gather(*service._background_tasks)
+
+        assert flags == [True] * len(_SWEEPS)
+        assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_a_monitor_repair_runs_a_tracked_sweep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = _service()
+        flags: list[bool] = []
+        _stub_sweep(monkeypatch, service, "_sweep_terms", flags)
+        monitor = ParityMonitor(MagicMock(), service, interval_seconds=60)
+
+        await monitor._repair(NS, "terms", 1)
+
+        assert flags == [True]
+        assert service.is_namespace_sync_running(NS) is False
+
+
+class TestTheMonitorAsksTheService:
+    @pytest.mark.asyncio
+    async def test_a_namespace_whose_sweep_is_running_is_left_to_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pass must not even look: a mid-backfill terms gap repaired on a
+        sighting is a second sync fighting the first."""
+        service = _service()
+        monitor = ParityMonitor(
+            MagicMock(), service, interval_seconds=60,
+            list_namespaces=AsyncMock(return_value=[NS]),
+        )
+        parity = AsyncMock()
+        monkeypatch.setattr(
+            "reporting_sync.parity_monitor.check_namespace_parity", parity,
+        )
+        release = asyncio.Event()
+
+        async def blocked(**_kwargs: object) -> dict:
+            await release.wait()
+            return {"synced": 0, "failed": 0, "complete": True}
+
+        monkeypatch.setattr(service, "_sweep_terms", blocked)
+        sweep = asyncio.ensure_future(service.batch_sync_terms(namespace=NS))
+        await asyncio.sleep(0.01)
+
+        await monitor.check_namespace(NS)
+
+        assert parity.await_count == 0
+        assert monitor.status().namespaces[NS].skipped == "batch sync active"
+
+        release.set()
+        await sweep
+        await monitor.check_namespace(NS)
+        assert parity.await_count == 1
+        assert monitor.status().namespaces[NS].skipped is None
+
+    def test_the_skip_rule_is_the_services(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One rule, asked once: the monitor no longer reads the job list for
+        its own narrower version of it."""
+        service = _service()
+        monitor = ParityMonitor(MagicMock(), service, interval_seconds=60)
+        asked: list[str] = []
+
+        def answer(namespace: str) -> bool:
+            asked.append(namespace)
+            return True
+
+        monkeypatch.setattr(service, "is_namespace_sync_running", answer)
+
+        assert monitor._sync_active(NS) is True
+        assert asked == [NS]
+
+
+class TestTheBackfillWaitsAreCovered:
+    """A backfill step is more than its sweep: it waits for its source and backs
+    off when a listing came back short. Tracking only the sweep body left those
+    windows — the longer half of a slow start — reading as a settled reporting
+    layer, and a restore's 3-second poll lands in one often enough to record a
+    gap that was never one. The claim is bounded: a step whose source has not
+    answered for its whole quota of attempts has no progress left to claim, and
+    holding the instance-wide scope through an outage would keep every namespace
+    from being checked at all."""
+
+    @pytest.mark.asyncio
+    async def test_a_step_holds_its_scope_across_the_health_check_and_the_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reporting_sync import main
+
+        service = _service()
+        marks: list[bool] = []
+        slept: list[float] = []
+
+        async def healthy(_url: str) -> bool:
+            marks.append(service.is_namespace_sync_running(NS))
+            return True
+
+        async def record_sleep(delay: float) -> None:
+            slept.append(delay)
+            marks.append(service.is_namespace_sync_running(NS))
+            await asyncio.sleep(0)
+
+        monkeypatch.setattr(main, "_source_healthy", healthy)
+        monkeypatch.setattr(main, "_backfill_sleep", record_sleep)
+
+        attempts: dict[str, int] = {}
+
+        def incomplete_once(body: str):
+            async def fake(**_kwargs: object) -> dict:
+                attempts[body] = attempts.get(body, 0) + 1
+                return {"synced": 0, "failed": 0, "complete": attempts[body] > 1}
+
+            return fake
+
+        for _, body in _SWEEPS:
+            monkeypatch.setattr(service, body, incomplete_once(body))
+
+        await main._initial_metadata_sync(service)
+
+        assert len(slept) == len(_SWEEPS), "every step retried once, as its stub is written"
+        assert marks and set(marks) == {True}, "no wait in a step reads as settled"
+        assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_a_step_outlives_its_claim_when_its_source_stays_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The claim covers the retries that still stand for progress, not the
+        outage: after its quota of failed attempts the step releases the scope
+        and keeps retrying."""
+        from reporting_sync import main
+
+        service = _service()
+        monkeypatch.setattr(main, "_BACKFILL_CLAIM_LIMIT", 3)
+        marks: list[bool] = []
+        attempts = 0
+
+        async def unhealthy(_url: str) -> bool:
+            nonlocal attempts
+            attempts += 1
+            marks.append(service.is_namespace_sync_running(NS))
+            return False
+
+        async def yield_sleep(_delay: float) -> None:
+            await asyncio.sleep(0.002)
+
+        monkeypatch.setattr(main, "_source_healthy", unhealthy)
+        monkeypatch.setattr(main, "_backfill_sleep", yield_sleep)
+
+        step = asyncio.ensure_future(main._backfill_until_complete(
+            "terminology", "http://def-store", AsyncMock(),
+            claim=lambda: service.definitions_scope_held(None),
+        ))
+        await _wait_until(lambda: attempts >= 5)
+        step.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await step
+
+        assert marks[:5] == [True, True, True, False, False]
+        assert not any(marks[5:]), "the scope stays free while the source stays down"
+        assert service.is_namespace_sync_running(NS) is False, "the scope went back with the claim"
+
+    @pytest.mark.asyncio
+    async def test_a_startup_backfill_of_a_dead_source_leaves_every_namespace_checkable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scenario: reporting-sync starts while def-store is unreachable,
+        and the terminology step retries for as long as the source stays down.
+        Its scope is the instance-wide one, so a claim that outlived its
+        progress answered ``sync_running`` for every namespace and the standing
+        parity check skipped them all until def-store came back."""
+        from reporting_sync import main
+
+        service = _service()
+        monkeypatch.setattr(main, "_BACKFILL_CLAIM_LIMIT", 3)
+        def_store = main.settings.def_store_url
+        attempts: dict[str, int] = {}
+
+        async def health(_url: str) -> bool:
+            attempts[_url] = attempts.get(_url, 0) + 1
+            return _url != def_store
+
+        async def yield_sleep(_delay: float) -> None:
+            await asyncio.sleep(0.002)
+
+        monkeypatch.setattr(main, "_source_healthy", health)
+        monkeypatch.setattr(main, "_backfill_sleep", yield_sleep)
+        for _, body in _SWEEPS:
+            monkeypatch.setattr(
+                service, body,
+                AsyncMock(return_value={"synced": 0, "failed": 0, "complete": True}),
+            )
+
+        backfill = asyncio.ensure_future(main._initial_metadata_sync(service))
+        await _wait_until(lambda: attempts.get(def_store, 0) >= 5)
+
+        assert service.is_namespace_sync_running(NS) is False, (
+            "the retries go on, but they no longer claim to be writing"
+        )
+
+        backfill.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await backfill
+
+    @pytest.mark.asyncio
+    async def test_the_scope_is_released_when_the_body_raises(self) -> None:
+        service = _service()
+
+        with pytest.raises(RuntimeError):
+            async with service.definitions_scope_held(None):
+                raise RuntimeError("the source would not answer")
+
+        assert service.is_namespace_sync_running(NS) is False
+
+    def test_a_held_scope_stays_held_while_another_sweep_shares_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The step's hold and its sweep's mark are the same scope: the sweep
+        finishing must not uncover the scope the step is still retrying on."""
+        service = _service()
+        marks: list[bool] = []
+
+        async def done(**_kwargs: object) -> dict:
+            return {"synced": 0, "failed": 0, "complete": True}
+
+        monkeypatch.setattr(service, "_sweep_terms", done)
+
+        async def scenario() -> None:
+            async with service.definitions_scope_held(NS):
+                await service.batch_sync_terms(namespace=NS)
+                marks.append(service.is_namespace_sync_running(NS))
+            marks.append(service.is_namespace_sync_running(NS))
+
+        asyncio.run(scenario())
+
+        assert marks == [True, False]
+
+
+class TestTheEventWorkerSharesTheQueue:
+    """A term event is the dominant producer of a closure rebuild, and it lands
+    on the worker's maintainer. Parity asks the batch-sync service, so the two
+    have to hold one maintainer — two queues means the queue parity asks never
+    saw the write whose rebuild it is waiting for."""
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_queued_by_an_event_reads_as_still_syncing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("reporting_sync.term_closure.DEBOUNCE_SECONDS", 60)
+        service = _service()
+        worker = SyncWorker(
+            MagicMock(), MagicMock(), None,
+            SyncStatus(running=True, connected_to_nats=True, connected_to_postgres=True),
+            closure=service.closure,
+        )
+
+        assert worker.closure is service.closure
+        worker.closure.mark_dirty(NS)
+
+        assert service.is_namespace_sync_running(NS) is True
+        await service.closure.close()
+
+    @pytest.mark.asyncio
+    async def test_startup_hands_the_worker_the_services_maintainer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sharing is wiring, and wiring is what rots: the worker is launched
+        by the bus's supervisor, so the pin sits on what that launch passes."""
+        from reporting_sync import main
+
+        service = _service()
+        monkeypatch.setattr(main, "BatchSyncService", MagicMock(return_value=service))
+        monkeypatch.setattr(main, "SearchService", MagicMock())
+        monkeypatch.setattr(main, "ScopedReads", MagicMock())
+        monitor = MagicMock()
+        monitor.run_forever = AsyncMock()
+        monkeypatch.setattr(main, "ParityMonitor", MagicMock(return_value=monitor))
+        monkeypatch.setattr(main, "_close_namespaces_being_deleted", AsyncMock())
+        monkeypatch.setattr(main, "_initial_metadata_sync", AsyncMock())
+
+        # _start_postgres_work fills the app's state; pre-patched so the real
+        # pools and services are back when the test ends, and this one run of
+        # the startup cannot stand in for the suite's own lifespan.
+        for name in (
+            "postgres_pool", "read_pool", "scoped_reads", "deletions_closed",
+            "closing_task", "sync_task", "initial_sync_task", "parity_task",
+            "batch_sync_service", "parity_monitor", "search_service",
+        ):
+            monkeypatch.setattr(main.state, name, None, raising=False)
+        monkeypatch.setattr(
+            main.state, "sync_status",
+            SyncStatus(running=False, connected_to_nats=True, connected_to_postgres=True),
+        )
+
+        launched: dict[str, object] = {}
+
+        async def fake_run_worker(*_args: object, **kwargs: object) -> None:
+            launched.update(kwargs)
+
+        monkeypatch.setattr(main, "run_sync_worker", fake_run_worker)
+        bus = MagicMock()
+        monkeypatch.setattr(main.state, "bus", bus)
+
+        main._start_postgres_work(MagicMock(), MagicMock())
+        supervisor_name, launch = bus.supervise.call_args[0]
+        await launch(MagicMock())
+
+        assert supervisor_name == "sync-worker"
+        assert launched["closure"] is service.closure
+
+        for task in (
+            main.state.closing_task, main.state.parity_task, main.state.initial_sync_task,
+        ):
+            if task is not None and not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+class TestTheClosureRebuildIsCovered:
+    """A queued rebuild leaves term_closure behind its terms for as long as
+    the debounce waits, and nothing on the tables says so."""
+
+    @pytest.mark.asyncio
+    async def test_a_queued_rebuild_reads_as_still_syncing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = _service()
+        monkeypatch.setattr("reporting_sync.term_closure.DEBOUNCE_SECONDS", 0)
+        rebuilt: list[str] = []
+
+        async def fake_rebuild(namespace: str) -> int:
+            rebuilt.append(namespace)
+            return 0
+
+        monkeypatch.setattr(service.closure, "rebuild", fake_rebuild)
+
+        service.closure.mark_dirty(NS)
+        assert service.is_namespace_sync_running(NS) is True
+        assert service.closure.has_pending(NS) is True
+
+        await service.closure._pending[NS]
+
+        assert rebuilt == [NS]
+        assert service.is_namespace_sync_running(NS) is False
+
+    def test_a_namespace_with_nothing_queued_does_not(self) -> None:
+        assert _service().closure.has_pending(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_started_directly_counts_while_it_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A repair that calls rebuild() itself — which is how the parity
+        monitor closes a stale closure — never passes through mark_dirty, so the
+        queue says nothing about it. The closure lags its terms all the same
+        while the transaction runs, and a check landing in that window would
+        name a gap the running rebuild is closing."""
+        service = _service()
+        pool = _FakePool()
+        service.closure.pool = pool
+        for table in ("term_closure", "term_relations", "terms"):
+            monkeypatch.setattr(
+                service.closure.schema_manager,
+                f"ensure_{table}_table",
+                AsyncMock(return_value=f'"s"."{table}"'),
+            )
+
+        running = asyncio.ensure_future(service.closure.rebuild(NS))
+        await pool.transaction_opened.wait()
+
+        assert service.closure.has_pending(NS) is True
+        assert service.is_namespace_sync_running(NS) is True
+
+        pool.release_transaction.set()
+        await running
+
+        assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_that_keeps_failing_is_not_reported_as_syncing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The retry loop is patient by design, but patience is not a sync in
+        flight: while it queued a rebuild forever, /parity could never name
+        ``term_closure_stale`` and the standing check skipped the namespace on
+        every pass, so the gap that needs an operator stayed unreported. The
+        loop keeps retrying; only its claim of progress ends."""
+        term_closure = importlib.import_module("reporting_sync.term_closure")
+        monkeypatch.setattr(term_closure, "DEBOUNCE_SECONDS", 0.01)
+        monkeypatch.setattr(term_closure, "REPORTED_AS_GAP_AFTER_FAILURES", 3)
+        service = _service()
+        pool = _FakePool()
+        pool.release_transaction.set()
+        service.closure.pool = pool
+        state = {"broken": True, "attempts": 0}
+
+        async def failing_ensure(namespace: str) -> str:
+            state["attempts"] += 1
+            if state["broken"]:
+                raise RuntimeError("permission denied for schema")
+            return '"s"."term_closure"'
+
+        monkeypatch.setattr(
+            service.closure.schema_manager, "ensure_term_closure_table", failing_ensure
+        )
+        monkeypatch.setattr(
+            service.closure.schema_manager, "ensure_term_relations_table",
+            AsyncMock(return_value='"s"."term_relations"'),
+        )
+        monkeypatch.setattr(
+            service.closure.schema_manager, "ensure_terms_table",
+            AsyncMock(return_value='"s"."terms"'),
+        )
+
+        service.closure.mark_dirty(NS)
+        assert service.is_namespace_sync_running(NS) is True
+
+        await _wait_until(lambda: state["attempts"] >= 3)
+
+        assert service.is_namespace_sync_running(NS) is False
+        assert service.closure.has_pending(NS) is False
+        assert service.closure._dirty == {NS}, "the rebuild is still being retried"
+
+        state["broken"] = False  # the operator cleared whatever blocked it
+        await _wait_until(lambda: NS not in service.closure._failing)
+        assert service.is_namespace_sync_running(NS) is False
+        await service.closure.close()
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_forgets_the_rebuild_it_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The debounced task is gone at shutdown; a namespace left in the dirty
+        set would read as syncing on an object that can never rebuild again."""
+        monkeypatch.setattr("reporting_sync.term_closure.DEBOUNCE_SECONDS", 60)
+        service = _service()
+        service.closure.mark_dirty(NS)
+
+        assert service.is_namespace_sync_running(NS) is True
+        await service.closure.close()
+        assert service.is_namespace_sync_running(NS) is False

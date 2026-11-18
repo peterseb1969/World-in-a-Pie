@@ -5571,17 +5571,27 @@ async def check_reporting_parity(
     sync-enabled template: table present in the namespace's schema, columns
     matching what the sync would build, bookkeeping row recorded, and
     (with include_counts) expected-vs-actual row counts using the same
-    document query the batch sync consumes. Also reports namespace-level
-    state: schema presence, table count, and whether the sync bookkeeping
-    tables are usable at all (a pre-namespace-keying database is named
-    explicitly, with remediation).
+    document query the batch sync consumes. With counts it also compares the
+    tables reporting derives from def-store for the namespace — terminologies,
+    terms, term relations, term names and the term closure. Also reports
+    namespace-level state: schema presence, table count, and whether the sync
+    bookkeeping tables are usable at all (a pre-namespace-keying database is
+    named explicitly, with remediation).
 
     `verdict` is the one answer to branch on, with `reasons` behind it:
     `verified` (every check ran and found nothing missing), `failed` (a check
     proved rows or tables missing) or `unverified` (nothing could be settled:
     a store did not answer, this namespace's batch sync is still running, or
     there was nothing to check). A check that could not run is never reported
-    as a clean one.
+    as a clean one. A sync in flight is settled only over the surfaces that
+    were compared: a template whose rows cannot be counted against its
+    documents (sync_strategy all_versions, `counts_comparable=false`) leaves
+    the verdict open.
+
+    `counts_included` says what the check looked at: with include_counts=false
+    no row was counted and no terminology or term table compared, so a
+    `verified` there covers structure alone — the tables and their columns —
+    and says nothing about whether the documents reached them.
 
     Interpreting results:
     - structural_issues > 0: tables missing or mis-shaped — check the
@@ -5597,11 +5607,12 @@ async def check_reporting_parity(
     - bookkeeping_tables_ok false: the reporting database predates the
       namespace-keyed bookkeeping — doc-type sync cannot work until
       remediated (wipe the reporting volume or apply the named ALTER).
-    - derived_issues > 0: a term table or registered view is incomplete.
-      derived_tables (with include_counts) names the table and an issue:
-      terms_mismatch / term_relations_mismatch (active rows differ from
-      def-store — re-run the namespace batch sync), term_names_missing
-      (same remedy), term_closure_stale (the closure lags its terms and
+    - derived_issues > 0: a terminology table, a term table or a registered
+      view is incomplete. derived_tables (with include_counts) names the table
+      and an issue: terminologies_mismatch / terms_mismatch /
+      term_relations_mismatch (active rows differ from def-store — re-run the
+      namespace batch sync), term_names_missing (same remedy),
+      term_closure_stale (the closure lags its terms and
       relations — briefly normal right after a term write; otherwise re-run
       the batch sync), check_failed (the check itself could not run; see
       error). views lists each registered view with present=false when it
@@ -5614,7 +5625,8 @@ async def check_reporting_parity(
     Args:
         namespace: Namespace to verify.
         include_counts: Include row-count parity (slower). Pass false for
-            the cheap structure-only check.
+            the cheap structure-only check, whose answer carries
+            counts_included=false.
     """
     try:
         data = await get_client().check_reporting_parity(

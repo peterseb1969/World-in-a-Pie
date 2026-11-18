@@ -407,9 +407,9 @@ export interface TemplateParity {
 /**
  * Parity of one fixed-schema table reporting derives from def-store.
  * `issue` is a stable code when the table does not hold what it should:
- * `terms_mismatch`, `term_relations_mismatch`, `term_names_missing`,
- * `term_closure_stale`, or `check_failed` (the check itself could not run;
- * `error` says why).
+ * `terminologies_mismatch`, `terms_mismatch`, `term_relations_mismatch`,
+ * `term_names_missing`, `term_closure_stale`, or `check_failed` (the check
+ * itself could not run; `error` says why).
  */
 export interface DerivedTableParity {
   table: string
@@ -458,6 +458,10 @@ export interface NamespaceParityResult {
    * structural_issues because the term data and views land after it. */
   derived_issues: number
   ok: boolean
+  /** Whether row counts were compared at all. The structure-only form
+   * (`include_counts: false`) never counts rows, so a `verified` there covers
+   * tables and columns, not whether the documents reached them. */
+  counts_included: boolean
   /** The answer to branch on, computed by reporting-sync over the tables it
    * owns: `verified` — every check ran and found nothing missing; `failed` — a
    * check proved rows or tables missing; `unverified` — nothing could be

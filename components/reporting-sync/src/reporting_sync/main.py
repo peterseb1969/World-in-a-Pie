@@ -503,6 +503,14 @@ async def _retire_archived_status(pool: asyncpg.Pool) -> None:
 # overall deadline — a step that cannot complete keeps trying until it does.
 _BACKFILL_FIRST_DELAY = 5.0
 _BACKFILL_MAX_DELAY = 60.0
+# How long one step may report itself as progress: after this many failed
+# attempts in a row it releases its definitions scope. A source that has not
+# answered five times is an outage of that source, and holding the scope for it
+# would tell every namespace in the install that its reporting is still being
+# written, which stops every check that could name a real gap. The retries go
+# on; only the claim ends — the rule the closure maintainer applies to its own
+# rebuild retries (term_closure.REPORTED_AS_GAP_AFTER_FAILURES).
+_BACKFILL_CLAIM_LIMIT = 5
 _backfill_sleep = asyncio.sleep  # replaced in tests
 
 
@@ -516,7 +524,10 @@ async def _source_healthy(base_url: str) -> bool:
 
 
 async def _backfill_until_complete(
-    label: str, source_url: str, sync: Callable[[], Awaitable[dict[str, Any]]]
+    label: str,
+    source_url: str,
+    sync: Callable[[], Awaitable[dict[str, Any]]],
+    claim: Callable[[], contextlib.AbstractAsyncContextManager[None]] | None = None,
 ) -> None:
     """Run one backfill step until its sync reports a complete listing.
 
@@ -525,28 +536,48 @@ async def _backfill_until_complete(
     step retries until the batch sync itself says `complete`, not merely
     until the source looks up. Batch syncs are idempotent upserts, so a
     repeat is harmless.
+
+    While the step has attempts left to claim (`claim` is its definitions
+    scope, held across the wait as well as the write), the tables hold what the
+    attempts so far wrote and no listing has been proved complete, so a parity
+    check landing there has to hear "still syncing", not a proven gap. Past
+    `_BACKFILL_CLAIM_LIMIT` failed attempts in a row the claim is dropped:
+    a step that cannot reach its source is not progress, and claiming it for
+    the life of the outage holds the whole instance's reporting open and
+    silences every check that could name a gap. Retrying continues either way.
     """
     delay = _BACKFILL_FIRST_DELAY
     attempt = 0
+    failures = 0
     while True:
         attempt += 1
-        if not await _source_healthy(source_url):
-            outcome = f"{source_url} not healthy"
-        else:
-            try:
-                result = await sync()
-            except Exception as e:  # a step must never kill the backfill
-                result = {"complete": False, "error": str(e)}
-            if result.get("complete", True):
-                logger.info(f"Initial {label} sync complete (attempt {attempt}): {result}")
-                return
-            outcome = f"listing incomplete: {result}"
-        logger.warning(
-            f"Initial {label} sync not complete (attempt {attempt}, {outcome}); "
-            f"retrying in {delay:.0f}s"
-        )
-        await _backfill_sleep(delay)
-        delay = min(delay * 2, _BACKFILL_MAX_DELAY)
+        async with contextlib.AsyncExitStack() as held:
+            if claim is not None and failures < _BACKFILL_CLAIM_LIMIT:
+                await held.enter_async_context(claim())
+            if not await _source_healthy(source_url):
+                outcome = f"{source_url} not healthy"
+            else:
+                try:
+                    result = await sync()
+                except Exception as e:  # a step must never kill the backfill
+                    result = {"complete": False, "error": str(e)}
+                if result.get("complete", True):
+                    logger.info(f"Initial {label} sync complete (attempt {attempt}): {result}")
+                    return
+                outcome = f"listing incomplete: {result}"
+            failures += 1
+            if failures == _BACKFILL_CLAIM_LIMIT:
+                logger.warning(
+                    f"Initial {label} sync has failed {failures} times in a row: it stops "
+                    "reporting itself as progress, so parity checks run against what the "
+                    "tables hold; retrying continues"
+                )
+            logger.warning(
+                f"Initial {label} sync not complete (attempt {attempt}, {outcome}); "
+                f"retrying in {delay:.0f}s"
+            )
+            await _backfill_sleep(delay)
+            delay = min(delay * 2, _BACKFILL_MAX_DELAY)
 
 
 async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
@@ -561,24 +592,29 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
     a while (a database restarting behind it). The def-store steps run in
     order, as terms and relations build on terminologies; the template-store
     step runs alongside, so either source being down never blocks the other.
+
+    A step holds the definitions scope while it still claims progress — across
+    its waits included, since between two attempts the tables hold what the
+    attempts so far wrote and no parity check may read that as a proven gap.
+    Once a step cannot reach its source, that claim ends after a bounded number
+    of attempts (see _BACKFILL_CLAIM_LIMIT): the outage is one source's, and the
+    instance-wide scope it would otherwise hold keeps every namespace's parity
+    check from answering.
     """
+    async def step(label: str, source_url: str, sweep: Callable[[], Awaitable[dict[str, Any]]]) -> None:
+        await _backfill_until_complete(
+            label, source_url, sweep,
+            claim=lambda: batch_sync_service.definitions_scope_held(None),
+        )
+
     async def def_store_chain() -> None:
-        await _backfill_until_complete(
-            "terminology", settings.def_store_url, batch_sync_service.batch_sync_terminologies
-        )
-        await _backfill_until_complete(
-            "term", settings.def_store_url, batch_sync_service.batch_sync_terms
-        )
-        await _backfill_until_complete(
-            "term-relation", settings.def_store_url, batch_sync_service.batch_sync_term_relations
-        )
+        await step("terminology", settings.def_store_url, batch_sync_service.batch_sync_terminologies)
+        await step("term", settings.def_store_url, batch_sync_service.batch_sync_terms)
+        await step("term-relation", settings.def_store_url, batch_sync_service.batch_sync_term_relations)
 
     await asyncio.gather(
         def_store_chain(),
-        _backfill_until_complete(
-            "template metadata", settings.template_store_url,
-            batch_sync_service.batch_sync_templates,
-        ),
+        step("template metadata", settings.template_store_url, batch_sync_service.batch_sync_templates),
     )
 
 
@@ -647,25 +683,28 @@ def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
         )
     logger.info("PostgreSQL connected")
 
-    state.batch_sync_service = BatchSyncService(pool)
+    batch_sync = BatchSyncService(pool)
+    state.batch_sync_service = batch_sync
     # Initial metadata sync: each step waits on its own source and retries
     # until its listing completes (see _initial_metadata_sync).
-    state.initial_sync_task = asyncio.create_task(
-        _initial_metadata_sync(state.batch_sync_service)
-    )
+    state.initial_sync_task = asyncio.create_task(_initial_metadata_sync(batch_sync))
     logger.info("Initial metadata sync scheduled (background)")
 
     # Standing parity check: finds reporting gaps after the fact (a restore
     # that stopped waiting, a missed event, lost views) and repairs them.
-    state.parity_monitor = ParityMonitor(pool, state.batch_sync_service)
+    state.parity_monitor = ParityMonitor(pool, batch_sync)
     state.parity_task = asyncio.create_task(state.parity_monitor.run_forever())
 
     # The bus runs the sync worker as soon as NATS is connected and restarts
     # it whenever its consumer loop dies (e.g. the stream was missing, or a
-    # NATS outage outlived the subscription).
+    # NATS outage outlived the subscription). One closure maintainer per
+    # process: the worker queues a rebuild from every term event, and parity
+    # asks the service's queue whether a namespace is still syncing.
     state.sync_task = state.bus.supervise(
         "sync-worker",
-        lambda js: run_sync_worker(state.bus.client, js, pool, state.sync_status),
+        lambda js: run_sync_worker(
+            state.bus.client, js, pool, state.sync_status, closure=batch_sync.closure
+        ),
     )
     logger.info("Sync worker scheduled (runs while NATS is connected)")
 
@@ -1087,7 +1126,8 @@ async def reporting_parity(
         description=(
             "Include expected-vs-actual row counts (mongo-derived, same "
             "query the batch sync consumes). Pass false for the cheap "
-            "structure-only form, which checks tables but not their rows."
+            "structure-only form, which checks tables but not their rows; "
+            "the answer then carries counts_included=false."
         ),
     ),
     identity: UserIdentity = Depends(require_api_key),
@@ -1101,18 +1141,28 @@ async def reporting_parity(
     count, and whether the bookkeeping tables are namespace-keyed at all.
 
     Beyond document tables: every view registered for the namespace must
-    exist (``views``), and with counts the term tables are checked
-    (``derived_tables``) — active terms and term relations against
-    def-store's active totals, name rows for every named term, and the
-    closure's reflexive rows against what its rebuild writes. Failures
-    count in ``derived_issues``; ``ok`` holds only when every check passes.
+    exist (``views``), and with counts the terminology and term tables are
+    checked (``derived_tables``) — active terminologies, terms and term
+    relations against def-store's active totals, name rows for every named
+    term, and the closure's reflexive rows against what its rebuild writes.
+    Failures count in ``derived_issues``; ``ok`` holds only when every check
+    passes.
 
     ``verdict`` is the one answer to branch on, and ``reasons`` what stands
     behind it: ``verified`` — every check ran and found nothing missing;
     ``failed`` — a check proved rows or tables absent; ``unverified`` —
     nothing could be settled, because a store did not answer, this
     namespace's batch sync is still running, or there was nothing to check.
-    A check that could not run is never reported as a clean one.
+    A check that could not run is never reported as a clean one. A sync in
+    flight is settled only over the surfaces that were compared: a template
+    whose rows cannot be counted against its documents (sync_strategy
+    all_versions, ``counts_comparable=false``) leaves the verdict open.
+
+    What the check looked at is on the answer as ``counts_included``. With
+    ``include_counts=false`` no row was counted and no terminology or term
+    table compared, so a ``verified`` there covers structure alone — the tables
+    and their columns — and says nothing about whether the documents reached
+    them.
 
     The one-request answer to "why does the reporting layer look empty":
     a stale/fossil schema shows structural issues, a dead sync worker or
@@ -1146,7 +1196,9 @@ async def reporting_parity_status() -> ParityMonitorStatus:
     consecutive passes is repaired with the narrowest sync that closes it —
     a template's batch sync, the term or term-relation sync, a closure
     rebuild, re-applying registered views — at most PARITY_REPAIR_ATTEMPTS
-    times. A namespace with an active batch job is skipped for that pass.
+    times. A namespace with a sync of its own still in flight — a document
+    job, a definitions sweep or a closure rebuild queued or writing — is
+    skipped for that pass.
     ``not_healing`` lists gaps that outlived their repairs or have no
     automatic repair (a legacy table, old-shape bookkeeping, a check that
     could not run); those are also logged once at error level.

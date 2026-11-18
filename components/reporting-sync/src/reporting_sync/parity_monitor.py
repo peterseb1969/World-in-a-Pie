@@ -10,8 +10,10 @@ Rules that keep it from fighting the rest of the service:
 - A gap is repaired only when two consecutive passes see it. Event-driven
   sync and the closure's rebuild debounce make short-lived gaps normal; one
   sighting is not evidence.
-- A namespace with an active batch job is skipped for that pass: the
-  operator's (or the restore's) sync owns it until it finishes.
+- A namespace with a sync of its own still in flight is skipped for that
+  pass: that sync owns it until it finishes. In flight covers a document job,
+  a definitions sweep or a closure rebuild queued or writing — whatever is
+  writing the rows this check would otherwise call missing.
 - Each gap gets at most ``settings.parity_repair_attempts`` repairs. One
   that persists past them is logged once at error level and left alone
   until it closes; it stays visible in the status.
@@ -36,16 +38,16 @@ from pydantic import BaseModel, Field
 
 from .batch_sync import BatchSyncService
 from .config import settings
-from .models import BatchSyncStatus
 from .parity import NamespaceParityResult, check_namespace_parity
 from .schema_manager import SchemaManager
 
 logger = logging.getLogger(__name__)
 
-# Repair order within one pass: terms before relations (the relation sync
+# Repair order within one pass: terminologies before terms (the term sync
+# walks the terminology listing), terms before relations (the relation sync
 # ends with the closure rebuild, which needs every term), and a closure
 # repair only when neither of those ran.
-_ORDER = ("terms", "term_relations", "term_closure", "views")
+_ORDER = ("terminologies", "terms", "term_relations", "term_closure", "views")
 
 
 class ParityAction(BaseModel):
@@ -60,8 +62,8 @@ class ParityAction(BaseModel):
 class NamespaceParityStatus(BaseModel):
     checked_at: datetime | None = None
     ok: bool | None = None
-    # Gaps seen this pass, by key: template:<value>, terms, term_relations,
-    # term_closure, views, and the operator-only kinds.
+    # Gaps seen this pass, by key: template:<value>, terminologies, terms,
+    # term_relations, term_closure, views, and the operator-only kinds.
     gaps: list[str] = Field(default_factory=list)
     # Repairs made so far per gap still open.
     repair_attempts: dict[str, int] = Field(default_factory=dict)
@@ -220,11 +222,13 @@ class ParityMonitor:
         self._status.last_pass_finished_at = datetime.now(UTC)
 
     def _sync_active(self, namespace: str) -> bool:
-        return any(
-            job.status in (BatchSyncStatus.PENDING, BatchSyncStatus.RUNNING)
-            and job.namespace in (None, namespace)
-            for job in self.batch_sync.list_jobs()
-        )
+        """Whether reporting-sync still has work in flight for this namespace.
+        Asked of the service that runs it, which knows the definitions sweeps
+        and the closure rebuilds too — the job list alone would leave a term
+        backfill mid-flight looking like a gap to repair, and a repair started
+        here is itself work the next pass must not mistake for an idle
+        namespace."""
+        return self.batch_sync.is_namespace_sync_running(namespace)
 
     async def check_namespace(self, namespace: str) -> None:
         ns_status = self._status.namespaces.setdefault(namespace, NamespaceParityStatus())
@@ -297,6 +301,10 @@ class ParityMonitor:
     async def _repair(self, namespace: str, key: str, attempt: int) -> None:
         sm = self.batch_sync.schema_manager
         repairs: dict[str, tuple[str, Callable[[], Awaitable[Any]]]] = {
+            "terminologies": (
+                "terminology batch sync",
+                lambda: self.batch_sync.batch_sync_terminologies(namespace=namespace),
+            ),
             "terms": ("term batch sync", lambda: self.batch_sync.batch_sync_terms(namespace=namespace)),
             "term_relations": (
                 "term-relation batch sync",

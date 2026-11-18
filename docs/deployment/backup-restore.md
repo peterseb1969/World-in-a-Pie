@@ -376,15 +376,22 @@ explicitly, with remediation. `include_counts=false` is the cheap structural
 form.
 
 It also covers what reporting derives besides document tables. Every view
-registered for the namespace must exist (`views`). With counts, the term
-tables are checked (`derived_tables`): active `terms` and `term_relations`
-rows against def-store's active totals, `term_names` rows for every term that
-has names, and `term_closure`'s reflexive rows against what its rebuild
-writes. Each failure is counted in `derived_issues` and named by an issue
-code (`terms_mismatch`, `term_relations_mismatch`, `term_names_missing`,
+registered for the namespace must exist (`views`). With counts, the tables
+reporting derives from def-store are checked (`derived_tables`): active
+`terminologies`, `terms` and `term_relations` rows against def-store's active
+totals, `term_names` rows for every term that has names, and `term_closure`'s
+reflexive rows against what its rebuild writes. Each failure is counted in
+`derived_issues` and named by an issue code (`terminologies_mismatch`,
+`terms_mismatch`, `term_relations_mismatch`, `term_names_missing`,
 `term_closure_stale`, `check_failed`). `ok` is true only when all of it
 passes, so a namespace whose terms are back but whose relations or closure
 are empty no longer reads as verified.
+
+A clean answer settles a sync that is still running only over the surfaces it
+compared. A template with `sync_strategy: all_versions` has no expected row
+count derivable from one query (`counts_comparable: false` on its row), so its
+rows were never compared against its documents, and such a namespace keeps its
+`unverified` + `sync_running` verdict until its sync finishes.
 
 ## The standing check: reporting repairs itself
 
@@ -397,6 +404,7 @@ that closes the gap:
 | Gap | Repair |
 |---|---|
 | a template's table missing or short | that template's batch sync |
+| `terminologies_mismatch` | the namespace's terminology sync |
 | `terms_mismatch`, `term_names_missing` | the namespace's term sync |
 | `term_relations_mismatch` | the namespace's term-relation sync (ends with a closure rebuild) |
 | `term_closure_stale` | a closure rebuild |

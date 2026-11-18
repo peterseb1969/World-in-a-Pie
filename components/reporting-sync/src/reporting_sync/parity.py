@@ -26,14 +26,14 @@ a namespace, because a check that passes while those are empty is the
 failure it exists to catch:
 - each view registered in ``_wip_views`` exists in the namespace's schema
   (always checked — presence is structure);
-- with counts: active ``terms`` and ``term_relations`` rows match def-store's
-  active totals, every active term carrying names has ``term_names`` rows,
-  and ``term_closure`` holds the reflexive rows its rebuild writes (one per
-  active term per relation type in use) — so a closure that was never
-  rebuilt, or is stale against its term set or the relation types in use,
-  shows. A closure missing only non-reflexive edges does NOT show here; a
-  failed rebuild is retried by the maintainer until it lands. Right after
-  a term or relation write the closure lags by its rebuild debounce.
+- with counts: active ``terminologies``, ``terms`` and ``term_relations`` rows
+  match def-store's active totals, every active term carrying names has
+  ``term_names`` rows, and ``term_closure`` holds the reflexive rows its
+  rebuild writes (one per active term per relation type in use) — so a closure
+  that was never rebuilt, or is stale against its term set or the relation
+  types in use, shows. A closure missing only non-reflexive edges does NOT
+  show here; a failed rebuild is retried by the maintainer until it lands.
+  Right after a term or relation write the closure lags by its rebuild debounce.
 
 Honest limits, by design:
 - Extra actual columns are never an issue (sync only ever adds). A template
@@ -42,7 +42,9 @@ Honest limits, by design:
 - Count comparison is exact only for sync_strategy latest_only (the
   default): expected = the document-store active-document total, the same
   number batch sync pages through. For all_versions the expectation is not
-  derivable from one call; those templates report counts_comparable=False.
+  derivable from one call; those templates report counts_comparable=False, and
+  a namespace holding one never reads a clean check as settled — its verdict
+  stays open while its sync is in flight.
 """
 
 import logging
@@ -121,12 +123,12 @@ class DerivedTableParity(BaseModel):
     """Parity of one fixed-schema table reporting derives from def-store.
 
     ``issue`` is a stable code when the table does not hold what it should:
-    ``terms_mismatch`` / ``term_relations_mismatch`` (active rows differ
-    from def-store's active total), ``term_names_missing`` (active terms
-    with names but no name rows; ``expected_rows`` counts such terms and
-    ``actual_rows`` how many have rows), ``term_closure_stale`` (reflexive
-    rows differ from what a rebuild writes), ``check_failed`` (the check
-    itself could not run — ``error`` says why).
+    ``terminologies_mismatch`` / ``terms_mismatch`` / ``term_relations_mismatch``
+    (active rows differ from def-store's active total), ``term_names_missing``
+    (active terms with names but no name rows; ``expected_rows`` counts such
+    terms and ``actual_rows`` how many have rows), ``term_closure_stale``
+    (reflexive rows differ from what a rebuild writes), ``check_failed`` (the
+    check itself could not run — ``error`` says why).
     """
 
     table: str
@@ -191,6 +193,11 @@ class NamespaceParityResult(BaseModel):
     # document tables.
     derived_issues: int = 0
     ok: bool = False
+    # Whether row counts were compared at all. The structure-only form
+    # (include_counts=false) never looks at rows, and a caller must be able to
+    # see that on the answer: a "verified" there covers tables and columns, not
+    # the documents that should be in them.
+    counts_included: bool = True
     # verified | failed | unverified — see VERIFIED/FAILED/UNVERIFIED. The one
     # answer a caller branches on; reasons carries what stands behind it.
     verdict: str = UNVERIFIED
@@ -338,6 +345,21 @@ async def _expected_document_total(template_id: str, namespace: str) -> int:
             f"{settings.document_store_url}/api/document-store/documents",
             params={"template_id": template_id, "namespace": namespace,
                     "status": "active", "latest_only": "true",
+                    "page": 1, "page_size": 1},
+            headers={"X-API-Key": settings.api_key},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        return int(response.json().get("total", 0))
+
+
+async def _expected_active_terminologies(namespace: str) -> int:
+    """How many active terminologies def-store holds for the namespace — the
+    listing the terminology batch sync pages through."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{settings.def_store_url}/api/def-store/terminologies",
+            params={"namespace": namespace, "status": "active",
                     "page": 1, "page_size": 1},
             headers={"X-API-Key": settings.api_key},
             timeout=30.0,
@@ -505,11 +527,12 @@ async def _registered_views_parity(
 async def _derived_table_parity(
     pool: asyncpg.Pool, schema: str, namespace: str
 ) -> list[DerivedTableParity]:
-    """The term tables, each checked independently: one failing check must
-    not hide the others."""
+    """The terminology and term tables, each checked independently: one
+    failing check must not hide the others."""
     rows: list[DerivedTableParity] = []
 
     for table, expected_fn, issue in (
+        ("terminologies", _expected_active_terminologies, "terminologies_mismatch"),
         ("terms", _expected_active_terms, "terms_mismatch"),
         ("term_relations", _expected_active_relations, "term_relations_mismatch"),
     ):
@@ -597,6 +620,7 @@ async def check_namespace_parity(
     sm = SchemaManager(pool)
     schema = sm.schema_for(namespace)
     result = await _schema_presence(pool, namespace, schema)
+    result.counts_included = include_counts
     await _check_bookkeeping(pool, namespace, result)
 
     sweep = await _templates_to_check(namespace, result)
@@ -652,14 +676,17 @@ def _set_verdict(
     neighbour.
 
     A running sync holds the verdict open only while the check found
-    something it could still change. When the counts were checked and every
-    table, row count, term table and view already matches, the layer is
-    complete now: a sync still in flight can only write what is there
-    already, so it does not make a clean namespace unverified (a merge into a
-    namespace already at parity triggers exactly that sync).
+    something it could still change. When the counts were checked, every
+    surface they cover was comparable, and every table, row count, term table
+    and view already matches, the layer is complete now: a sync still in flight
+    can only write what is there already, so it does not make a clean namespace
+    unverified (a merge into a namespace already at parity triggers exactly
+    that sync). A surface the check could not compare does not settle anything:
+    an all_versions template's rows were never counted against its documents, so
+    the sync in flight may still have the whole table to rewrite.
     """
     proven, blocked = _findings(result)
-    settled = counts_checked and not proven and not blocked
+    settled = counts_checked and not proven and not blocked and _counts_comparable(result)
     blockers = _blockers(
         result, sync_running and not settled, templates_unreadable, shared_sweep_error,
     )
@@ -683,6 +710,17 @@ def _findings(result: NamespaceParityResult) -> tuple[list[ParityReason], list[P
     return proven, blocked
 
 
+def _counts_comparable(result: NamespaceParityResult) -> bool:
+    """Whether the count comparison could look at every template it covers.
+
+    An ``all_versions`` template's expected row count is not derivable from one
+    query (see _template_counts), so its rows were never compared against its
+    documents. An all-clear that skipped a surface proves nothing about what the
+    sync still has to write there, and cannot be the evidence that lets a
+    running sync read as settled."""
+    return all(row.counts_comparable for row in result.templates)
+
+
 def _template_findings_of(result: NamespaceParityResult) -> list[ParityReason]:
     """The findings of every template row; the bookkeeping only counts as a
     source of truth when the check said it is one."""
@@ -693,7 +731,8 @@ def _template_findings_of(result: NamespaceParityResult) -> list[ParityReason]:
 
 
 def _derived_findings(result: NamespaceParityResult) -> list[ParityReason]:
-    """The findings of the term tables, skipping the ones that matched."""
+    """The findings of the terminology and term tables, skipping the ones that
+    matched."""
     return [r for r in (_derived_finding(d) for d in result.derived_tables) if r]
 
 

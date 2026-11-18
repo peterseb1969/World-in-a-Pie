@@ -15,7 +15,7 @@ import logging
 import time
 import uuid
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -158,18 +158,29 @@ class BatchSyncService:
         # Strong refs to fire-and-forget tasks (definitions pre-sync) so the
         # event loop cannot garbage-collect them mid-flight.
         self._background_tasks: set[asyncio.Task] = set()
-        # The namespace of every definitions sweep in flight (None = every
-        # namespace), so a parity check can tell "still syncing" from "empty".
-        self._definitions_sweeps: set[str | None] = set()
+        # Per definitions-sweep scope (None = every namespace): how many
+        # sweeps of it are in flight, so a parity check can tell "still
+        # syncing" from "empty". A count rather than a mark: two sweeps of one
+        # scope do overlap — the startup backfill runs the template-metadata
+        # sweep beside the terminology/term/relation chain, and holds the scope
+        # across each step's own waits — and the scope has to stay marked until
+        # the last of them ends.
+        self._definitions_sweeps: Counter[str | None] = Counter()
 
     def is_namespace_sync_running(self, namespace: str) -> bool:
         """Whether this namespace is still being synced.
 
-        A pending or running document job whose scope covers it, or a
-        definitions sweep of it. The instance-wide scope (``namespace=None``)
-        covers every namespace, as in _find_active_job's overlap rule. Parity
-        asks this so a row the sync has not written yet reads as "still
-        syncing", never as a gap the operator has to chase.
+        A pending or running document job whose scope covers it, a definitions
+        sweep of it (or of everything), a backfill step of it that still claims
+        progress, or a term-closure rebuild for it that is queued or in the
+        transaction. The instance-wide scope (``namespace=None``) covers every
+        namespace, as in _find_active_job's overlap rule. Parity asks this so a
+        row the sync has not written yet reads as "still syncing", never as a gap
+        the operator has to chase: a sweep leaves no job record for a check to
+        find, so this is where that knowledge lives. A retry loop that has failed
+        every attempt since it started — a closure rebuild, or a backfill step
+        that has not reached its source — is not counted: that is a gap to name,
+        not progress to wait for.
         """
         scopes = (namespace, None)
         for job in self._jobs.values():
@@ -177,7 +188,49 @@ class BatchSyncService:
                 BatchSyncStatus.PENDING, BatchSyncStatus.RUNNING,
             ):
                 return True
+        if self.closure.has_pending(namespace):
+            return True
         return any(sweep in scopes for sweep in self._definitions_sweeps)
+
+    @contextlib.asynccontextmanager
+    async def definitions_scope_held(self, namespace: str | None) -> AsyncIterator[None]:
+        """Record a definitions scope as being written for the block's duration.
+
+        A sweep holds it for its own body (see _tracked_sweep). A caller that
+        retries between attempts holds it across the waits too: the tables then
+        hold what the attempts so far wrote and no listing has been proved
+        complete, which is the state a parity check must read as still syncing,
+        not as a gap. How long such a claim lasts is the caller's to bound — a
+        step that has failed every attempt is waiting on an outage rather than
+        writing, and holding the instance-wide scope through that keeps every
+        namespace's checks from answering.
+        """
+        self._definitions_sweeps[namespace] += 1
+        try:
+            yield
+        finally:
+            left = self._definitions_sweeps[namespace] - 1
+            if left > 0:
+                self._definitions_sweeps[namespace] = left
+            else:
+                del self._definitions_sweeps[namespace]
+
+    async def _tracked_sweep(
+        self,
+        namespace: str | None,
+        sweep: Callable[..., Awaitable[dict]],
+        page_size: int,
+    ) -> dict:
+        """Run one definitions sweep with its scope recorded as in flight.
+
+        This is the single choke point every sweep goes through, so no caller
+        has to remember to mark anything: the startup backfill, the standalone
+        POST /sync/batch/<what> endpoints, the parity monitor's repairs and
+        batch-all's pre-sync are all covered by the sweeps themselves, and a
+        new caller is covered the day it is written.
+        """
+        async with self.definitions_scope_held(namespace):
+            return await sweep(namespace=namespace, page_size=page_size)
 
     async def _fetch_template(self, template_id: str) -> dict[str, Any] | None:
         """Fetch template from Template Store."""
@@ -881,18 +934,6 @@ class BatchSyncService:
                     (job.error_message + "; " if job.error_message else "") + warning
                 )
 
-    async def _sync_definitions_tracked(
-        self, namespace: str | None, page_size: int
-    ) -> None:
-        """The definitions sweep, recorded as in flight while it runs, so a
-        parity check of its namespace says "still syncing" instead of reporting
-        the term tables it has not written yet as gaps."""
-        self._definitions_sweeps.add(namespace)
-        try:
-            await self._sync_definitions(namespace, page_size)
-        finally:
-            self._definitions_sweeps.discard(namespace)
-
     async def _sync_definitions(
         self, namespace: str | None, page_size: int
     ) -> None:
@@ -903,7 +944,11 @@ class BatchSyncService:
         template and never reads the definitions tables. Relations run after
         terms, so the closure rebuild that ends the relation sync sees every
         term. A sweep that failed items or could not list everything is
-        logged as a warning: nothing else reports it."""
+        logged as a warning: nothing else reports it.
+
+        Each sweep records its own scope as in flight (see _tracked_sweep), so
+        this runs unwrapped: one sweep ends as the next begins, and the scope
+        stays marked across the whole chain."""
         sweeps = (
             ("Template metadata", self.batch_sync_templates),
             ("Terminologies", self.batch_sync_terminologies),
@@ -956,7 +1001,7 @@ class BatchSyncService:
         # do not read those tables, so there is no ordering dependency and
         # no reason to block the acknowledgement on it.
         definitions_task = asyncio.create_task(
-            self._sync_definitions_tracked(namespace, page_size)
+            self._sync_definitions(namespace, page_size)
         )
         self._background_tasks.add(definitions_task)
         definitions_task.add_done_callback(self._background_tasks.discard)
@@ -1004,12 +1049,19 @@ class BatchSyncService:
         namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
-        """
-        Batch sync all terminologies from Def-Store to PostgreSQL.
+        """Batch sync all terminologies from Def-Store to PostgreSQL, recorded
+        as a sweep of ``namespace`` for as long as it runs.
 
         Returns:
             Dict with sync results (synced, failed, total)
         """
+        return await self._tracked_sweep(namespace, self._sweep_terminologies, page_size)
+
+    async def _sweep_terminologies(
+        self,
+        namespace: str | None = None,
+        page_size: int = 100,
+    ) -> dict:
         # Rows route to their own namespace's schema (CASE-628).
         ns_tables: dict[str, str] = {}
         synced = 0
@@ -1111,12 +1163,19 @@ class BatchSyncService:
         namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
-        """
-        Batch sync all templates from Template-Store to PostgreSQL.
+        """Batch sync all template metadata from Template-Store to PostgreSQL,
+        recorded as a sweep of ``namespace`` for as long as it runs.
 
         Returns:
             Dict with sync results (synced, failed, total)
         """
+        return await self._tracked_sweep(namespace, self._sweep_templates, page_size)
+
+    async def _sweep_templates(
+        self,
+        namespace: str | None = None,
+        page_size: int = 100,
+    ) -> dict:
         # Rows route to their own namespace's schema (CASE-628).
         ns_tables: dict[str, str] = {}
         synced = 0
@@ -1223,14 +1282,21 @@ class BatchSyncService:
         namespace: str | None = None,
         page_size: int = 1000,
     ) -> dict:
-        """
-        Batch sync all terms from Def-Store to PostgreSQL.
+        """Batch sync all terms from Def-Store to PostgreSQL, recorded as a
+        sweep of ``namespace`` for as long as it runs.
 
         Iterates through all terminologies and fetches their terms.
 
         Returns:
             Dict with sync results (synced, failed, total, complete)
         """
+        return await self._tracked_sweep(namespace, self._sweep_terms, page_size)
+
+    async def _sweep_terms(
+        self,
+        namespace: str | None = None,
+        page_size: int = 1000,
+    ) -> dict:
         run = _TermSync(namespace=namespace)
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -1453,8 +1519,8 @@ class BatchSyncService:
         namespace: str | None = None,
         page_size: int = 1000,
     ) -> dict:
-        """
-        Batch sync all term-relations from Def-Store to PostgreSQL.
+        """Batch sync all term-relations from Def-Store to PostgreSQL, recorded
+        as a sweep of ``namespace`` for as long as it runs.
 
         Uses the /ontology/term-relations/all endpoint for efficient pagination
         across all term_relations (no per-term iteration needed). With an
@@ -1466,6 +1532,15 @@ class BatchSyncService:
         Returns:
             Dict with sync results (synced, failed, total)
         """
+        return await self._tracked_sweep(
+            namespace, self._sweep_term_relations, page_size
+        )
+
+    async def _sweep_term_relations(
+        self,
+        namespace: str | None = None,
+        page_size: int = 1000,
+    ) -> dict:
         # Rows route to their own namespace's schema (CASE-628). An explicit
         # namespace ensures its table eagerly (so the table exists for SQL
         # readers even when there are zero relations); the namespace-less

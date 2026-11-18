@@ -45,6 +45,15 @@ def _derived(table, issue):
 def _batch_sync(active_jobs=()):
     bs = MagicMock()
     bs.list_jobs.return_value = list(active_jobs)
+    # The monitor asks the service whether the namespace is still syncing;
+    # these fixtures answer from the jobs they were given. (The rule itself,
+    # including the sweeps, is test_case_1427_untracked_sweeps.)
+    bs.is_namespace_sync_running.side_effect = lambda ns: any(
+        job.status in (BatchSyncStatus.PENDING, BatchSyncStatus.RUNNING)
+        and job.namespace in (ns, None)
+        for job in bs.list_jobs.return_value
+    )
+    bs.batch_sync_terminologies = AsyncMock(return_value={})
     bs.batch_sync_terms = AsyncMock(return_value={})
     bs.batch_sync_term_relations = AsyncMock(return_value={})
     bs.start_batch_sync = AsyncMock()
@@ -100,13 +109,15 @@ async def test_each_gap_gets_its_narrowest_repair_in_order():
     gap = _result(
         templates=[TemplateParity(template_value="T1", table_present=True,
                                   counts_match=False, expected_documents=3, actual_rows=1)],
-        derived=[_derived("terms", "terms_mismatch"),
+        derived=[_derived("terminologies", "terminologies_mismatch"),
+                 _derived("terms", "terms_mismatch"),
                  _derived("term_relations", "term_relations_mismatch"),
                  _derived("term_closure", "term_closure_stale")],
         views=[ViewParity(view_name="v", present=False)],
     )
     bs = _batch_sync()
     calls = []
+    bs.batch_sync_terminologies.side_effect = lambda **kw: calls.append("terminologies")
     bs.batch_sync_terms.side_effect = lambda **kw: calls.append("terms")
     bs.batch_sync_term_relations.side_effect = lambda **kw: calls.append("term_relations")
     bs.schema_manager.recreate_registered_views.side_effect = (
@@ -117,8 +128,11 @@ async def test_each_gap_gets_its_narrowest_repair_in_order():
     with p:
         await m.run_once()
         await m.run_once()
-    # the relation sync ends with a closure rebuild, so no separate one
-    assert calls == ["terms", "term_relations", "views", "template:T1"]
+    # the relation sync ends with a closure rebuild, so no separate one; the
+    # term sync walks the terminology listing, so terminologies go first
+    assert calls == [
+        "terminologies", "terms", "term_relations", "views", "template:T1",
+    ]
     bs.closure.rebuild.assert_not_awaited()
     bs.start_batch_sync.assert_awaited_once_with("T1", namespace=NS)
 
@@ -301,6 +315,7 @@ async def test_a_stale_closure_is_rebuilt_by_the_monitor(pg_pool):
         for target, value in (
             ("_fetch_namespace_templates", []),
             ("_fetch_foreign_templates", ([], [])),
+            ("_expected_active_terminologies", 0),
             ("_expected_active_terms", 2),
             ("_expected_active_relations", 1),
         ):
