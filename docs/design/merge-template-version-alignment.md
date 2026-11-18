@@ -71,7 +71,9 @@ templates as follows.
    placed nor is listed (`held_by_target_count`). One the archive wins under
    `overwrite` or `newer` writes only its head row, appended on top of the
    target's copy, so only that row pins a version; the rest of its archived
-   chain counts as `held_rows`.
+   chain counts as `held_rows`. An edge `drop_unresolved_edges` leaves out
+   (an endpoint this install does not hold) is decided before the
+   alignment and writes nothing, so it pins no version and is not counted.
 4. **History versions are not definitions to add.** An archive version that
    no arriving document pins (normally the source's retired history, or a
    draft nobody activated) is neither compared nor added, whatever its

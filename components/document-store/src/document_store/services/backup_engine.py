@@ -2422,11 +2422,14 @@ def _check_advance_answer(resp: Any, batch: list[str]) -> None:
 
 def _written_rows(
     chain: list[dict[str, Any]], held: set[str], head_only: set[str],
-    held_rows: dict[tuple[str, int], int] | None,
+    held_rows: dict[tuple[str, int], int] | None, dropped: set[str] = frozenset(),
 ) -> list[dict[str, Any]]:
-    """The rows of one archived chain the merge writes, counting the others
-    into ``held_rows``."""
+    """The rows of one archived chain the merge writes, counting the ones the
+    target holds back into ``held_rows``. A dropped chain writes nothing and
+    is not counted: the target does not hold it."""
     doc_id = str(chain[0].get("document_id")) if chain else ""
+    if doc_id in dropped:
+        return []
     if doc_id in held:
         _count_rows(chain, held_rows)
         return []
@@ -2451,17 +2454,19 @@ def _alignment_rows(
     held_rows: dict[tuple[str, int], int] | None = None,
     *,
     head_only: set[str] | None = None,
+    dropped: set[str] | None = None,
 ) -> tuple[dict[tuple[str, int], list[str]], dict[tuple[str, int], dict[str, int]]]:
     """Per (template, version) of the alignment: the documents with a row
     the merge writes pinned to it, and how many of those rows fill each
     field the target version lacks. A held document writes no row, and a
     head-only one only its head row (appended on top of the target's copy);
     the rows not written are counted per version into ``held_rows`` when
-    given."""
+    given. A dropped document (left out of the merge) is not counted at
+    all."""
     rows_per_version: dict[tuple[str, int], list[str]] = {}
     carrying: dict[tuple[str, int], dict[str, int]] = {}
     for chain in chains:
-        chain = _written_rows(chain, held, head_only or set(), held_rows)
+        chain = _written_rows(chain, held, head_only or set(), held_rows, dropped or set())
         for row in chain:
             template_id = str(row.get("template_id"))
             if template_id not in alignment:
@@ -2539,15 +2544,17 @@ def _alignment_report(
 def _pinned_versions(
     alignment: dict[str, Any], reader: ArchiveReader, src: str,
     doc_groups: dict[str, list[dict[str, Any]]] | None, held: set[str],
-    head_only: set[str] | None = None,
+    head_only: set[str] | None = None, dropped: set[str] | None = None,
 ) -> set[tuple[str, int]]:
     """The (archive template_id, version) pairs of aligned templates that the
-    rows the merge writes pin. A held document writes nothing; a head-only
-    one writes its head row."""
+    rows the merge writes pin. A held or dropped document writes nothing; a
+    head-only one writes its head row."""
     chains: Any = (
         doc_groups.values() if doc_groups is not None else iter_chains(reader, src)
     )
-    rows_per_version, _carrying = _alignment_rows(alignment, chains, held, head_only=head_only)
+    rows_per_version, _carrying = _alignment_rows(
+        alignment, chains, held, head_only=head_only, dropped=dropped,
+    )
     return set(rows_per_version)
 
 
@@ -5128,6 +5135,15 @@ class DirectRestoreEngine:
         definitions, planner = await self._plan_merge_definitions(
             archive_entities, tgt, remapper, policy=policy, dry_run=dry_run,
         )
+        # Every row the merge leaves out is decided before the alignment, so
+        # the alignment counts exactly the rows the merge writes: an edge
+        # dropped for an endpoint this install lacks pins no version.
+        dropped = _dropped_in(await self._report_unresolved_references(
+            reader, [src], remapper, referents, tgt,
+            drop_edges=drop_unresolved_edges,
+        ), src)
+        if dropped:
+            doc_groups = _drop_merge_rows(archive_entities, doc_groups, dropped)
         alignment_report: dict[str, Any] | None = None
         left_out: set[str] = set()
         if definitions.alignment:
@@ -5135,14 +5151,8 @@ class DirectRestoreEngine:
                 definitions, planner, reader, manifest, targets, src, tgt,
                 archive_entities, doc_groups, remapper,
                 dry_run=dry_run, on_clash=policy["on_clash"],
-                skip_documents=skip_documents, redirects=redirects,
+                skip_documents=skip_documents, redirects=redirects, dropped=dropped,
             )
-        dropped = await self._report_unresolved_references(
-            reader, [src], remapper, referents, tgt,
-            drop_edges=drop_unresolved_edges,
-        )
-        if dropped:
-            doc_groups = _drop_merge_rows(archive_entities, doc_groups, _dropped_in(dropped, src))
 
         # ---- Pass 2: everything else ---------------------------
         built, rewritten, chain_transform, doc_groups, rehash = await self._plan_merge_entities(
@@ -5267,6 +5277,7 @@ class DirectRestoreEngine:
         on_clash: str = "overwrite",
         skip_documents: bool = False,
         redirects: dict[str, str],
+        dropped: set[str] | None = None,
     ) -> tuple[dict[str, list[dict[str, Any]]] | None, dict[str, Any], set[str]]:
         """Settle the template alignment: decide the versions the arriving
         documents use, re-pin the documents onto the target versions, and
@@ -5285,8 +5296,12 @@ class DirectRestoreEngine:
         target's, so only that row pins a version. Which documents the target
         holds is what pass 2 finds, files and documents matched to a fixed
         point (_held_documents), so an identity fed by another archived
-        document or a file is compared by the id it has on the target. With
-        ``skip_documents`` no document arrives: every version is history."""
+        document or a file is compared by the id it has on the target.
+        ``dropped`` are documents the merge leaves out before this (edges to
+        an endpoint this install lacks): they write nothing and count
+        nowhere. With ``skip_documents`` no document arrives: every version
+        is history."""
+        dropped = dropped or set()
         if skip_documents:
             doc_groups = {}
         held: set[str] = set()
@@ -5298,7 +5313,7 @@ class DirectRestoreEngine:
             )
         pinned = await self._off_loop(
             _pinned_versions, definitions.alignment, reader, src, doc_groups, held,
-            head_only,
+            head_only, dropped,
         )
         kept_before = len(definitions.target_wins)
         planner.settle_alignment(definitions, pinned)
@@ -5312,7 +5327,7 @@ class DirectRestoreEngine:
         self._emit_kept(tgt, definitions.target_wins[kept_before:], phase)
         unplaceable, report = await self._off_loop(
             self._settle_alignment,
-            definitions.alignment, reader, src, doc_groups, held, head_only,
+            definitions.alignment, reader, src, doc_groups, held, head_only, dropped,
         )
         self._emit_alignment(tgt, report, dry_run=dry_run)
         self._enforce_definitions_gate(tgt, definitions, alignment_report=report)
@@ -6178,6 +6193,7 @@ class DirectRestoreEngine:
         doc_groups: dict[str, list[dict[str, Any]]] | None,
         held: set[str] | None = None,
         head_only: set[str] | None = None,
+        dropped: set[str] | None = None,
     ) -> tuple[set[str], dict[str, Any]]:
         """Finish the template alignment against the arriving documents.
 
@@ -6186,7 +6202,9 @@ class DirectRestoreEngine:
         it. Then every document with a row pinned to a version that maps
         nowhere is unplaceable: a document is placed whole or not at all.
         ``held`` are documents that will not arrive (the target holds them
-        and the clash policy skips them): their rows are not counted.
+        and the clash policy skips them): their rows are counted as held.
+        ``dropped`` are documents the merge leaves out for another reason
+        (an unresolved edge): their rows are not counted at all.
         Returns the unplaceable document ids and the report for the job.
         """
         chains: Any = (
@@ -6195,7 +6213,7 @@ class DirectRestoreEngine:
         held = held or set()
         held_rows: dict[tuple[str, int], int] = {}
         rows_per_version, carrying = _alignment_rows(
-            alignment, chains, held, held_rows, head_only=head_only,
+            alignment, chains, held, held_rows, head_only=head_only, dropped=dropped,
         )
 
         for (template_id, number), counts in carrying.items():
