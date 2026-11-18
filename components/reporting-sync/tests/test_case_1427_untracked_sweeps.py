@@ -361,6 +361,20 @@ class TestTheEventWorkerSharesTheQueue:
         monkeypatch.setattr(main, "_close_namespaces_being_deleted", AsyncMock())
         monkeypatch.setattr(main, "_initial_metadata_sync", AsyncMock())
 
+        # _start_postgres_work fills the app's state; pre-patched so the real
+        # pools and services are back when the test ends, and this one run of
+        # the startup cannot stand in for the suite's own lifespan.
+        for name in (
+            "postgres_pool", "read_pool", "scoped_reads", "deletions_closed",
+            "closing_task", "sync_task", "initial_sync_task", "parity_task",
+            "batch_sync_service", "parity_monitor", "search_service",
+        ):
+            monkeypatch.setattr(main.state, name, None, raising=False)
+        monkeypatch.setattr(
+            main.state, "sync_status",
+            SyncStatus(running=False, connected_to_nats=True, connected_to_postgres=True),
+        )
+
         launched: dict[str, object] = {}
 
         async def fake_run_worker(*_args: object, **kwargs: object) -> None:
@@ -368,7 +382,7 @@ class TestTheEventWorkerSharesTheQueue:
 
         monkeypatch.setattr(main, "run_sync_worker", fake_run_worker)
         bus = MagicMock()
-        monkeypatch.setattr(main.state, "bus", bus, raising=False)
+        monkeypatch.setattr(main.state, "bus", bus)
 
         main._start_postgres_work(MagicMock(), MagicMock())
         supervisor_name, launch = bus.supervise.call_args[0]
