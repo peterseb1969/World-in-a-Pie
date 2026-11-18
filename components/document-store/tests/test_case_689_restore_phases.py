@@ -177,9 +177,14 @@ class TestVerifyPhase:
     @pytest.mark.asyncio
     async def test_the_structure_only_precondition_records_no_verdict(self):
         """The cheap form runs before any write, where it gates the restore on
-        shape; it never becomes the verdict the job reports."""
-        eng = _engine(_reporting_stub(dict(CLEAN, counts_included=False)), [])
+        shape: the ask says structure only, and this phase feeds nothing into the
+        verdict the job reports — that one is asked with rows counted, after the
+        documents are in."""
+        reporting = _reporting_stub(dict(CLEAN, counts_included=False))
+        eng = _engine(reporting, [])
         await eng._check_reporting_precondition("ns1", drop_stale=False)
+
+        assert [c.kwargs["include_counts"] for c in reporting.parity.await_args_list] == [False]
         assert eng._reporting_verdicts == {}
 
     @pytest.mark.asyncio
