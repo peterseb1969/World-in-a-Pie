@@ -39,6 +39,39 @@ from .resolve import (
 logger = logging.getLogger(__name__)
 
 
+async def _visible_ambiguity(error: AmbiguousEntityError) -> AmbiguousEntityError | None:
+    """``error`` narrowed to the candidates the caller may read; None when it
+    may read none of them.
+
+    An ambiguity names its candidates: their canonical ids, the keys that
+    carried the value, their namespaces. For candidates in a namespace the
+    caller cannot read, that answer would confirm the entities exist and give
+    them away, while a value nothing bears answers as a miss. So hidden
+    candidates are dropped, and an ambiguity left with none is a miss. With
+    no identity in context (an internal call) the error is kept whole.
+    """
+    from .permissions import can_read
+
+    identity = get_current_identity()
+    if identity is None:
+        return error
+    readable: dict[str, bool] = {}
+    kept = []
+    for candidate in error.candidates:
+        namespace = candidate.get("namespace")
+        if namespace not in readable:
+            readable[namespace] = namespace is not None and await can_read(identity, namespace)
+        if readable[namespace]:
+            kept.append(candidate)
+    if not kept:
+        return None
+    if len(kept) == len(error.candidates):
+        return error
+    return AmbiguousEntityError(
+        error.identifier, error.entity_type, kept, len(kept), truncated=error.truncated,
+    )
+
+
 def _ambiguous_409(e: AmbiguousEntityError) -> HTTPException:
     """409 for an identifier that names several entities, with its candidates.
 
@@ -182,8 +215,8 @@ async def resolve_or_404(
 
         ns_prefix, _ = split_qualified_value(raw_id)
         try:
-            return await resolve_entity_id(
-                raw_id, entity_type, cast(str, ns_prefix), bypass_cache=bypass_cache
+            return await _resolve_visible(
+                raw_id, entity_type, cast(str, ns_prefix), bypass_cache
             )
         except AmbiguousEntityError as e:
             raise _ambiguous_409(e) from None
@@ -227,9 +260,7 @@ async def resolve_or_404(
         return raw_id
 
     try:
-        return await resolve_entity_id(
-            raw_id, entity_type, namespace, bypass_cache=bypass_cache
-        )
+        return await _resolve_visible(raw_id, entity_type, namespace, bypass_cache)
     except AmbiguousEntityError as e:
         raise _ambiguous_409(e) from None
     except EntityNotFoundError:
@@ -237,6 +268,20 @@ async def resolve_or_404(
             status_code=404,
             detail=await unresolved_detail(raw_id, entity_type, namespace, param_name),
         ) from None
+
+
+async def _resolve_visible(
+    raw_id: str, entity_type: str, namespace: str, bypass_cache: bool,
+) -> str:
+    """resolve_entity_id, with an ambiguity among entities the caller cannot
+    read raised as the miss it must read as (see _visible_ambiguity)."""
+    try:
+        return await resolve_entity_id(raw_id, entity_type, namespace, bypass_cache=bypass_cache)
+    except AmbiguousEntityError as e:
+        visible = await _visible_ambiguity(e)
+        if visible is None:
+            raise EntityNotFoundError(raw_id, entity_type, namespace) from None
+        raise visible from None
 
 
 async def _resolution_namespace(
@@ -308,7 +353,12 @@ async def resolve_term_by_fields_or_404(
             ),
         ) from None
     except AmbiguousEntityError as e:
-        raise _ambiguous_409(e) from None
+        if (visible := await _visible_ambiguity(e)) is not None:
+            raise _ambiguous_409(visible) from None
+        raise HTTPException(
+            status_code=404,
+            detail=await field_unresolved_detail(value, terminology, namespace, param_name),
+        ) from None
     except EntityNotFoundError:
         raise HTTPException(
             status_code=404,
@@ -527,13 +577,19 @@ async def _resolve_string_door(
             bypass_cache=bypass_cache, strict=False, ambiguous=ambiguous_by_ns[item_ns],
         )
     ambiguous: dict[int, AmbiguousEntityError] = {}
+    visible_by_key: dict[tuple[str, str], AmbiguousEntityError | None] = {}
     warned: set[tuple[str, str]] = set()
     for index, item, raw_id, item_ns in string_door:
         resolved = resolved_by_ns[item_ns].get(raw_id)
         if resolved is not None:
             write_back(item, resolved)
         elif (error := ambiguous_by_ns[item_ns].get(raw_id)) is not None:
-            ambiguous[index] = error
+            # An ambiguity among entities the caller cannot read is a miss.
+            key = (item_ns, raw_id)
+            if key not in visible_by_key:
+                visible_by_key[key] = await _visible_ambiguity(error)
+            if (visible := visible_by_key[key]) is not None:
+                ambiguous[index] = visible
         elif (item_ns, raw_id) not in warned:
             warned.add((item_ns, raw_id))
             logger.warning(
@@ -562,8 +618,11 @@ async def _resolve_field_door(
             write_back(item, resolved)
         except AmbiguousEntityError as error:
             # A subclass of the miss: caught first, so it is reported as
-            # ambiguous rather than passed on as a value nothing bears.
-            ambiguous[index] = error
+            # ambiguous rather than passed on as a value nothing bears —
+            # unless the caller can read none of the candidates, when it is
+            # the miss it must read as.
+            if (visible := await _visible_ambiguity(error)) is not None:
+                ambiguous[index] = visible
         except EntityNotFoundError:
             logger.warning(
                 "Could not resolve %s '%s' in namespace '%s' — passing through",
@@ -652,3 +711,56 @@ class AmbiguousItems:
         response.results = results
         response.total += len(self.held) + len(self.skipped)
         return response
+
+
+class SubmittedIds:
+    """The identifiers a bulk request's items carried before resolve_bulk_ids
+    rewrote them in place, so a miss can be answered as submitted.
+
+    A not_found item answers an identifier that names nothing the caller can
+    see, and must read the same whether the entity is unknown or sits in a
+    namespace the caller cannot read. resolve_bulk_ids resolves a qualified
+    identifier (``ns:VALUE``) by its own prefix, readable or not, so a hidden
+    entity's item reaches the door holding its canonical id while an unknown
+    one keeps the submitted text; a door that echoes the item's id would give
+    the canonical id away. ``answer`` puts the submitted spelling back in
+    every not_found result: in each string field holding the resolved id and
+    inside the error text. Results the caller may see (written, forbidden,
+    any other refusal) keep the canonical id.
+
+    Take it before resolving, over the request's own item list, and pass the
+    final response (after AmbiguousItems.answer, when the door uses it): a
+    result's index is the item's position in the request.
+    """
+
+    def __init__(self, items: list, *fields: str):
+        self._items = items
+        self._fields = fields
+        self._submitted = [{field: _field_value(item, field) for field in fields} for item in items]
+
+    def answer(self, response: Any) -> Any:
+        """``response`` with each not_found result naming its ids as submitted."""
+        for result in response.results:
+            if getattr(result, "error_code", None) != "not_found":
+                continue
+            if not 0 <= result.index < len(self._items):
+                continue
+            item = self._items[result.index]
+            for field, submitted in self._submitted[result.index].items():
+                resolved = _field_value(item, field)
+                if isinstance(submitted, str) and isinstance(resolved, str) and resolved != submitted:
+                    _replace_in_result(result, resolved, submitted)
+        return response
+
+
+def _field_value(item: Any, field: str) -> Any:
+    return item.get(field) if isinstance(item, dict) else getattr(item, field, None)
+
+
+def _replace_in_result(result: Any, resolved: str, submitted: str) -> None:
+    for name in type(result).model_fields:
+        value = getattr(result, name)
+        if value == resolved:
+            setattr(result, name, submitted)
+        elif name == "error" and isinstance(value, str) and resolved in value:
+            setattr(result, name, value.replace(resolved, submitted))

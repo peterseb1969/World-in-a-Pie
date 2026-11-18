@@ -168,25 +168,31 @@ async def test_an_id_whose_rows_are_gone_answers_as_a_missing_one(
     assert ghost.text.replace(ghost_id, "<id>") == missing.text.replace(missing_id, "<id>")
 
 
-# A key with several namespaces derives none, so a qualified id is resolved by
-# its own prefix: a hidden one resolves to its canonical id, an unknown one
-# passes through as submitted. Each door must still answer both alike.
-MULTI_NS_KEY = {"X-API-Key": "test_xns_reader_key"}  # 'wip' and 'xns-closed'; not 'test-ns'
-QUALIFIED_NS = "test-ns"
+# A qualified id is resolved by its own prefix, whatever namespace the key
+# gives: a hidden one resolves to its canonical id, an unknown one passes
+# through as submitted. Each door must still answer both alike, for a key with
+# several namespaces (which derives none, so the bulk doors skip resolution)
+# and for a single-namespace app key (which derives one, so they resolve).
+QUALIFIED_KEYS = {
+    "multi-namespace": {"X-API-Key": "test_xns_reader_key"},  # 'wip' and 'xns-closed'
+    "single-namespace": APP_KEY,  # 'wip' only
+}
+QUALIFIED_NS = "test-ns"  # readable by neither key
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("key", list(QUALIFIED_KEYS))
 @pytest.mark.parametrize("door", list(DOORS))
 async def test_a_hidden_qualified_id_answers_as_an_unknown_one(
-    client: AsyncClient, auth_headers: dict, door: str,
+    client: AsyncClient, auth_headers: dict, door: str, key: str,
 ):
     hidden_tid = await _template(client, auth_headers, QUALIFIED_NS)
     hidden_value = (await client.get(f"{API}/{hidden_tid}", headers=auth_headers)).json()["value"]
     hidden_id = f"{QUALIFIED_NS}:{hidden_value}"
     missing_id = f"{QUALIFIED_NS}:NOPE_{uuid.uuid4().hex[:8].upper()}"
 
-    hidden = await _call(client, MULTI_NS_KEY, door, hidden_id)
-    missing = await _call(client, MULTI_NS_KEY, door, missing_id)
+    hidden = await _call(client, QUALIFIED_KEYS[key], door, hidden_id)
+    missing = await _call(client, QUALIFIED_KEYS[key], door, missing_id)
 
     assert missing.status_code not in (401, 403), missing.text  # the key is in effect
     assert hidden_tid not in hidden.text, hidden.text  # the canonical id is not given away

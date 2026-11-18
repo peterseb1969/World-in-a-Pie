@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
     AmbiguousItems,
+    SubmittedIds,
     can_read,
     check_entity_permission,
     check_namespace_permission,
@@ -478,6 +479,8 @@ async def update_templates(
     The template_id is stable across versions — updates create a new version
     document with the same template_id but incremented version number.
     """
+    # A miss names each id as submitted, so a hidden template reads as unknown.
+    submitted = SubmittedIds(items, "template_id")
     # A value several templates bear is answered per item as ambiguous.
     held = AmbiguousItems(
         items, await resolve_bulk_ids(
@@ -535,11 +538,11 @@ async def update_templates(
         await _item_result(i, item.template_id, "update", update_one(i, item))
         for i, item in enumerate(items)
     ]
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.get("/{template_id}/dependencies", response_model=TemplateDependencies)
@@ -592,6 +595,8 @@ async def delete_templates(
     none; force does not apply to it. Templates that other templates extend
     cannot be deleted either way.
     """
+    # A miss names each id as submitted, so a hidden template reads as unknown.
+    submitted = SubmittedIds(items, "id")
     # A value several templates bear is answered per item as ambiguous.
     held = AmbiguousItems(
         items, await resolve_bulk_ids(
@@ -742,11 +747,11 @@ async def delete_templates(
         await _item_result(i, item.id, "delete", delete_one(i, item))
         for i, item in enumerate(items)
     ]
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.post("/{template_id}/validate", response_model=ValidateTemplateResponse)

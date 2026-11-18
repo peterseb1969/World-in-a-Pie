@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
     AmbiguousItems,
+    SubmittedIds,
     UserIdentity,
     check_entity_permission,
     check_namespace_permission,
@@ -207,6 +208,8 @@ async def update_terminologies(
     If a value changes, a synonym will be added in the Registry to allow
     lookups by both old and new values.
     """
+    # A miss names each id as submitted, so a hidden terminology reads as unknown.
+    submitted = SubmittedIds(items, "terminology_id")
     # A value several terminologies bear is answered per item as ambiguous.
     held = AmbiguousItems(
         items, await resolve_bulk_ids(
@@ -249,11 +252,11 @@ async def update_terminologies(
                 results.append(BulkResultItem(index=i, status="updated", id=item.terminology_id))
         except (ValueError, RegistryError) as e:
             results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, **error_fields(e)))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.get(
@@ -423,6 +426,8 @@ async def delete_terminologies(
     references the terminology, or when that cannot be verified; force does
     not apply to it.
     """
+    # A miss names each id as submitted, so a hidden terminology reads as unknown.
+    submitted = SubmittedIds(items, "id")
     # A value several terminologies bear is answered per item as ambiguous.
     held = AmbiguousItems(
         items, await resolve_bulk_ids(
@@ -484,8 +489,8 @@ async def delete_terminologies(
             # RegistryEntryNotRemovedError: the terminology IS deleted; its
             # Registry entry is not — error_fields says so with its own code.
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))

@@ -19,7 +19,13 @@ from wip_auth import (
     resolve_accessible_namespaces,
     resolve_namespace_filter,
 )
-from wip_auth.fastapi_helpers import AmbiguousItems, miss_detail, resolve_bulk_ids, resolve_or_404
+from wip_auth.fastapi_helpers import (
+    AmbiguousItems,
+    SubmittedIds,
+    miss_detail,
+    resolve_bulk_ids,
+    resolve_or_404,
+)
 from wip_auth.registry_client import DependencyUnavailableError
 
 from ..models.api_models import (
@@ -397,6 +403,8 @@ async def update_files_metadata(
 ):
     """Update metadata for one or more files."""
     # A value several files bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden file reads as unknown.
+    submitted = SubmittedIds(items, "file_id")
     held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "file_id", "file", namespace=namespace, bypass_cache=True
     ))
@@ -426,11 +434,11 @@ async def update_files_metadata(
         except _ITEM_FAILURES as e:
             results.append(BulkResultItem(index=i, status="error", id=item.file_id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.delete(
@@ -448,6 +456,8 @@ async def delete_files(
 ):
     """Soft-delete one or more files."""
     # A value several files bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden file reads as unknown.
+    submitted = SubmittedIds(items, "id")
     held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "file", namespace=namespace, bypass_cache=True
     ))
@@ -477,11 +487,11 @@ async def delete_files(
         except _ITEM_FAILURES as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.post(
@@ -520,6 +530,8 @@ async def reactivate_files(
 ):
     """Reactivate one or more soft-deleted files."""
     # A value several files bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden file reads as unknown.
+    submitted = SubmittedIds(items, "id")
     held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "file", namespace=namespace, bypass_cache=True
     ))
@@ -564,11 +576,11 @@ async def reactivate_files(
                 outage = e
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.get(

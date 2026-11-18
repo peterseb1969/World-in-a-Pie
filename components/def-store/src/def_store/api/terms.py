@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
     AmbiguousItems,
+    SubmittedIds,
     UserIdentity,
     can_read,
     check_entity_permission,
@@ -517,6 +518,8 @@ async def update_terms(
     # parent_term_id is persisted too; what does not resolve is refused per
     # item by the service. A value several terms bear is answered per item
     # as ambiguous.
+    # A miss names each id as submitted, so a hidden term reads as unknown.
+    submitted = SubmittedIds(items, "term_id", "parent_term_id")
     held = AmbiguousItems(
         items,
         await resolve_bulk_ids(
@@ -579,11 +582,11 @@ async def update_terms(
             ))
         except (ValueError, RegistryError) as e:
             results.append(BulkResultItem(index=i, status="error", id=item.term_id, **error_fields(e)))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.post(
@@ -617,6 +620,8 @@ async def deprecate_terms(
     # as a durable pointer, and a stale cached id would pin a dead
     # reference into the term record.
     # A value several terms bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden term reads as unknown.
+    submitted = SubmittedIds(items, "term_id", "replaced_by_term_id")
     held = AmbiguousItems(
         items,
         await resolve_bulk_ids(
@@ -661,11 +666,11 @@ async def deprecate_terms(
                 results.append(BulkResultItem(index=i, status="updated", id=item.term_id))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.term_id, **error_fields(e)))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.delete(
@@ -699,6 +704,8 @@ async def delete_terms(
     # Write door: resolution must ask Registry, not the read cache — the
     # resolved id selects which term gets deleted. A value several terms
     # bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden term reads as unknown.
+    submitted = SubmittedIds(items, "id")
     held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "term", namespace=namespace,
         terminology=terminology, bypass_cache=True,
@@ -745,11 +752,11 @@ async def delete_terms(
             ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.post(
@@ -780,6 +787,8 @@ async def merge_terms(
     from wip_auth import resolve_bulk_ids
     # Write door: both ids are persisted (replaced_by_term_id, merged entry).
     # A value several terms bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden term reads as unknown.
+    submitted = SubmittedIds(items, "survivor_term_id", "absorbed_term_id")
     held = AmbiguousItems(items, *[
         await resolve_bulk_ids(
             items, field, "term", namespace=namespace,
@@ -826,11 +835,11 @@ async def merge_terms(
         if collisions:
             details["name_collisions"] = collisions
         results.append(BulkResultItem(index=i, status="updated", id=item.survivor_term_id, details=details))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 def _merge_refusal(item: Any, refused: dict[str, tuple[str, str]]) -> tuple[str, str] | None:

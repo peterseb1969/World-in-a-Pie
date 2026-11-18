@@ -8,6 +8,7 @@ from pymongo.errors import OperationFailure
 
 from wip_auth import (
     AmbiguousItems,
+    SubmittedIds,
     UserIdentity,
     check_namespace_permission,
     implied_namespace,
@@ -258,6 +259,8 @@ async def patch_documents(
     # left as-is so the per-item flow returns 'not_found' rather than aborting
     # the whole batch. bypass_cache: write door. A value several documents
     # bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden document reads as unknown.
+    submitted = SubmittedIds(items, "document_id")
     held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "document_id", "document", namespace=namespace, bypass_cache=True
     ))
@@ -282,11 +285,11 @@ async def patch_documents(
 
     rows = await _patch_allowed(items, allowed, results)
     await asyncio.sleep(get_throttle_delay())
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=rows, total=len(items),
         succeeded=sum(1 for r in rows if r.status != "error"),
         failed=sum(1 for r in rows if r.status == "error"),
-    ))
+    )))
 
 
 class _BatchGate(NamedTuple):
@@ -977,6 +980,8 @@ async def delete_documents(
 ):
     """Delete one or more documents."""
     # A value several documents bear is answered per item as ambiguous.
+    # A miss names each id as submitted, so a hidden document reads as unknown.
+    submitted = SubmittedIds(items, "id")
     held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "document", namespace=namespace, bypass_cache=True
     ))
@@ -1048,11 +1053,11 @@ async def delete_documents(
                 registry_down = e
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    ))
+    )))
 
 
 @router.post(

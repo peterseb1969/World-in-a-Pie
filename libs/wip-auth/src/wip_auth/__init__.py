@@ -49,6 +49,7 @@ from .dependencies import (
 from .fastapi_helpers import (
     AmbiguousItem,
     AmbiguousItems,
+    SubmittedIds,
     field_unresolved_detail,
     miss_detail,
     resolution_miss,
@@ -177,6 +178,7 @@ __all__ = [
     "OIDCProvider",
     "RegistryUnavailableError",
     "RejectUnknownQueryParamsMiddleware",
+    "SubmittedIds",
     "TermResolutionError",
     "TrustedHeaderProvider",
     # Models

@@ -19,7 +19,7 @@ from wip_auth import fastapi_helpers
 from wip_auth.resolve import AmbiguousEntityError
 
 AMBIGUOUS = "TWIN"
-CANDIDATES = [{"entry_id": "T-1", "matched_via": "synonym"}, {"entry_id": "T-2", "matched_via": "synonym"}]
+CANDIDATES = [{"entry_id": "T-1", "namespace": "wip", "matched_via": "synonym"}, {"entry_id": "T-2", "namespace": "wip", "matched_via": "synonym"}]
 
 
 @pytest.fixture

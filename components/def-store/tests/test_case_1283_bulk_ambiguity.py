@@ -26,8 +26,8 @@ AMBIGUOUS = "crimson"
 def ambiguous_value(monkeypatch):
     real = fastapi_helpers.resolve_term_by_fields
     candidates = [
-        {"entry_id": "T-1", "matched_via": "synonym"},
-        {"entry_id": "T-2", "matched_via": "synonym"},
+        {"entry_id": "T-1", "namespace": "wip", "matched_via": "synonym"},
+        {"entry_id": "T-2", "namespace": "wip", "matched_via": "synonym"},
     ]
 
     async def resolve(value, terminology, namespace, *, bypass_cache=False):
