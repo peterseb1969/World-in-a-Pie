@@ -162,22 +162,24 @@ class BatchSyncService:
         # sweeps of it are in flight, so a parity check can tell "still
         # syncing" from "empty". A count rather than a mark: two sweeps of one
         # scope do overlap — the startup backfill runs the template-metadata
-        # sweep beside the terminology/term/relation chain — and the scope has
-        # to stay marked until the last of them ends.
+        # sweep beside the terminology/term/relation chain, and holds the scope
+        # across each step's own waits — and the scope has to stay marked until
+        # the last of them ends.
         self._definitions_sweeps: Counter[str | None] = Counter()
 
     def is_namespace_sync_running(self, namespace: str) -> bool:
         """Whether this namespace is still being synced.
 
         A pending or running document job whose scope covers it, a definitions
-        sweep of it, or a term-closure rebuild for it that is queued or in the
-        transaction. The instance-wide scope (``namespace=None``) covers every
-        namespace, as in _find_active_job's overlap rule. Parity asks this so a
-        row the sync has not written yet reads as "still syncing", never as a
-        gap the operator has to chase: a sweep leaves no job record for a check
-        to find, so this is where that knowledge lives. A closure rebuild that
-        has failed every attempt since it was queued is not counted — that is a
-        gap to name, not progress to wait for.
+        sweep of it (or of everything), a backfill step of it still retrying, or
+        a term-closure rebuild for it that is queued or in the transaction. The
+        instance-wide scope (``namespace=None``) covers every namespace, as in
+        _find_active_job's overlap rule. Parity asks this so a row the sync has
+        not written yet reads as "still syncing", never as a gap the operator
+        has to chase: a sweep leaves no job record for a check to find, so this
+        is where that knowledge lives. A closure rebuild that has failed every
+        attempt since it was queued is not counted — that is a gap to name, not
+        progress to wait for.
         """
         scopes = (namespace, None)
         for job in self._jobs.values():
@@ -188,6 +190,25 @@ class BatchSyncService:
         if self.closure.has_pending(namespace):
             return True
         return any(sweep in scopes for sweep in self._definitions_sweeps)
+
+    @contextlib.asynccontextmanager
+    async def definitions_scope_held(self, namespace: str | None) -> AsyncIterator[None]:
+        """Record a definitions scope as being written for the block's duration.
+
+        A sweep holds it for its own body (see _tracked_sweep). A caller that
+        retries holds it across the whole step: between two attempts the tables
+        are half-filled and no listing has been proved complete, which is the
+        state a parity check must read as still syncing, not as a gap.
+        """
+        self._definitions_sweeps[namespace] += 1
+        try:
+            yield
+        finally:
+            left = self._definitions_sweeps[namespace] - 1
+            if left > 0:
+                self._definitions_sweeps[namespace] = left
+            else:
+                del self._definitions_sweeps[namespace]
 
     async def _tracked_sweep(
         self,
@@ -203,15 +224,8 @@ class BatchSyncService:
         batch-all's pre-sync are all covered by the sweeps themselves, and a
         new caller is covered the day it is written.
         """
-        self._definitions_sweeps[namespace] += 1
-        try:
+        async with self.definitions_scope_held(namespace):
             return await sweep(namespace=namespace, page_size=page_size)
-        finally:
-            left = self._definitions_sweeps[namespace] - 1
-            if left > 0:
-                self._definitions_sweeps[namespace] = left
-            else:
-                del self._definitions_sweeps[namespace]
 
     async def _fetch_template(self, template_id: str) -> dict[str, Any] | None:
         """Fetch template from Template Store."""

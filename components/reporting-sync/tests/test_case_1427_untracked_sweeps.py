@@ -319,6 +319,87 @@ class TestTheMonitorAsksTheService:
         assert asked == [NS]
 
 
+class TestTheBackfillWaitsAreCovered:
+    """A backfill step is more than its sweep: it waits for its source and backs
+    off when a listing came back short. Tracking only the sweep body left those
+    windows — the longer half of a slow start — reading as a settled reporting
+    layer, and a restore's 3-second poll lands in one often enough to record a
+    gap that was never one."""
+
+    @pytest.mark.asyncio
+    async def test_a_step_holds_its_scope_across_the_health_check_and_the_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reporting_sync import main
+
+        service = _service()
+        marks: list[bool] = []
+        slept: list[float] = []
+
+        async def healthy(_url: str) -> bool:
+            marks.append(service.is_namespace_sync_running(NS))
+            return True
+
+        async def record_sleep(delay: float) -> None:
+            slept.append(delay)
+            marks.append(service.is_namespace_sync_running(NS))
+            await asyncio.sleep(0)
+
+        monkeypatch.setattr(main, "_source_healthy", healthy)
+        monkeypatch.setattr(main, "_backfill_sleep", record_sleep)
+
+        attempts: dict[str, int] = {}
+
+        def incomplete_once(body: str):
+            async def fake(**_kwargs: object) -> dict:
+                attempts[body] = attempts.get(body, 0) + 1
+                return {"synced": 0, "failed": 0, "complete": attempts[body] > 1}
+
+            return fake
+
+        for _, body in _SWEEPS:
+            monkeypatch.setattr(service, body, incomplete_once(body))
+
+        await main._initial_metadata_sync(service)
+
+        assert len(slept) == len(_SWEEPS), "every step retried once, as its stub is written"
+        assert marks and set(marks) == {True}, "no wait in a step reads as settled"
+        assert service.is_namespace_sync_running(NS) is False
+
+    @pytest.mark.asyncio
+    async def test_the_scope_is_released_when_the_body_raises(self) -> None:
+        service = _service()
+
+        with pytest.raises(RuntimeError):
+            async with service.definitions_scope_held(None):
+                raise RuntimeError("the source would not answer")
+
+        assert service.is_namespace_sync_running(NS) is False
+
+    def test_a_held_scope_stays_held_while_another_sweep_shares_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The step's hold and its sweep's mark are the same scope: the sweep
+        finishing must not uncover the scope the step is still retrying on."""
+        service = _service()
+        marks: list[bool] = []
+
+        async def done(**_kwargs: object) -> dict:
+            return {"synced": 0, "failed": 0, "complete": True}
+
+        monkeypatch.setattr(service, "_sweep_terms", done)
+
+        async def scenario() -> None:
+            async with service.definitions_scope_held(NS):
+                await service.batch_sync_terms(namespace=NS)
+                marks.append(service.is_namespace_sync_running(NS))
+            marks.append(service.is_namespace_sync_running(NS))
+
+        asyncio.run(scenario())
+
+        assert marks == [True, False]
+
+
 class TestTheEventWorkerSharesTheQueue:
     """A term event is the dominant producer of a closure rebuild, and it lands
     on the worker's maintainer. Parity asks the batch-sync service, so the two

@@ -561,24 +561,23 @@ async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
     a while (a database restarting behind it). The def-store steps run in
     order, as terms and relations build on terminologies; the template-store
     step runs alongside, so either source being down never blocks the other.
+
+    A step holds the definitions scope for its whole duration, waits included:
+    while it backs off, the tables hold what the attempts so far wrote, and a
+    parity check landing there has to hear "still syncing", not a proven gap.
     """
+    async def step(label: str, source_url: str, sweep: Callable[[], Awaitable[dict[str, Any]]]) -> None:
+        async with batch_sync_service.definitions_scope_held(None):
+            await _backfill_until_complete(label, source_url, sweep)
+
     async def def_store_chain() -> None:
-        await _backfill_until_complete(
-            "terminology", settings.def_store_url, batch_sync_service.batch_sync_terminologies
-        )
-        await _backfill_until_complete(
-            "term", settings.def_store_url, batch_sync_service.batch_sync_terms
-        )
-        await _backfill_until_complete(
-            "term-relation", settings.def_store_url, batch_sync_service.batch_sync_term_relations
-        )
+        await step("terminology", settings.def_store_url, batch_sync_service.batch_sync_terminologies)
+        await step("term", settings.def_store_url, batch_sync_service.batch_sync_terms)
+        await step("term-relation", settings.def_store_url, batch_sync_service.batch_sync_term_relations)
 
     await asyncio.gather(
         def_store_chain(),
-        _backfill_until_complete(
-            "template metadata", settings.template_store_url,
-            batch_sync_service.batch_sync_templates,
-        ),
+        step("template metadata", settings.template_store_url, batch_sync_service.batch_sync_templates),
     )
 
 
