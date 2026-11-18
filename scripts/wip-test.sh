@@ -181,12 +181,26 @@ _host_port() {
 # does not exist. Ports are published on loopback only: MongoDB and NATS
 # accept unauthenticated clients, and a 0.0.0.0 binding would put them on
 # the LAN for as long as they run.
+#
+# Their logs go to a size-capped file, not the host journal: the test MongoDB
+# logs every collection create and drop, the suites drop collections all the
+# time, and on a podman machine that was most of the VM's journal. The file
+# still answers `podman logs` after a failed run. A container left from
+# before, still logging to the journal, is created again.
+_TEST_LOG_DRIVER="json-file"
+case "$(basename "$CONTAINER_CLI")" in podman*) _TEST_LOG_DRIVER="k8s-file" ;; esac
 _start_container() {
     local name="$1"
     shift
     echo "  Starting $name..."
+    local driver
+    driver=$("$CONTAINER_CLI" inspect --format '{{.HostConfig.LogConfig.Type}}' "$name" 2>/dev/null || true)
+    if [ -n "$driver" ] && [ "$driver" != "$_TEST_LOG_DRIVER" ]; then
+        "$CONTAINER_CLI" rm -f "$name" >/dev/null 2>&1 || true
+    fi
     "$CONTAINER_CLI" start "$name" >/dev/null 2>&1 || \
-        "$CONTAINER_CLI" run -d --name "$name" --label "wip.test.clone=$REPO_ROOT" "$@" >/dev/null
+        "$CONTAINER_CLI" run -d --name "$name" --label "wip.test.clone=$REPO_ROOT" \
+            --log-driver "$_TEST_LOG_DRIVER" --log-opt max-size=10m "$@" >/dev/null
 }
 
 _ensure_mongo() {

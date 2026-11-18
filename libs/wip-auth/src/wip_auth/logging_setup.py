@@ -16,12 +16,18 @@ those lines would bury everything else.
 Call it at import time in a service's `main.py`, before the lifespan runs.
 A root logger that already has a handler (a test runner's capture, a host
 that configured logging itself) keeps its handlers and level.
+
+`configure_logging()` also quiets the health probes (`quiet_health_probes`):
+a container healthcheck asks `/ready` or `/health` every few seconds, and
+uvicorn's access log wrote a line for each, which buried real requests and
+filled the host's journal. A probe that fails is still logged.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_LEVEL_ENV = "WIP_LOG_LEVEL"
@@ -43,6 +49,40 @@ def _level_from_env(default: int) -> int:
     return default
 
 
+# A health probe's path: /health or /ready, bare or under /api/<service>/,
+# with any query. Deeper paths (/health/integrity) are real checks and stay.
+_PROBE_PATH = re.compile(r"^(?:/api/[^/?]+)?/(?:health|ready)/?(?:\?.*)?$")
+_PROBE_METHODS = frozenset({"GET", "HEAD"})
+
+
+class HealthProbeFilter(logging.Filter):
+    """Drops uvicorn access lines of successful health probes.
+
+    uvicorn's access record carries (client, method, path, http version,
+    status) as its args; anything else passes untouched."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 5:
+            return True
+        _client, method, path, _version, status = args[:5]
+        try:
+            ok = int(status) < 400
+        except (TypeError, ValueError):
+            return True
+        return not (
+            ok and str(method) in _PROBE_METHODS and _PROBE_PATH.match(str(path))
+        )
+
+
+def quiet_health_probes() -> None:
+    """Keep successful health probes out of uvicorn's access log
+    (idempotent). A probe that answers 4xx or 5xx is still logged."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, HealthProbeFilter) for f in access.filters):
+        access.addFilter(HealthProbeFilter())
+
+
 def configure_logging(default_level: int = logging.INFO) -> None:
     """Configure the root logger for a service process (idempotent)."""
     root = logging.getLogger()
@@ -54,3 +94,4 @@ def configure_logging(default_level: int = logging.INFO) -> None:
     floor = max(root.level, logging.WARNING)
     for name in _PER_REQUEST_LOGGERS:
         logging.getLogger(name).setLevel(floor)
+    quiet_health_probes()

@@ -5982,6 +5982,12 @@ def main():
             port=port,
             log_level=mcp.settings.log_level.lower(),
         )
+        # After uvicorn.Config, which sets up uvicorn's loggers: the
+        # container healthcheck asks /health every few seconds, and a line
+        # per probe buries real requests and fills the host's journal. The
+        # HTTP transport carries wip-auth already (rate limiting).
+        from wip_auth.logging_setup import quiet_health_probes
+        quiet_health_probes()
         server = uvicorn.Server(config)
         import anyio
         anyio.run(server.serve)

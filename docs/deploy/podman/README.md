@@ -283,6 +283,30 @@ podman machine set --memory 4096
 podman machine start
 ```
 
+**Keep the host journal quiet** (a podman machine, or a Linux host): run once
+per host, again whenever it is recreated.
+
+```bash
+scripts/podman-machine-tune.sh --measure          # read-only: journal lines per 10 min, by source
+scripts/podman-machine-tune.sh                    # podman service to --log-level=warn
+scripts/podman-machine-tune.sh --journal-max 2G   # also cap the journal (SystemMaxUse)
+```
+
+The podman API service runs at `--log-level=info` by default, and every
+container healthcheck copies that level: four lines per probe, several
+thousand per 10 minutes for one stack. The script sets the service to
+`warn` with a systemd drop-in (user and system units). A healthcheck keeps
+the level its container started with, so the script lists the containers
+still at `info`; restart them, or recreate the install. The services
+themselves no longer log successful `/ready` and `/health` probes.
+
+Size `--journal-max` from `--measure` taken after that, for the days of
+history you want to keep: at the default 4 GB and a noisy host, the journal
+can rotate an incident out within hours. A Gitea runner on the same host
+logs every job container to the journal too; adding
+`--log-driver k8s-file --log-opt max-size=10m` to `container.options` in the
+runner's `config.yaml` keeps them out.
+
 ---
 
 ## What this guide intentionally leaves out

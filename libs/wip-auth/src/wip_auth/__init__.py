@@ -73,7 +73,7 @@ from .identity import (
 from .key_file_watch import APIKeysFileWatcher, ConfigFileWatcher, content_hash
 from .key_sync import KeySyncService
 from .liveness import install_liveness
-from .logging_setup import configure_logging
+from .logging_setup import configure_logging, quiet_health_probes
 from .middleware import AuthMiddleware, create_auth_middleware, public_path_set
 from .models import APIKeyRecord, AuthResult, UserIdentity
 from .openapi import declare_api_key_security
@@ -220,6 +220,7 @@ __all__ = [
     "optional_identity",
     "permission_sufficient",
     "privileged_scope_error",
+    "quiet_health_probes",
     "require_admin",
     "require_admin_identity",
     "require_api_key",
