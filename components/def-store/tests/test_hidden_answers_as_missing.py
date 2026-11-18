@@ -259,3 +259,52 @@ async def test_a_hidden_qualified_id_answers_as_an_unknown_one(
     assert hidden.status_code == missing.status_code, (hidden.text, missing.text)
     assert _blank(hidden.text, hidden_ids) == _blank(missing.text, missing_ids)
 
+
+
+# A pointer inside a bulk item (a parent, a replacement, a relation endpoint)
+# names a hidden term by its qualified id. The pointer is refused either way;
+# the refusal must read the same as for a pointer naming nothing, and never
+# carry the canonical id. The item's own term is visible to the key.
+POINTER_DOORS = {
+    "update terms: parent": ("PUT", "/terms", [{"term_id": "{own}", "parent_term_id": "{term}"}]),
+    "deprecate terms: replacement": (
+        "POST", "/terms/deprecate", [{"term_id": "{own}", "replaced_by_term_id": "{term}", "reason": "x"}],
+    ),
+    "create terms: parent": ("POST", "/terminologies/{own_tid}/terms", [{"value": "c", "parent_term_id": "{term}"}]),
+    "create relations: target": (
+        "POST", "/ontology/term-relations?namespace=wip",
+        [{"source_term_id": "{own}", "target_term_id": "{term}", "relation_type": "is_a"}],
+    ),
+    "create relations: source": (
+        "POST", "/ontology/term-relations?namespace=wip",
+        [{"source_term_id": "{term}", "target_term_id": "{own}", "relation_type": "is_a"}],
+    ),
+    "delete relations: target": (
+        "DELETE", "/ontology/term-relations?namespace=wip",
+        [{"source_term_id": "{own}", "target_term_id": "{term}", "relation_type": "is_a"}],
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("door", list(POINTER_DOORS))
+async def test_a_hidden_term_named_by_a_pointer_answers_as_an_unknown_one(
+    client: AsyncClient, auth_headers: dict, door: str,
+):
+    tid, a, _ = await _entities(client, auth_headers, QUALIFIED_NS)
+    value = (await client.get(f"{API}/terminologies/{tid}", headers=auth_headers)).json()["value"]
+    own_tid, own, _ = await _entities(client, auth_headers, "wip")
+    nope = f"NOPE_{uuid.uuid4().hex[:8].upper()}"
+    hidden_ids = {"own": own, "own_tid": own_tid, "term": f"{QUALIFIED_NS}:{value}:a"}
+    missing_ids = {"own": own, "own_tid": own_tid, "term": f"{QUALIFIED_NS}:{nope}:a"}
+    method, path, body = POINTER_DOORS[door]
+
+    async def call(ids):
+        return await client.request(method, API + path.format(**ids), headers=APP_KEY, json=_fill(body, ids))
+
+    hidden, missing = await call(hidden_ids), await call(missing_ids)
+
+    assert missing.status_code not in (401, 403), missing.text  # the key is in effect
+    assert tid not in hidden.text and a not in hidden.text, hidden.text  # nothing given away
+    assert hidden.status_code == missing.status_code, (hidden.text, missing.text)
+    assert _blank(hidden.text, hidden_ids) == _blank(missing.text, missing_ids)

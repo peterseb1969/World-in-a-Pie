@@ -50,9 +50,9 @@ async def _registry(path: str, body: list) -> dict:
     return result
 
 
-async def _hidden(kind: str) -> tuple[str, str]:
-    """A document or file in the hidden namespace, addressable as ns:VALUE.
-    Returns (canonical id, value)."""
+async def _hidden(kind: str, template: str = "PERSON") -> tuple[str, str]:
+    """A document, file or template entry in the hidden namespace,
+    addressable as ns:VALUE. Returns (canonical id, value)."""
     value = f"HID_{uuid.uuid4().hex[:8].upper()}"
     entry = await _registry("/api/registry/entries/register", [{
         "namespace": HIDDEN_NS, "entity_type": f"{kind}s",
@@ -65,11 +65,11 @@ async def _hidden(kind: str) -> tuple[str, str]:
     if kind == "document":
         await Document(
             namespace=HIDDEN_NS, document_id=entity_id,
-            template_id=SAMPLE_TEMPLATES["PERSON"]["template_id"], template_value="PERSON",
+            template_id=SAMPLE_TEMPLATES[template]["template_id"], template_value=template,
             template_version=1, identity_hash=f"hidden-{entity_id}", version=1,
             data={"first_name": "Hidden", "national_id": value}, status=DocumentStatus.ACTIVE,
         ).insert()
-    else:
+    elif kind == "file":
         await File(
             namespace=HIDDEN_NS, file_id=entity_id, filename="hidden.txt",
             content_type="text/plain", size_bytes=1, checksum=uuid.uuid4().hex * 2,
@@ -145,4 +145,39 @@ async def test_a_hidden_ambiguous_value_answers_as_an_unknown_one(file_client: A
     for canonical in canonicals:  # no candidate is given away
         assert canonical not in hidden.text, hidden.text
     assert hidden.status_code == missing.status_code, (hidden.text, missing.text)
+    assert hidden.text.replace(hidden_id, "<id>") == missing.text.replace(missing_id, "<id>")
+
+
+# A field inside a document write names a hidden entity by a qualified id: the
+# document's template, or a reference field's target. The write is refused
+# either way; the refusal must read the same as for an id naming nothing.
+REFERENCE_DOORS = {
+    "create documents: template_id": ("template", "PERSON", {"template_id": "{id}", "data": {"first_name": "x"}}),
+    "create documents: reference field": (
+        "document", "CHAPTER_Q", {"template_id": "HOLDER_TWO_Q", "data": {"name": "x", "ref": "{id}"}},
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("door", list(REFERENCE_DOORS))
+async def test_a_hidden_entity_named_inside_a_document_reads_as_an_unknown_one(
+    file_client: AsyncClient, door: str,  # noqa: F811
+):
+    kind, template, body = REFERENCE_DOORS[door]
+    canonical, value = await _hidden(kind, template)
+    hidden_id = f"{HIDDEN_NS}:{value}"
+    missing_id = f"{HIDDEN_NS}:NOPE_{uuid.uuid4().hex[:8].upper()}"
+
+    async def call(entity_id: str):
+        item = {"namespace": "wip", **{k: v for k, v in body.items() if k != "data"}}
+        item["template_id"] = item["template_id"].format(id=entity_id)
+        item["data"] = {k: (v.format(id=entity_id) if isinstance(v, str) else v) for k, v in body["data"].items()}
+        return await file_client.post(f"{API}/documents", headers=APP_KEY, json=[item])
+
+    hidden, missing = await call(hidden_id), await call(missing_id)
+
+    assert missing.status_code == 200, missing.text  # the key is in effect
+    assert missing.json()["results"][0]["status"] == "error", missing.text
+    assert canonical not in hidden.text, hidden.text  # the canonical id is not given away
     assert hidden.text.replace(hidden_id, "<id>") == missing.text.replace(missing_id, "<id>")

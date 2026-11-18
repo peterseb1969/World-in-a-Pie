@@ -90,6 +90,9 @@ async def create_documents(
     # door — after a hard-delete + re-create under the same value, the cache
     # serves the dead template id for up to its TTL. A value several
     # templates bear is answered per item as ambiguous.
+    # A refusal names the template as submitted, so a hidden one reads as
+    # an unknown one.
+    submitted = SubmittedIds(items, "template_id")
     held = AmbiguousItems(
         items,
         await resolve_bulk_ids(
@@ -138,7 +141,7 @@ async def create_documents(
         result = await _bulk_create_per_namespace(service, items, continue_on_error)
 
     await asyncio.sleep(get_throttle_delay())
-    return held.answer(result)
+    return submitted.answer(held.answer(result))
 
 
 def _namespace_batches(

@@ -198,3 +198,72 @@ async def test_a_hidden_qualified_id_answers_as_an_unknown_one(
     assert hidden_tid not in hidden.text, hidden.text  # the canonical id is not given away
     assert hidden.status_code == missing.status_code, (hidden.text, missing.text)
     assert hidden.text.replace(hidden_id, "<id>") == missing.text.replace(missing_id, "<id>")
+
+
+# A template write names a hidden entity by a qualified id in one of its
+# references: its parent, a term field's terminology, an object field's
+# template, a reference field's target. The write is refused either way; the
+# refusal must read the same as for a reference naming nothing.
+REFERENCE_FIELDS = {
+    "extends": lambda ref: {"extends": ref, "fields": []},
+    "terminology_ref": lambda ref: {"fields": [
+        {"name": "t", "label": "T", "type": "term", "terminology_ref": ref}]},
+    "template_ref": lambda ref: {"fields": [
+        {"name": "o", "label": "O", "type": "object", "template_ref": ref, "template_ref_version": 1}]},
+    "target_templates": lambda ref: {"fields": [
+        {"name": "r", "label": "R", "type": "reference", "reference_type": "document",
+         "target_templates": [ref]}]},
+}
+
+
+async def _hidden_terminology(value: str) -> str:
+    """A terminology of QUALIFIED_NS in the Registry, as def-store registers
+    one (def-store itself is a stand-in here)."""
+    import os
+
+    from httpx import ASGITransport
+
+    from registry.main import app as registry_app
+
+    headers = {"X-API-Key": os.environ["MASTER_API_KEY"]}
+    async with AsyncClient(transport=ASGITransport(app=registry_app), base_url="http://registry") as reg:
+        r = await reg.post("/api/registry/entries/register", headers=headers, json=[{
+            "namespace": QUALIFIED_NS, "entity_type": "terminologies",
+            "composite_key": {"value": value, "label": value},
+        }])
+        entry_id = r.json()["results"][0]["registry_id"]
+        await reg.post("/api/registry/synonyms/add", headers=headers, json=[{
+            "target_id": entry_id,
+            "synonym_composite_key": {"ns": QUALIFIED_NS, "type": "terminology", "value": value},
+        }])
+    return entry_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", list(REFERENCE_FIELDS))
+async def test_a_hidden_entity_a_template_references_reads_as_an_unknown_one(
+    client: AsyncClient, auth_headers: dict, field: str,
+):
+    if field == "terminology_ref":
+        value = f"HID_{uuid.uuid4().hex[:8].upper()}"
+        canonical = await _hidden_terminology(value)
+    else:
+        canonical = await _template(client, auth_headers, QUALIFIED_NS)
+        value = (await client.get(f"{API}/{canonical}", headers=auth_headers)).json()["value"]
+    hidden_id = f"{QUALIFIED_NS}:{value}"
+    missing_id = f"{QUALIFIED_NS}:NOPE_{uuid.uuid4().hex[:8].upper()}"
+
+    async def create(ref: str):
+        name = f"REF_{uuid.uuid4().hex[:8].upper()}"
+        body = {"namespace": "wip", "value": name, "label": name, **REFERENCE_FIELDS[field](ref)}
+        r = await client.post(API, headers=APP_KEY, json=[body])
+        return r, name
+
+    (hidden, hidden_name), (missing, missing_name) = await create(hidden_id), await create(missing_id)
+
+    assert missing.status_code == 200, missing.text  # the key is in effect
+    assert missing.json()["results"][0]["status"] == "error", missing.text
+    assert canonical not in hidden.text, hidden.text  # the canonical id is not given away
+    assert hidden.text.replace(hidden_id, "<id>").replace(hidden_name, "<name>") == (
+        missing.text.replace(missing_id, "<id>").replace(missing_name, "<name>")
+    )

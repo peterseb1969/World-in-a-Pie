@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Depends, Query
 
 from wip_auth import (
     AmbiguousItems,
+    SubmittedIds,
     UserIdentity,
     check_namespace_permission,
     resolve_bulk_ids,
@@ -61,6 +62,9 @@ async def create_term_relations(
     # opaque value through the field door.
     # An endpoint several terms bear is answered per item as ambiguous,
     # never written.
+    # A refusal names each endpoint as submitted, so a hidden term reads as
+    # an unknown one.
+    submitted = SubmittedIds(items, "source_term_id", "target_term_id")
     held = AmbiguousItems(
         items,
         await resolve_bulk_ids(
@@ -77,12 +81,12 @@ async def create_term_relations(
     results = await OntologyService.create_term_relations(namespace, items)
     # A duplicate relation is "skipped", which counts as succeeded
     succeeded = sum(1 for r in results if r.status in ("created", "skipped"))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results,
         total=len(results),
         succeeded=succeeded,
         failed=len(results) - succeeded,
-    ))
+    )))
 
 
 @router.get(
@@ -159,6 +163,9 @@ async def delete_term_relations(
     # items resolve their id as an opaque value.
     # An endpoint several terms bear is answered per item as ambiguous,
     # never written.
+    # A refusal names each endpoint as submitted, so a hidden term reads as
+    # an unknown one.
+    submitted = SubmittedIds(items, "source_term_id", "target_term_id")
     held = AmbiguousItems(
         items,
         await resolve_bulk_ids(
@@ -174,12 +181,12 @@ async def delete_term_relations(
 
     results = await OntologyService.delete_term_relations(namespace, items)
     succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))
-    return held.answer(BulkResponse(
+    return submitted.answer(held.answer(BulkResponse(
         results=results,
         total=len(results),
         succeeded=succeeded,
         failed=len(results) - succeeded,
-    ))
+    )))
 
 
 @router.get(

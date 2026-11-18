@@ -8,7 +8,7 @@ exist and gave them away, while a value nothing bears answers as a miss. Every
 door helper now drops the candidates the caller cannot read and answers an
 ambiguity left with none as the miss.
 
-Also pins SubmittedIds: a bulk not_found result names the ids as submitted.
+Also pins SubmittedIds: a bulk error result names the ids as submitted.
 """
 
 from types import SimpleNamespace
@@ -32,6 +32,8 @@ from wip_auth.resolve import clear_resolution_cache
 RESOLVE_URL = "http://localhost:8001/api/registry/entries/resolve"
 ONE = "019a0000-0000-7000-8000-000000000001"
 TWO = "019a0000-0000-7000-8000-000000000002"
+THREE = "019a0000-0000-7000-8000-000000000003"
+FOUR = "019a0000-0000-7000-8000-000000000004"
 
 
 def _candidates(*namespaces: str) -> list[dict]:
@@ -135,16 +137,25 @@ async def test_the_bulk_doors_keep_a_visible_ambiguity(httpx_mock):
     assert list(await resolve_bulk_ids(items, "template_id", "template", "open", bypass_cache=True)) == [0]
 
 
-def test_a_not_found_result_names_the_id_as_submitted():
-    items = [{"template_id": "hidden:COLOR"}, {"template_id": "open:SHAPE"}]
-    submitted = SubmittedIds(items, "template_id")
-    items[0]["template_id"], items[1]["template_id"] = ONE, TWO  # resolved in place
+def test_every_error_result_names_the_ids_as_submitted():
+    items = [
+        {"template_id": "hidden:COLOR", "parent": None},
+        {"template_id": "open:SHAPE", "parent": "hidden:BASE"},
+        {"template_id": "open:SIZE", "parent": None},
+    ]
+    submitted = SubmittedIds(items, "template_id", "parent")
+    # Resolved in place, as resolve_bulk_ids does.
+    items[0]["template_id"], items[1]["template_id"], items[1]["parent"] = ONE, TWO, THREE
+    items[2]["template_id"] = FOUR
     response = BulkResponse(results=[
         BulkResultItem(index=0, status="error", id=ONE, error=f"Template {ONE} not found", error_code="not_found"),
-        BulkResultItem(index=1, status="error", id=TWO, error="Requires write", error_code="forbidden"),
-    ], total=2, succeeded=0, failed=2)
+        BulkResultItem(index=1, status="error", id=TWO, error=f"parent '{THREE}' names nothing",
+                       error_code="reference_violation"),
+        BulkResultItem(index=2, status="updated", id=FOUR),
+    ], total=3, succeeded=1, failed=2)
 
     rows = submitted.answer(response).results
 
     assert (rows[0].id, rows[0].error) == ("hidden:COLOR", "Template hidden:COLOR not found")
-    assert rows[1].id == TWO, "a refusal the caller may see keeps the canonical id"
+    assert (rows[1].id, rows[1].error) == ("open:SHAPE", "parent 'hidden:BASE' names nothing")
+    assert rows[2].id == FOUR, "an item that was written keeps its canonical id"

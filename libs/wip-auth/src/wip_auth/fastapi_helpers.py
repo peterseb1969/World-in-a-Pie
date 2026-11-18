@@ -715,18 +715,18 @@ class AmbiguousItems:
 
 class SubmittedIds:
     """The identifiers a bulk request's items carried before resolve_bulk_ids
-    rewrote them in place, so a miss can be answered as submitted.
+    rewrote them in place, so a refusal can be answered as submitted.
 
-    A not_found item answers an identifier that names nothing the caller can
-    see, and must read the same whether the entity is unknown or sits in a
-    namespace the caller cannot read. resolve_bulk_ids resolves a qualified
-    identifier (``ns:VALUE``) by its own prefix, readable or not, so a hidden
-    entity's item reaches the door holding its canonical id while an unknown
-    one keeps the submitted text; a door that echoes the item's id would give
-    the canonical id away. ``answer`` puts the submitted spelling back in
-    every not_found result: in each string field holding the resolved id and
-    inside the error text. Results the caller may see (written, forbidden,
-    any other refusal) keep the canonical id.
+    A refused item must read the same whether an identifier in it names an
+    unknown entity or one in a namespace the caller cannot read.
+    resolve_bulk_ids resolves a qualified identifier (``ns:VALUE``) by its own
+    prefix, readable or not, so a hidden entity's item reaches the door
+    holding its canonical id while an unknown one keeps the submitted text; a
+    refusal that echoes the id (the item's own, or a pointer in it such as a
+    parent term) would give the canonical id away. ``answer`` puts the
+    submitted spelling back in every error result, whatever its code: in each
+    string field holding a resolved id and inside the error text. An item
+    that succeeded keeps the canonical id: the caller wrote that entity.
 
     Take it before resolving, over the request's own item list, and pass the
     final response (after AmbiguousItems.answer, when the door uses it): a
@@ -739,9 +739,9 @@ class SubmittedIds:
         self._submitted = [{field: _field_value(item, field) for field in fields} for item in items]
 
     def answer(self, response: Any) -> Any:
-        """``response`` with each not_found result naming its ids as submitted."""
+        """``response`` with each error result naming its ids as submitted."""
         for result in response.results:
-            if getattr(result, "error_code", None) != "not_found":
+            if getattr(result, "status", None) != "error":
                 continue
             if not 0 <= result.index < len(self._items):
                 continue
@@ -758,9 +758,33 @@ def _field_value(item: Any, field: str) -> Any:
 
 
 def _replace_in_result(result: Any, resolved: str, submitted: str) -> None:
+    """Every mention of ``resolved`` in an error result, at any depth (its
+    id fields, its error text, the per-field errors in its details), in the
+    submitted spelling."""
     for name in type(result).model_fields:
         value = getattr(result, name)
-        if value == resolved:
-            setattr(result, name, submitted)
-        elif name == "error" and isinstance(value, str) and resolved in value:
-            setattr(result, name, value.replace(resolved, submitted))
+        replaced = _replace_in_value(value, resolved, submitted)
+        if replaced is not value:
+            setattr(result, name, replaced)
+
+
+def _replace_in_value(value: Any, resolved: str, submitted: str) -> Any:
+    """``value`` with ``resolved`` replaced by ``submitted`` in every string
+    it holds; the same object when nothing changed."""
+    if isinstance(value, str):
+        return value.replace(resolved, submitted) if resolved in value else value
+    if isinstance(value, dict):
+        return _replace_in_dict(value, resolved, submitted)
+    if isinstance(value, list):
+        return _replace_in_list(value, resolved, submitted)
+    return value
+
+
+def _replace_in_dict(value: dict, resolved: str, submitted: str) -> dict:
+    items = {k: _replace_in_value(v, resolved, submitted) for k, v in value.items()}
+    return items if any(items[k] is not value[k] for k in value) else value
+
+
+def _replace_in_list(value: list, resolved: str, submitted: str) -> list:
+    rows = [_replace_in_value(v, resolved, submitted) for v in value]
+    return rows if any(a is not b for a, b in zip(rows, value, strict=True)) else value
